@@ -775,7 +775,7 @@ pub fn gen_aggregate_impl(c: &Construct, fields: &[&Field], registry: &LayerRegi
         ctx.self_fields = field_names.clone();
         ctx.expected_return_rust = Some(return_type_str.clone());
         // Seed struct field types so `for x in self.list` can type elements.
-        ctx.struct_fields.insert(
+        ctx.types.struct_fields.insert(
             c.name.clone(),
             fields
                 .iter()
@@ -784,11 +784,11 @@ pub fn gen_aggregate_impl(c: &Construct, fields: &[&Field], registry: &LayerRegi
         );
         for p in &func.params {
             ctx.locals.insert(p.name.clone());
-            ctx.local_types
+            ctx.types.local_types
                 .insert(p.name.clone(), type_to_rust(&p.type_expr));
         }
-        ctx.mut_locals = crate::expr::analyze_mut_locals(&func.body);
-        ctx.ident_uses = crate::expr::count_ident_uses(&func.body);
+        ctx.ownership.mut_locals = crate::expr::analyze_mut_locals(&func.body);
+        ctx.ownership.ident_uses = crate::expr::count_ident_uses(&func.body);
 
         let mut has_explicit_ret = false;
         for expr in &func.body {
@@ -846,7 +846,7 @@ pub fn gen_aggregate_impl(c: &Construct, fields: &[&Field], registry: &LayerRegi
                         && !name.contains('.') && !field_names.contains(name) {
                             ctx.locals.insert(name.clone());
                             if let Some(t) = crate::expr::infer_expr_type_pub(rhs, &ctx) {
-                                ctx.local_types.insert(name.clone(), t);
+                                ctx.types.local_types.insert(name.clone(), t);
                             }
                         }
                 }

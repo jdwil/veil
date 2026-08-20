@@ -1,537 +1,30 @@
-//! Typed intermediate representation for Rust expressions.
+//! VEIL AST → RustExpr lowering.
 //!
-//! `RustExpr` sits between VEIL AST lowering and final Rust text emission.
-//! It preserves type and ownership information so downstream transforms
-//! (clone insertion, `?` suppression in closures, etc.) operate on structure
-//! rather than rendered strings.
-//!
-//! ## Variants
-//!
-//! `RustExpr::Statement` wraps pre-rendered text for expression forms that
-//! are not yet fully decomposed into structural nodes. It emits identically
-//! to a raw string but signals "this is a statement / complex expression"
-//! for ownership analysis purposes.
+//! `lower_to_rust` is the entry point: it converts a VEIL `Expr` into the
+//! typed `RustExpr` IR. Per-expression helpers handle specific shapes
+//! (idents, field access, calls, blocks, etc.).
 
 use veil_ir::ast::{Expr, StringPart};
 use veil_ir::layer::Shape;
 use crate::rust::to_snake;
-use super::context::GenCtx;
-use super::translate::{expr_to_rust, to_json_arg};
-use super::inference::{infer_expr_type, binop_to_rust, unaryop_to_rust, normalize_match_pattern, element_type_of};
-use super::types::{rust_string_lit, rust_string_lit_owned, expr_is_stringish, expr_is_numeric,
+use super::super::context::GenCtx;
+use super::super::translate::{expr_to_rust, to_json_arg};
+use super::super::inference::{infer_expr_type, binop_to_rust, unaryop_to_rust, normalize_match_pattern, element_type_of};
+use super::super::types::{rust_string_lit_owned, expr_is_stringish, expr_is_numeric,
     flatten_str_add_chain, clone_if_named_value, strip_try_suffix,
     peel_option_rust, rust_ty_is_stringish, rust_ty_is_copy, rust_ty_is_unit_enum,
     expr_to_rust_value, field_access_is_copy, rust_already_owned, rust_is_copy_value,
     should_clone_ident, is_option_type, is_result_type};
-use super::calls::{resolve_self_field_name, is_json_rooted_expr, is_json_type_name,
+use super::super::calls::{resolve_self_field_name, is_json_rooted_expr, is_json_type_name,
     expr_is_json, list_index_get_rust};
-use super::patterns::{pattern_to_rust, pattern_to_rust_qualified, pattern_binding_names,
+use super::super::patterns::{pattern_to_rust, pattern_to_rust_qualified, pattern_binding_names,
     emit_value_block};
-use super::actions::translate_action;
-use super::analysis::analyze_mut_locals;
+use super::super::actions::translate_action;
+use super::super::analysis::analyze_mut_locals;
+use super::{RustExpr, RustType, emit};
+use super::ownership::suppress_try_in_closure;
 
-// ─── RustType ────────────────────────────────────────────────────────────────
 
-/// Simplified Rust type representation for ownership decisions.
-/// Not a full type system — just enough to decide clone vs move vs borrow.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RustType {
-    /// Named type: "Customer", "i64", "String", "DomainError"
-    Named(String),
-    /// Option<T>
-    Option(Box<RustType>),
-    /// Result<T, DomainError>
-    Result(Box<RustType>),
-    /// Vec<T>
-    Vec(Box<RustType>),
-    /// &T (shared reference)
-    Ref(Box<RustType>),
-    /// ()
-    Unit,
-    /// serde_json::Value
-    Json,
-}
-
-impl RustType {
-    /// Whether this type is `Copy` (primitives, unit enums).
-    pub fn is_copy(&self) -> bool {
-        match self {
-            RustType::Named(n) => matches!(
-                n.as_str(),
-                "i8" | "i16" | "i32" | "i64" | "i128"
-                    | "u8" | "u16" | "u32" | "u64" | "u128"
-                    | "f32" | "f64"
-                    | "bool" | "char" | "()" | "usize" | "isize"
-            ),
-            RustType::Unit => true,
-            RustType::Ref(_) => true,
-            _ => false,
-        }
-    }
-
-    /// Parse a simple type string into a RustType. Best-effort — complex
-    /// generics fall back to Named.
-    pub fn parse(s: &str) -> RustType {
-        let s = s.trim();
-        if s == "()" {
-            return RustType::Unit;
-        }
-        if s == "serde_json::Value" || s == "Value" {
-            return RustType::Json;
-        }
-        if let Some(inner) = s.strip_prefix("Option<").and_then(|r| r.strip_suffix('>')) {
-            return RustType::Option(Box::new(RustType::parse(inner)));
-        }
-        if let Some(inner) = s.strip_prefix("Result<").and_then(|r| r.strip_suffix('>')) {
-            // Result<T, E> — take T (first type param)
-            let inner_ty = inner.split(',').next().unwrap_or(inner).trim();
-            return RustType::Result(Box::new(RustType::parse(inner_ty)));
-        }
-        if let Some(inner) = s.strip_prefix("Vec<").and_then(|r| r.strip_suffix('>')) {
-            return RustType::Vec(Box::new(RustType::parse(inner)));
-        }
-        if let Some(inner) = s.strip_prefix('&') {
-            return RustType::Ref(Box::new(RustType::parse(inner)));
-        }
-        RustType::Named(s.to_string())
-    }
-}
-
-// ─── RustExpr ────────────────────────────────────────────────────────────────
-
-/// Typed intermediate representation of a Rust expression.
-/// Carries enough information for ownership analysis and final emission
-/// without re-parsing rendered strings.
-#[derive(Debug, Clone)]
-pub enum RustExpr {
-    /// Identifier reference.
-    Ident { name: String, ty: Option<RustType> },
-
-    /// String literal: `"hello"`
-    StringLit(String),
-
-    /// Integer literal: `42`
-    IntLit(i64),
-
-    /// Float literal: `3.14`
-    FloatLit(f64),
-
-    /// Boolean literal: `true` / `false`
-    BoolLit(bool),
-
-    /// Field access: `base.field`
-    FieldAccess {
-        base: Box<RustExpr>,
-        field: String,
-        ty: Option<RustType>,
-    },
-
-    /// Method call: `receiver.method(args)`
-    MethodCall {
-        receiver: Box<RustExpr>,
-        method: String,
-        args: Vec<RustExpr>,
-        ty: Option<RustType>,
-        is_async: bool,
-        is_fallible: bool,
-    },
-
-    /// Free function call: `path::function(args)`
-    FnCall {
-        path: String,
-        args: Vec<RustExpr>,
-        ty: Option<RustType>,
-    },
-
-    /// Clone wrapper: `expr.clone()`
-    Clone(Box<RustExpr>),
-
-    /// Borrow: `&expr` or `&mut expr`
-    Borrow { inner: Box<RustExpr>, mutable: bool },
-
-    /// Await: `expr.await`
-    Await(Box<RustExpr>),
-
-    /// Try operator: `expr?`
-    Try(Box<RustExpr>),
-
-    /// `.map_err(|e| DomainError::External(format!("{e:?}")))`
-    MapErr { inner: Box<RustExpr>, variant: String },
-
-    /// `format!(...)` expression
-    Format { template: String, args: Vec<RustExpr> },
-
-    /// Block expression: `{ stmts; value }`
-    Block {
-        stmts: Vec<RustExpr>,
-        value: Option<Box<RustExpr>>,
-    },
-
-    /// If expression / if-else block
-    If {
-        condition: Box<RustExpr>,
-        then_body: Vec<RustExpr>,
-        else_body: Option<Vec<RustExpr>>,
-    },
-
-    /// Match expression
-    Match {
-        scrutinee: Box<RustExpr>,
-        arms: Vec<(String, RustExpr)>,
-    },
-
-    /// Let binding: `let [mut] name [: Type] = value;`
-    Let {
-        name: String,
-        mutable: bool,
-        ty: Option<String>,
-        value: Box<RustExpr>,
-    },
-
-    /// `serde_json::json!({ "key": value, ... })` macro invocation.
-    /// Entries are key-value pairs rendered inside the json! braces.
-    /// Values that are already `RustExpr` get emitted inline (identifiers,
-    /// clones, string literals, nested json! calls, vec![...], etc.).
-    JsonMacro {
-        entries: Vec<(String, RustExpr)>,
-    },
-
-    /// `serde_json::Value::Null`
-    JsonNull,
-
-    /// `serde_json::Value::Array(vec![])`
-    JsonEmptyArray,
-
-    /// `vec![a, b, c]` (for json! array arguments)
-    VecMacro(Vec<RustExpr>),
-
-    /// Pre-rendered Rust statement (assignment, reassignment, complex expressions
-    /// that haven't been fully decomposed into structural nodes yet).
-    /// Unlike the deleted `Raw`, this is explicitly a STATEMENT that produces
-    /// no value for ownership purposes.
-    Statement { text: String, ty: Option<RustType> },
-
-    /// Layer/action template output — pre-rendered by interpolate_action_template.
-    LayerEmit(String),
-
-    /// compile_error!("...") — intentional error marker in generated code.
-    CompileError(String),
-
-    /// Return statement: `return expr`
-    Return { value: Box<RustExpr>, wraps_ok: bool },
-
-    // ─── Structural nodes added during "complete-the-tree" ───────────
-
-    /// Binary operation: `left op right`
-    BinOp {
-        left: Box<RustExpr>,
-        op: String,
-        right: Box<RustExpr>,
-        ty: Option<RustType>,
-    },
-
-    /// Unary operation: `op expr`
-    UnaryOp {
-        op: String,
-        expr: Box<RustExpr>,
-        ty: Option<RustType>,
-    },
-
-    /// Array / Vec literal: `vec![items]`
-    Array {
-        items: Vec<RustExpr>,
-        ty: Option<RustType>,
-    },
-
-    /// Tuple literal: `(items)`
-    Tuple {
-        items: Vec<RustExpr>,
-        ty: Option<RustType>,
-    },
-
-    /// Index expression: `base[index]`
-    Index {
-        base: Box<RustExpr>,
-        index: Box<RustExpr>,
-        ty: Option<RustType>,
-    },
-
-    /// Struct literal: `Name { field: value, ... }`
-    StructLit {
-        name: String,
-        fields: Vec<(String, RustExpr)>,
-        ty: Option<RustType>,
-    },
-
-    /// For loop: `for binding in iterable { body }`
-    For {
-        binding: String,
-        iterable: Box<RustExpr>,
-        body: Vec<RustExpr>,
-        ty: Option<RustType>,
-    },
-
-    /// While loop: `while condition { body }`
-    While {
-        condition: Box<RustExpr>,
-        body: Vec<RustExpr>,
-        ty: Option<RustType>,
-    },
-
-    /// Infinite loop: `loop { body }`
-    Loop {
-        body: Vec<RustExpr>,
-        ty: Option<RustType>,
-    },
-}
-
-// ─── emit() ──────────────────────────────────────────────────────────────────
-
-/// Render a `RustExpr` to its final Rust source string.
-///
-/// This MUST produce byte-identical output to the old `expr_to_rust` for
-/// every migrated expression category. Pre-rendered expressions use
-/// `RustExpr::Statement` which is already a rendered string.
-pub fn emit(expr: &RustExpr) -> String {
-    match expr {
-        RustExpr::Statement { text, .. } => text.clone(),
-        RustExpr::LayerEmit(s) => s.clone(),
-        RustExpr::CompileError(msg) => format!("compile_error!(\"{}\")", msg),
-        RustExpr::Return { value, wraps_ok } => {
-            if *wraps_ok {
-                format!("return Ok({})", emit(value))
-            } else {
-                format!("return {}", emit(value))
-            }
-        }
-        RustExpr::Ident { name, .. } => name.clone(),
-        RustExpr::StringLit(s) => rust_string_lit(s),
-        RustExpr::IntLit(n) => n.to_string(),
-        RustExpr::FloatLit(f) => f.to_string(),
-        RustExpr::BoolLit(b) => b.to_string(),
-        RustExpr::FieldAccess { base, field, .. } => {
-            format!("{}.{}", emit(base), field)
-        }
-        RustExpr::MethodCall {
-            receiver,
-            method,
-            args,
-            is_async,
-            is_fallible,
-            ..
-        } => {
-            let recv = emit(receiver);
-            let arg_strs: Vec<String> = args.iter().map(emit).collect();
-            let call = format!("{}.{}({})", recv, method, arg_strs.join(", "));
-            let with_await = if *is_async {
-                format!("{}.await", call)
-            } else {
-                call
-            };
-            if *is_fallible {
-                format!("{}?", with_await)
-            } else {
-                with_await
-            }
-        }
-        RustExpr::FnCall { path, args, .. } => {
-            let arg_strs: Vec<String> = args.iter().map(emit).collect();
-            format!("{}({})", path, arg_strs.join(", "))
-        }
-        RustExpr::Clone(inner) => format!("{}.clone()", emit(inner)),
-        RustExpr::Borrow { inner, mutable } => {
-            if *mutable {
-                format!("&mut {}", emit(inner))
-            } else {
-                format!("&{}", emit(inner))
-            }
-        }
-        RustExpr::Await(inner) => format!("{}.await", emit(inner)),
-        RustExpr::Try(inner) => format!("{}?", emit(inner)),
-        RustExpr::MapErr { inner, variant } => {
-            format!(
-                "{}.map_err(|e| {}(format!(\"{{e:?}}\")))?",
-                emit(inner),
-                variant
-            )
-        }
-        RustExpr::Format { template, args } => {
-            if args.is_empty() {
-                format!("format!(\"{}\")", template)
-            } else {
-                let arg_strs: Vec<String> = args.iter().map(emit).collect();
-                format!("format!(\"{}\", {})", template, arg_strs.join(", "))
-            }
-        }
-        RustExpr::Block { stmts, value } => {
-            let mut parts: Vec<String> = stmts.iter().map(emit).collect();
-            if let Some(val) = value {
-                parts.push(emit(val));
-            }
-            format!("{{ {} }}", parts.join("; "))
-        }
-        RustExpr::If {
-            condition,
-            then_body,
-            else_body,
-        } => {
-            let cond = emit(condition);
-            // Single-expression ternary: `if cond { expr } else { expr }`
-            if then_body.len() == 1 && else_body.as_ref().is_some_and(|b| b.len() == 1) {
-                let then_str = emit(&then_body[0]);
-                let else_str = emit(&else_body.as_ref().unwrap()[0]);
-                if !then_str.contains('\n') && !else_str.contains('\n') {
-                    return format!("if {} {{ {} }} else {{ {} }}", cond, then_str, else_str);
-                }
-            }
-            // Multi-line block format
-            let then_str = emit_value_block_ir(then_body, "    ");
-            match else_body {
-                Some(eb) => {
-                    let else_str = emit_value_block_ir(eb, "    ");
-                    format!("if {} {{\n{}\n}} else {{\n{}\n}}", cond, then_str, else_str)
-                }
-                None => format!("if {} {{\n{}\n}}", cond, then_str),
-            }
-        }
-        RustExpr::Match { scrutinee, arms } => {
-            let scrut = emit(scrutinee);
-            let arms_str: Vec<String> = arms
-                .iter()
-                .map(|(pat, body)| format!("    {} => {}", pat, emit(body)))
-                .collect();
-            format!("match {} {{\n{}\n}}", scrut, arms_str.join(",\n"))
-        }
-        RustExpr::Let {
-            name,
-            mutable,
-            ty,
-            value,
-        } => {
-            let mut_kw = if *mutable { "mut " } else { "" };
-            let ty_ann = ty
-                .as_ref()
-                .map(|t| format!(": {}", t))
-                .unwrap_or_default();
-            format!("let {}{}{} = {}", mut_kw, name, ty_ann, emit(value))
-        }
-        RustExpr::JsonMacro { entries } => {
-            let parts: Vec<String> = entries
-                .iter()
-                .map(|(k, v)| format!("\"{}\": {}", k, emit(v)))
-                .collect();
-            format!("serde_json::json!({{ {} }})", parts.join(", "))
-        }
-        RustExpr::JsonNull => "serde_json::Value::Null".to_string(),
-        RustExpr::JsonEmptyArray => "serde_json::Value::Array(vec![])".to_string(),
-        RustExpr::VecMacro(items) => {
-            let vals: Vec<String> = items.iter().map(emit).collect();
-            format!("vec![{}]", vals.join(", "))
-        }
-
-        // ─── Structural nodes (complete-the-tree) ────────────────────────
-        RustExpr::BinOp { left, op, right, .. } => {
-            format!("{} {} {}", emit(left), op, emit(right))
-        }
-        RustExpr::UnaryOp { op, expr, .. } => {
-            format!("{}{}", op, emit(expr))
-        }
-        RustExpr::Array { items, .. } => {
-            let vals: Vec<String> = items.iter().map(emit).collect();
-            format!("vec![{}]", vals.join(", "))
-        }
-        RustExpr::Tuple { items, .. } => {
-            let parts: Vec<String> = items.iter().map(emit).collect();
-            format!("({})", parts.join(", "))
-        }
-        RustExpr::Index { base, index, .. } => {
-            format!("{}[{}]", emit(base), emit(index))
-        }
-        RustExpr::StructLit { name, fields, .. } => {
-            if fields.is_empty() {
-                format!("{} {{}}", name)
-            } else {
-                let field_strs: Vec<String> = fields
-                    .iter()
-                    .map(|(k, v)| {
-                        let val = emit(v);
-                        if *k == val {
-                            // Field shorthand: `name` instead of `name: name`
-                            k.clone()
-                        } else {
-                            format!("{}: {}", k, val)
-                        }
-                    })
-                    .collect();
-                format!("{} {{ {} }}", name, field_strs.join(", "))
-            }
-        }
-        RustExpr::For { binding, iterable, body, .. } => {
-            let body_str = emit_block(body, "    ");
-            format!("for {} in {} {{\n{}\n}}", binding, emit(iterable), body_str)
-        }
-        RustExpr::While { condition, body, .. } => {
-            let body_str = emit_block(body, "        ");
-            format!("while {} {{\n{}\n    }}", emit(condition), body_str)
-        }
-        RustExpr::Loop { body, .. } => {
-            let body_str = emit_block(body, "    ");
-            format!("loop {{\n{}\n}}", body_str)
-        }
-    }
-}
-
-/// Render a block of statements with indentation and semicolons.
-/// Used by If/Match/For/While emit to produce multi-line bodies.
-fn emit_block(stmts: &[RustExpr], indent: &str) -> String {
-    stmts
-        .iter()
-        .map(|e| {
-            let rendered = emit(e);
-            let line = if !rendered.ends_with('}') && !rendered.ends_with(';') {
-                format!("{};", rendered)
-            } else {
-                rendered
-            };
-            // Indent each line of the rendered statement
-            line.lines()
-                .map(|l| if l.is_empty() { String::new() } else { format!("{}{}", indent, l) })
-                .collect::<Vec<_>>()
-                .join("\n")
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-/// Render a block where the last expression is a value (no trailing semicolon).
-fn emit_value_block_ir(stmts: &[RustExpr], indent: &str) -> String {
-    stmts
-        .iter()
-        .enumerate()
-        .map(|(i, e)| {
-            let rendered = emit(e);
-            let is_last = i + 1 == stmts.len();
-            let line = if !is_last && !rendered.ends_with('}') && !rendered.ends_with(';') {
-                format!("{};", rendered)
-            } else {
-                rendered
-            };
-            line.lines()
-                .map(|l| if l.is_empty() { String::new() } else { format!("{}{}", indent, l) })
-                .collect::<Vec<_>>()
-                .join("\n")
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-// ─── lower_to_rust (bridge) ──────────────────────────────────────────────────
-
-/// Lower a VEIL expression to the typed `RustExpr` intermediate.
-///
-/// This is the new entry point that progressively replaces `expr_to_rust`.
-/// Currently handles: literals, idents, field access.
-/// Everything else falls through to `RustExpr::Statement` wrapping `expr_to_rust`.
 pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
     match expr {
         // ── Migrated: literals ───────────────────────────────────────────
@@ -792,7 +285,7 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
                             }
                     format!("{} = {}", name, rhs_str)
                 } else {
-                    let is_mutable = ctx.mut_locals.contains(name.as_str());
+                    let is_mutable = ctx.ownership.mut_locals.contains(name.as_str());
                     let ty_str = ty_ann.as_ref().map(crate::rust::type_to_rust);
                     return RustExpr::Let {
                         name: name.clone(),
@@ -989,7 +482,7 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
                     for name in pattern_binding_names(&arm.pattern) {
                         arm_ctx.locals.insert(name);
                     }
-                    arm_ctx.mut_locals.extend(analyze_mut_locals(&arm.body));
+                    arm_ctx.ownership.mut_locals.extend(analyze_mut_locals(&arm.body));
                     let body_str = if arm.body.len() == 1 {
                         expr_to_rust_value(&arm.body[0], &arm_ctx)
                     } else {
@@ -1045,15 +538,15 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
             let mut body_ctx = ctx.clone_for_inference();
             body_ctx.locals.insert(binding.clone());
             if let Some(elem) = element_type_of(iterable, ctx) {
-                body_ctx.local_types.insert(binding.clone(), elem);
+                body_ctx.types.local_types.insert(binding.clone(), elem);
             }
             if !elem_copy && iter_str.starts_with('&') {
-                body_ctx.ref_elem_locals.insert(binding.clone());
+                body_ctx.ownership.ref_elem_locals.insert(binding.clone());
             }
             if let Some(idx) = index {
                 body_ctx.locals.insert(idx.clone());
             }
-            body_ctx.mut_locals.extend(analyze_mut_locals(body));
+            body_ctx.ownership.mut_locals.extend(analyze_mut_locals(body));
             let enumerate = if index.is_some() { ".enumerate()" } else { "" };
             let iter_expr = if let Expr::Ident(name) = iterable.as_ref() {
                 if ctx
@@ -1083,7 +576,7 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
         Expr::WhileLoop { condition, body } => {
             let cond_str = expr_to_rust(condition, ctx);
             let mut body_ctx = ctx.clone_for_inference();
-            body_ctx.mut_locals.extend(analyze_mut_locals(body));
+            body_ctx.ownership.mut_locals.extend(analyze_mut_locals(body));
             let body_nodes = lower_block_with_ctx(body, &body_ctx);
             RustExpr::While {
                 condition: Box::new(RustExpr::Statement { text: cond_str, ty: Some(RustType::Named("bool".to_string())) }),
@@ -1448,9 +941,9 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
                         && !name.contains('.') {
                             block_ctx.locals.insert(name.clone());
                             if let Some(ty) = ty_ann {
-                                block_ctx.local_types.insert(name.clone(), crate::rust::type_to_rust(ty));
+                                block_ctx.types.local_types.insert(name.clone(), crate::rust::type_to_rust(ty));
                             } else if let Some(t) = infer_expr_type(rhs, &block_ctx) {
-                                block_ctx.local_types.insert(name.clone(), t);
+                                block_ctx.types.local_types.insert(name.clone(), t);
                             }
                         }
                     if i == body.len() - 1 {
@@ -1482,12 +975,12 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
 /// by previous expressions in the body. This replicates the tracking that
 /// `emit_block_lines` did at the string level.
 fn lower_block(body: &[Expr], ctx: &GenCtx) -> Vec<RustExpr> {
-    use super::analysis::analyze_mut_locals;
-    use super::inference::infer_expr_type;
+    use super::super::analysis::analyze_mut_locals;
+    use super::super::inference::infer_expr_type;
 
     let mut body_ctx = ctx.clone_for_inference();
     body_ctx.option_value_wrap = false;
-    body_ctx.mut_locals.extend(analyze_mut_locals(body));
+    body_ctx.ownership.mut_locals.extend(analyze_mut_locals(body));
     let mut result = Vec::new();
     for e in body {
         let node = lower_to_rust(e, &body_ctx);
@@ -1496,7 +989,7 @@ fn lower_block(body: &[Expr], ctx: &GenCtx) -> Vec<RustExpr> {
             if !name.contains('.') {
                 body_ctx.locals.insert(name.clone());
                 if let Some(t) = infer_expr_type(rhs, &body_ctx) {
-                    body_ctx.local_types.insert(name.clone(), t);
+                    body_ctx.types.local_types.insert(name.clone(), t);
                 }
             }
         }
@@ -1508,12 +1001,12 @@ fn lower_block(body: &[Expr], ctx: &GenCtx) -> Vec<RustExpr> {
 /// Like lower_block but the last expression is rendered as a value
 /// (for option_value_wrap contexts and match arm bodies).
 fn lower_value_block(body: &[Expr], ctx: &GenCtx) -> Vec<RustExpr> {
-    use super::analysis::analyze_mut_locals;
-    use super::inference::infer_expr_type;
+    use super::super::analysis::analyze_mut_locals;
+    use super::super::inference::infer_expr_type;
 
     let mut body_ctx = ctx.clone_for_inference();
     body_ctx.option_value_wrap = false;
-    body_ctx.mut_locals.extend(analyze_mut_locals(body));
+    body_ctx.ownership.mut_locals.extend(analyze_mut_locals(body));
     let mut result = Vec::new();
     for (i, e) in body.iter().enumerate() {
         let is_last = i + 1 == body.len();
@@ -1525,7 +1018,7 @@ fn lower_value_block(body: &[Expr], ctx: &GenCtx) -> Vec<RustExpr> {
             if !name.contains('.') {
                 body_ctx.locals.insert(name.clone());
                 if let Some(t) = infer_expr_type(rhs, &body_ctx) {
-                    body_ctx.local_types.insert(name.clone(), t);
+                    body_ctx.types.local_types.insert(name.clone(), t);
                 }
             }
         }
@@ -1538,7 +1031,7 @@ fn lower_value_block(body: &[Expr], ctx: &GenCtx) -> Vec<RustExpr> {
 /// Used by ForLoop/WhileLoop which set up custom contexts (element types,
 /// ref_elem_locals, etc.) before lowering the body.
 fn lower_block_with_ctx(body: &[Expr], body_ctx: &GenCtx) -> Vec<RustExpr> {
-    use super::inference::infer_expr_type;
+    use super::super::inference::infer_expr_type;
 
     let mut ctx = body_ctx.clone_for_inference();
     let mut result = Vec::new();
@@ -1548,7 +1041,7 @@ fn lower_block_with_ctx(body: &[Expr], body_ctx: &GenCtx) -> Vec<RustExpr> {
             if !name.contains('.') {
                 ctx.locals.insert(name.clone());
                 if let Some(t) = infer_expr_type(rhs, &ctx) {
-                    ctx.local_types.insert(name.clone(), t);
+                    ctx.types.local_types.insert(name.clone(), t);
                 }
             }
         }
@@ -1579,7 +1072,7 @@ fn lower_ident(name: &str, expr: &Expr, ctx: &GenCtx) -> RustExpr {
     // Not a proper ident — handled directly here.
     if name.contains(" then ") && (name.contains("f\"") || name.contains("f'")) {
         return RustExpr::Statement {
-            text: super::translate::translate_inline_ternary_fstring(name),
+            text: super::super::translate::translate_inline_ternary_fstring(name),
             ty: None,
         };
     }
@@ -1603,7 +1096,7 @@ fn lower_ident(name: &str, expr: &Expr, ctx: &GenCtx) -> RustExpr {
     // Inside a method body: resolve self fields and enum variants.
     if ctx.in_method && !ctx.locals.contains(name) {
         if let Some(rf) = resolve_self_field_name(ctx, name) {
-            if ctx.borrow_fields.contains(rf.as_str()) {
+            if ctx.ownership.borrow_fields.contains(rf.as_str()) {
                 return RustExpr::Borrow {
                     inner: Box::new(RustExpr::FieldAccess {
                         base: Box::new(RustExpr::Ident { name: "self".to_string(), ty: None }),
@@ -1694,7 +1187,7 @@ fn lower_field_access(base: &Expr, field: &str, expr: &Expr, ctx: &GenCtx) -> Ru
     if let Expr::Ident(name) = base
         && name == "self" && ctx.in_method {
             let f = resolve_self_field_name(ctx, field).unwrap_or_else(|| to_snake(field));
-            if ctx.borrow_fields.contains(f.as_str()) {
+            if ctx.ownership.borrow_fields.contains(f.as_str()) {
                 return RustExpr::Borrow {
                     inner: Box::new(RustExpr::FieldAccess {
                         base: Box::new(RustExpr::Ident { name: "self".to_string(), ty: None }),
@@ -1746,7 +1239,7 @@ fn lower_field_access(base: &Expr, field: &str, expr: &Expr, ctx: &GenCtx) -> Ru
 
         // Stub enums: PascalCase field access means a unit variant
         if field_is_variant
-            && let Some((crate_name, path_type)) = ctx.stub_type_crate.get(name.as_str()) {
+            && let Some((crate_name, path_type)) = ctx.stubs.stub_type_crate.get(name.as_str()) {
                 return RustExpr::Ident {
                     name: format!("{}::{}::{}", crate_name, path_type, field),
                     ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
@@ -1754,7 +1247,7 @@ fn lower_field_access(base: &Expr, field: &str, expr: &Expr, ctx: &GenCtx) -> Ru
             }
         // Lowercase variant on a stub-known type (snake_case → PascalCase)
         if !field_is_variant
-            && let Some((crate_name, path_type)) = ctx.stub_type_crate.get(name.as_str()) {
+            && let Some((crate_name, path_type)) = ctx.stubs.stub_type_crate.get(name.as_str()) {
                 let variant: String = field
                     .split('_')
                     .map(|seg| {
@@ -1849,7 +1342,7 @@ fn lower_field_access(base: &Expr, field: &str, expr: &Expr, ctx: &GenCtx) -> Ru
 /// Mirrors the logic in translate.rs: literal chars get `{`/`}` escaped for
 /// `format!`, expression parts become `{}` holes with args.
 /// When there are no expression parts, the result is just a string literal.
-fn lower_string_interp(parts: &[StringPart], ctx: &GenCtx) -> RustExpr {
+pub(super) fn lower_string_interp(parts: &[StringPart], ctx: &GenCtx) -> RustExpr {
     let mut fmt = String::new();
     let mut args: Vec<RustExpr> = Vec::new();
     for p in parts {
@@ -2005,16 +1498,16 @@ fn json_envelope_ir(target: &str, method: &str, args: &[Expr], ctx: &GenCtx) -> 
 /// Attempt to lower a bus routing call to structured `RustExpr`.
 ///
 /// Handles three paths:
-/// 1. Routing trait calls (`ctx.routing_traits`) with json_message/envelope args
+/// 1. Routing trait calls (`ctx.routing.routing_traits`) with json_message/envelope args
 /// 2. Typed bus decode (invoke/request with known return type → from_value)
 /// 3. Envelope routing (cross-boundary calls via `routing_ref.invoke(envelope)`)
 ///
 /// Returns `Some(RustExpr)` if the call was handled, `None` to fall through.
 fn lower_call_bus_routing(call: &veil_ir::ast::CallExpr, ctx: &GenCtx) -> Option<RustExpr> {
-    use super::inference::{bus_message_name_from_args, bus_return_type_in_scope};
+    use super::super::inference::{bus_message_name_from_args, bus_return_type_in_scope};
 
     // ── Path 1 & 2: Trait-shaped target with routing_traits ──────────────────
-    if ctx.is_trait_target(&call.target) && ctx.routing_traits.contains(&call.target) {
+    if ctx.is_trait_target(&call.target) && ctx.routing.routing_traits.contains(&call.target) {
         let dep_name = ctx.deps_field_for(&call.target);
         let method = if call.method.is_empty() { "call" } else { &call.method };
 
@@ -2039,10 +1532,10 @@ fn lower_call_bus_routing(call: &veil_ir::ast::CallExpr, ctx: &GenCtx) -> Option
         };
 
         // Build the receiver reference
-        let rref = if ctx.routing_ref.is_empty() {
+        let rref = if ctx.routing.routing_ref.is_empty() {
             format!("deps.{}", dep_name)
         } else {
-            ctx.routing_ref.clone()
+            ctx.routing.routing_ref.clone()
         };
         let bare = to_snake(method);
 
@@ -2059,7 +1552,7 @@ fn lower_call_bus_routing(call: &veil_ir::ast::CallExpr, ctx: &GenCtx) -> Option
         // Path 2: Typed bus decode for invoke/request with known return type
         if matches!(bare.as_str(), "invoke" | "request") {
             let decode = bus_message_name_from_args(&call.args)
-                .and_then(|msg| ctx.bus_returns.get(&msg).map(|ret| (msg, ret.clone())));
+                .and_then(|msg| ctx.routing.bus_returns.get(&msg).map(|ret| (msg, ret.clone())));
             if let Some((_msg, ref ret)) = decode.filter(|(_, r)| bus_return_type_in_scope(ctx, r)) {
                 // serde_json::from_value::<RetType>(call_expr).map_err(|e| Error::External(...))?
                 let from_value = RustExpr::FnCall {
@@ -2083,17 +1576,17 @@ fn lower_call_bus_routing(call: &veil_ir::ast::CallExpr, ctx: &GenCtx) -> Option
         "Dt" | "DateTime" | "Uuid" | "Map" | "List" | "Opt" | "Json" | "Env" | "Str" | "Id" | "Int" | "UUID"
     );
     let is_typed_local = ctx.is_local(&call.target) && ctx.local_type(&call.target).is_some();
-    if ctx.envelope_routing
+    if ctx.routing.envelope_routing
         && !is_lang_target
         && !is_typed_local
-        && !ctx.stub_pkg_crate.contains_key(&call.target)
+        && !ctx.stubs.stub_pkg_crate.contains_key(&call.target)
         && (ctx.is_struct_target(&call.target) || ctx.is_local(&call.target) || !call.method.is_empty())
     {
         let method = if call.method.is_empty() { "new" } else { &call.method };
-        let rref = if ctx.routing_ref.is_empty() {
+        let rref = if ctx.routing.routing_ref.is_empty() {
             "deps".to_string()
         } else {
-            ctx.routing_ref.clone()
+            ctx.routing.routing_ref.clone()
         };
         let envelope = json_envelope_ir(&call.target, method, &call.args, ctx);
         let invoke_call = RustExpr::MethodCall {
@@ -2139,7 +1632,7 @@ fn is_special_method(method: &str) -> bool {
 ///
 /// Returns `Some(RustExpr)` if handled, `None` to fall through.
 fn lower_call_builder_chain(call: &veil_ir::ast::CallExpr, ctx: &GenCtx) -> Option<RustExpr> {
-    use super::calls::{receiver_call_suffix, clone_args_for_typed_method, rust_method_name};
+    use super::super::calls::{receiver_call_suffix, clone_args_for_typed_method, rust_method_name};
 
     // Only handle calls with a receiver that is itself a Call (chained)
     let recv = call.receiver.as_ref()?;
@@ -2241,13 +1734,13 @@ fn lower_chain_receiver(expr: &Expr, ctx: &GenCtx) -> RustExpr {
                     };
                 }
                 let receiver_ir = lower_chain_receiver(inner_recv, ctx);
-                let method_name = super::calls::rust_method_name(&inner_call.method);
+                let method_name = super::super::calls::rust_method_name(&inner_call.method);
                 let recv_lookup: Option<&str> = match inner_recv.as_ref() {
                     Expr::Ident(name) => Some(name.as_str()),
                     Expr::FieldAccess(_, field) => Some(field.as_str()),
                     _ => None,
                 };
-                let args_str = super::calls::clone_args_for_typed_method(
+                let args_str = super::super::calls::clone_args_for_typed_method(
                     recv_lookup, &inner_call.method, &inner_call.args, ctx,
                 );
                 let args_ir = if args_str.is_empty() {
@@ -2283,14 +1776,14 @@ fn lower_chain_receiver(expr: &Expr, ctx: &GenCtx) -> RustExpr {
 fn infer_call_type_from_ctx(call: &veil_ir::ast::CallExpr, ctx: &GenCtx) -> Option<RustType> {
     let method_key = call.method.trim_end_matches(['!', '?']);
     if let Some(ret) = (!call.target.is_empty())
-        .then(|| ctx.method_returns.get(&(call.target.clone(), method_key.to_string())))
+        .then(|| ctx.types.method_returns.get(&(call.target.clone(), method_key.to_string())))
         .flatten()
     {
         return Some(RustType::parse(ret));
     }
     if let Some(ret) = call.receiver.as_ref()
         .and_then(|recv| infer_expr_type(recv, ctx))
-        .and_then(|recv_ty| ctx.method_returns.get(&(recv_ty, method_key.to_string())))
+        .and_then(|recv_ty| ctx.types.method_returns.get(&(recv_ty, method_key.to_string())))
     {
         return Some(RustType::parse(ret));
     }
@@ -2318,13 +1811,13 @@ fn infer_call_type_from_ctx(call: &veil_ir::ast::CallExpr, ctx: &GenCtx) -> Opti
 /// These produce: `deps.<field>.method(args).await?` or `.await` depending on
 /// the method's return type.
 fn lower_call_port(call: &veil_ir::ast::CallExpr, ctx: &GenCtx) -> Option<RustExpr> {
-    use super::calls::param_types_for;
+    use super::super::calls::param_types_for;
 
     // Only handle trait-shaped targets that are NOT routing traits
     if !ctx.is_trait_target(&call.target) {
         return None;
     }
-    if ctx.routing_traits.contains(&call.target) {
+    if ctx.routing.routing_traits.contains(&call.target) {
         return None;
     }
     // Sugar calls go through bus routing
@@ -2343,7 +1836,7 @@ fn lower_call_port(call: &veil_ir::ast::CallExpr, ctx: &GenCtx) -> Option<RustEx
         .enumerate()
         .map(|(i, a)| {
             let expected = param_tys.get(i).map(|s| s.as_str());
-            let s = super::calls::arg_to_rust(a, expected, ctx);
+            let s = super::super::calls::arg_to_rust(a, expected, ctx);
             match a {
                 Expr::Ident(name) if ctx.local_type(name) == Some("serde_json::Value") => {
                     format!("{}.clone()", name)
@@ -2412,7 +1905,7 @@ fn lower_call_port(call: &veil_ir::ast::CallExpr, ctx: &GenCtx) -> Option<RustEx
     })
 }
 
-fn lower_call(call: &veil_ir::ast::CallExpr, ctx: &GenCtx) -> RustExpr {
+pub(super) fn lower_call(call: &veil_ir::ast::CallExpr, ctx: &GenCtx) -> RustExpr {
     // Try structured bus routing first
     if let Some(expr) = lower_call_bus_routing(call, ctx) {
         return expr;
@@ -2429,7 +1922,7 @@ fn lower_call(call: &veil_ir::ast::CallExpr, ctx: &GenCtx) -> RustExpr {
     }
 
     // Fall through to Raw wrapping translate_call for everything else
-    let text = super::calls::translate_call(call, ctx);
+    let text = super::super::calls::translate_call(call, ctx);
     let ty = infer_call_type(call, ctx);
     RustExpr::Statement { text, ty }
 }
@@ -2439,13 +1932,13 @@ fn infer_call_type(call: &veil_ir::ast::CallExpr, ctx: &GenCtx) -> Option<RustTy
     // Try the method_returns map first (most precise)
     let method_key = call.method.trim_end_matches(['!', '?']);
     if !call.target.is_empty()
-        && let Some(ret) = ctx.method_returns.get(&(call.target.clone(), method_key.to_string())) {
+        && let Some(ret) = ctx.types.method_returns.get(&(call.target.clone(), method_key.to_string())) {
             return Some(RustType::parse(ret));
         }
     // Check receiver type for chained calls
     if let Some(recv) = &call.receiver
         && let Some(recv_ty) = infer_expr_type(recv, ctx)
-            && let Some(ret) = ctx.method_returns.get(&(recv_ty.clone(), method_key.to_string())) {
+            && let Some(ret) = ctx.types.method_returns.get(&(recv_ty.clone(), method_key.to_string())) {
                 return Some(RustType::parse(ret));
             }
     // Struct constructors return the struct type
@@ -2455,462 +1948,6 @@ fn infer_call_type(call: &veil_ir::ast::CallExpr, ctx: &GenCtx) -> Option<RustTy
         }
     // Fall back to general inference
     infer_expr_type(&Expr::Call(call.clone()), ctx).map(|s| RustType::parse(&s))
-}
-
-// ─── apply_ownership ─────────────────────────────────────────────────────────
-
-/// Apply ownership semantics to a `RustExpr`: wrap in `Clone` when the value
-/// is non-Copy, multi-use, and not already owned.
-///
-/// This is the IR-level replacement for the old string-based `clone_for_reuse`.
-/// It operates on structure rather than rendered text, making the decision
-/// composable with later transforms (borrow insertion, move elision, etc.).
-///
-/// Call this on expressions in argument positions or assignment RHS where VEIL's
-/// "values are reusable" semantics require ownership transfer / cloning.
-pub fn apply_ownership(expr: RustExpr, ctx: &GenCtx) -> RustExpr {
-    // Already owned / already a clone — no double-clone
-    if is_already_owned(&expr) {
-        return expr;
-    }
-    // Copy types don't need cloning
-    if is_expr_copy(&expr, ctx) {
-        return expr;
-    }
-    match &expr {
-        RustExpr::Ident { name, .. } => {
-            if should_clone_ident_ir(name, ctx) {
-                RustExpr::Clone(Box::new(expr))
-            } else {
-                expr
-            }
-        }
-        RustExpr::FieldAccess { .. } => {
-            // Field accesses from lower_field_access already have Clone applied
-            // where needed. But if someone calls apply_ownership on a bare
-            // FieldAccess (e.g. from a different lowering path), clone it.
-            RustExpr::Clone(Box::new(expr))
-        }
-        RustExpr::Statement { text, .. } => {
-            // Already-owned strings from the old path
-            if super::types::rust_already_owned(text) {
-                return expr;
-            }
-            // Call results are owned — block expressions and function/method calls
-            let t = text.trim();
-            if (t.starts_with('{') && t.ends_with('}'))
-                || (t.contains('(') && (t.ends_with(')')
-                    || t.ends_with(")?")
-                    || t.ends_with(".await?")
-                    || t.ends_with(".await")
-                    || t.ends_with(".unwrap()")))
-            {
-                return expr;
-            }
-            // Qualified paths (e.g. DomainError::NotFound) are values, not borrowable
-            if t.contains("::") {
-                return expr;
-            }
-            // Statements don't produce values — never clone them.
-            if raw_is_statement(text) {
-                return expr;
-            }
-            RustExpr::Clone(Box::new(expr))
-        }
-        // Literals, FnCalls, MethodCalls produce owned values — no clone needed
-        _ => expr,
-    }
-}
-
-/// Whether a `RustExpr` is already an owned value (clone, literal, call result).
-fn is_already_owned(expr: &RustExpr) -> bool {
-    matches!(
-        expr,
-        RustExpr::Clone(_)
-            | RustExpr::StringLit(_)
-            | RustExpr::IntLit(_)
-            | RustExpr::FloatLit(_)
-            | RustExpr::BoolLit(_)
-            | RustExpr::FnCall { .. }
-            | RustExpr::MethodCall { .. }
-            | RustExpr::Format { .. }
-            | RustExpr::Block { .. }
-            | RustExpr::If { .. }
-            | RustExpr::Match { .. }
-            | RustExpr::JsonMacro { .. }
-            | RustExpr::JsonNull
-            | RustExpr::JsonEmptyArray
-            | RustExpr::VecMacro(_)
-            | RustExpr::Array { .. }
-            | RustExpr::Tuple { .. }
-            | RustExpr::StructLit { .. }
-            | RustExpr::BinOp { .. }
-            | RustExpr::UnaryOp { .. }
-            | RustExpr::For { .. }
-            | RustExpr::While { .. }
-            | RustExpr::Loop { .. }
-            | RustExpr::Let { .. }
-            | RustExpr::Await(_)
-            | RustExpr::Try(_)
-            | RustExpr::MapErr { .. }
-            | RustExpr::Borrow { .. }
-            | RustExpr::LayerEmit(_)
-            | RustExpr::CompileError(_)
-            | RustExpr::Return { .. }
-    )
-}
-
-/// Whether a raw text expression represents a call result (owned value).
-///
-/// TRANSITION DEBT: remove when translate_call is fully migrated to structured
-/// RustExpr — at that point all calls will be MethodCall/FnCall variants and
-/// `is_already_owned` handles those structurally.
-///
-/// Heuristic: contains `(` and ends with one of:
-/// - `)` — plain function/method call
-/// - `)?` — fallible call
-/// - `.await?` — async+fallible call
-/// - `.await` — async call
-/// - `.to_string()` / `.clone()` — already owned (redundant with rust_already_owned but safe)
-/// - `}` — block expression producing a value (e.g. Process.run)
-///
-/// Also catches format!(...), serde_json::from_str(...), etc.
-/// Whether a raw text expression is a statement (doesn't produce a value).
-/// Statements must not be cloned — they're used for side effects.
-fn raw_is_statement(text: &str) -> bool {
-    let t = text.trim();
-    t.starts_with("let ")
-        || t.starts_with("for ")
-        || t.starts_with("while ")
-        || t.starts_with("loop {")
-        || t.starts_with("if ")
-        || t.starts_with("match ")
-        || t.starts_with("return ")
-        || t.starts_with("return\n")
-        || t == "break"
-        || t == "continue"
-        || t.starts_with("state[")
-        || t.starts_with("self.")
-        || t.contains(" = ")
-        || t.contains(" += ")
-        || t.contains(" -= ")
-        || t.contains(" *= ")
-        || t.ends_with('}')
-        || t.starts_with("compile_error!")
-}
-
-/// Whether the expression's type is Copy (primitives, unit enums, refs).
-fn is_expr_copy(expr: &RustExpr, ctx: &GenCtx) -> bool {
-    match expr {
-        RustExpr::IntLit(_) | RustExpr::FloatLit(_) | RustExpr::BoolLit(_) => true,
-        RustExpr::Ident { name, ty } => {
-            // Check type annotation first
-            if let Some(t) = ty
-                && t.is_copy() {
-                    return true;
-                }
-            // Check context: local type or unit enum variant
-            if super::calls::is_copy_local(name, ctx) {
-                return true;
-            }
-            super::types::is_unit_enum_variant(name, ctx)
-        }
-        RustExpr::FieldAccess { ty, .. } => {
-            ty.as_ref().is_some_and(|t| t.is_copy())
-        }
-        RustExpr::Statement { ty, text, .. } => {
-            if let Some(t) = ty
-                && t.is_copy() {
-                    return true;
-                }
-            // Fallback: check if the raw text is a literal
-            text.parse::<i64>().is_ok() || text == "true" || text == "false"
-        }
-        RustExpr::Borrow { .. } => true, // refs are Copy
-        _ => false,
-    }
-}
-
-/// IR-level equivalent of `should_clone_ident`: decides whether an ident
-/// needs cloning based on usage count, ref status, and copy type.
-fn should_clone_ident_ir(name: &str, ctx: &GenCtx) -> bool {
-    if super::calls::is_copy_local(name, ctx) || super::types::is_unit_enum_variant(name, ctx) {
-        return false;
-    }
-    // Qualified enum paths (e.g. "Kind::Event") are values, not borrowable names.
-    // Either they're Copy unit variants or constructors — neither needs cloning.
-    if name.contains("::") {
-        return false;
-    }
-    // Uppercase non-local ident: likely an enum variant or type constant — don't clone.
-    if !ctx.is_local(name)
-        && name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false)
-    {
-        return false;
-    }
-    // Shared-ref loop element (`for x in &xs`) is `&T`. Owned slots need `.clone()`.
-    if ctx.ref_elem_locals.contains(name) {
-        return true;
-    }
-    if super::calls::is_ref_local(name, ctx) {
-        return false;
-    }
-    // Only clone if usage count is definitively > 1.
-    // Default to 1 (no clone) for variables without tracking — avoids cloning
-    // error variables, pattern bindings, and closure params that don't impl Clone.
-    // Short names (1-2 chars) are typically lambda/match params — move-only semantics.
-    if name.len() <= 2 {
-        return ctx.ident_uses.get(name).copied().unwrap_or(1) > 1
-            && ctx.local_types.get(name).is_some_and(|t| !t.contains("Error"));
-    }
-    ctx.ident_uses.get(name).copied().unwrap_or(1) > 1
-}
-
-// ─── Closure try-suppression ─────────────────────────────────────────────────
-
-/// Structurally transform a `RustExpr` tree to suppress `?` / `map_err(...)?`
-/// inside closure bodies. Closures don't return `Result`, so the try operator
-/// is invalid — replace with `.unwrap()`.
-///
-/// Transforms:
-/// - `Try(inner)` → `MethodCall { receiver: inner, method: "unwrap", ... }`
-/// - `MapErr { inner, .. }` → `MethodCall { receiver: inner, method: "unwrap", ... }`
-/// - `MethodCall { is_fallible: true, .. }` → same with `is_fallible: false` + `.unwrap()`
-/// - `Raw { text }` → text-level fixup (fallback for unmigrated paths)
-///
-/// This is a recursive traversal — it walks the entire expression tree.
-pub fn suppress_try_in_closure(expr: RustExpr) -> RustExpr {
-    match expr {
-        // Direct ? operator → .unwrap()
-        RustExpr::Try(inner) => {
-            let inner = suppress_try_in_closure(*inner);
-            RustExpr::MethodCall {
-                receiver: Box::new(inner),
-                method: "unwrap".to_string(),
-                args: vec![],
-                ty: None,
-                is_async: false,
-                is_fallible: false,
-            }
-        }
-        // .map_err(...)? → .unwrap()  (drop the error mapping entirely)
-        RustExpr::MapErr { inner, .. } => {
-            let inner = suppress_try_in_closure(*inner);
-            RustExpr::MethodCall {
-                receiver: Box::new(inner),
-                method: "unwrap".to_string(),
-                args: vec![],
-                ty: None,
-                is_async: false,
-                is_fallible: false,
-            }
-        }
-        // Fallible method call → call .unwrap() on the result
-        RustExpr::MethodCall {
-            receiver,
-            method,
-            args,
-            ty,
-            is_async,
-            is_fallible: true,
-        } => {
-            let inner = RustExpr::MethodCall {
-                receiver: Box::new(suppress_try_in_closure(*receiver)),
-                method,
-                args: args.into_iter().map(suppress_try_in_closure).collect(),
-                ty: ty.clone(),
-                is_async,
-                is_fallible: false,
-            };
-            RustExpr::MethodCall {
-                receiver: Box::new(inner),
-                method: "unwrap".to_string(),
-                args: vec![],
-                ty,
-                is_async: false,
-                is_fallible: false,
-            }
-        }
-        // Raw text: apply string-level fixup as fallback for unmigrated paths
-        RustExpr::Statement { text, ty } => {
-            let text = fixup_closure_raw(&text);
-            RustExpr::Statement { text, ty }
-        }
-        // Recurse into compound expressions
-        RustExpr::MethodCall {
-            receiver,
-            method,
-            args,
-            ty,
-            is_async,
-            is_fallible,
-        } => RustExpr::MethodCall {
-            receiver: Box::new(suppress_try_in_closure(*receiver)),
-            method,
-            args: args.into_iter().map(suppress_try_in_closure).collect(),
-            ty,
-            is_async,
-            is_fallible,
-        },
-        RustExpr::FnCall { path, args, ty } => RustExpr::FnCall {
-            path,
-            args: args.into_iter().map(suppress_try_in_closure).collect(),
-            ty,
-        },
-        RustExpr::Clone(inner) => {
-            RustExpr::Clone(Box::new(suppress_try_in_closure(*inner)))
-        }
-        RustExpr::Borrow { inner, mutable } => RustExpr::Borrow {
-            inner: Box::new(suppress_try_in_closure(*inner)),
-            mutable,
-        },
-        RustExpr::Await(inner) => {
-            RustExpr::Await(Box::new(suppress_try_in_closure(*inner)))
-        }
-        RustExpr::Block { stmts, value } => RustExpr::Block {
-            stmts: stmts.into_iter().map(suppress_try_in_closure).collect(),
-            value: value.map(|v| Box::new(suppress_try_in_closure(*v))),
-        },
-        RustExpr::If {
-            condition,
-            then_body,
-            else_body,
-        } => RustExpr::If {
-            condition: Box::new(suppress_try_in_closure(*condition)),
-            then_body: then_body.into_iter().map(suppress_try_in_closure).collect(),
-            else_body: else_body.map(|b| b.into_iter().map(suppress_try_in_closure).collect()),
-        },
-        RustExpr::Format { template, args } => RustExpr::Format {
-            template,
-            args: args.into_iter().map(suppress_try_in_closure).collect(),
-        },
-        RustExpr::FieldAccess { base, field, ty } => RustExpr::FieldAccess {
-            base: Box::new(suppress_try_in_closure(*base)),
-            field,
-            ty,
-        },
-        RustExpr::Let {
-            name,
-            mutable,
-            ty,
-            value,
-        } => RustExpr::Let {
-            name,
-            mutable,
-            ty,
-            value: Box::new(suppress_try_in_closure(*value)),
-        },
-        RustExpr::Match { scrutinee, arms } => RustExpr::Match {
-            scrutinee: Box::new(suppress_try_in_closure(*scrutinee)),
-            arms: arms
-                .into_iter()
-                .map(|(pat, body)| (pat, suppress_try_in_closure(body)))
-                .collect(),
-        },
-        // Leaves: no recursion needed
-        RustExpr::Ident { .. }
-        | RustExpr::StringLit(_)
-        | RustExpr::IntLit(_)
-        | RustExpr::FloatLit(_)
-        | RustExpr::BoolLit(_)
-        | RustExpr::JsonNull
-        | RustExpr::JsonEmptyArray
-        | RustExpr::LayerEmit(_)
-        | RustExpr::CompileError(_) => expr,
-        RustExpr::Return { value, wraps_ok } => RustExpr::Return {
-            value: Box::new(suppress_try_in_closure(*value)),
-            wraps_ok,
-        },
-        RustExpr::JsonMacro { entries } => RustExpr::JsonMacro {
-            entries: entries
-                .into_iter()
-                .map(|(k, v)| (k, suppress_try_in_closure(v)))
-                .collect(),
-        },
-        RustExpr::VecMacro(items) => {
-            RustExpr::VecMacro(items.into_iter().map(suppress_try_in_closure).collect())
-        }
-        // Structural nodes: recurse into children
-        RustExpr::BinOp { left, op, right, ty } => RustExpr::BinOp {
-            left: Box::new(suppress_try_in_closure(*left)),
-            op,
-            right: Box::new(suppress_try_in_closure(*right)),
-            ty,
-        },
-        RustExpr::UnaryOp { op, expr, ty } => RustExpr::UnaryOp {
-            op,
-            expr: Box::new(suppress_try_in_closure(*expr)),
-            ty,
-        },
-        RustExpr::Array { items, ty } => RustExpr::Array {
-            items: items.into_iter().map(suppress_try_in_closure).collect(),
-            ty,
-        },
-        RustExpr::Tuple { items, ty } => RustExpr::Tuple {
-            items: items.into_iter().map(suppress_try_in_closure).collect(),
-            ty,
-        },
-        RustExpr::Index { base, index, ty } => RustExpr::Index {
-            base: Box::new(suppress_try_in_closure(*base)),
-            index: Box::new(suppress_try_in_closure(*index)),
-            ty,
-        },
-        RustExpr::StructLit { name, fields, ty } => RustExpr::StructLit {
-            name,
-            fields: fields.into_iter().map(|(k, v)| (k, suppress_try_in_closure(v))).collect(),
-            ty,
-        },
-        RustExpr::For { binding, iterable, body, ty } => RustExpr::For {
-            binding,
-            iterable: Box::new(suppress_try_in_closure(*iterable)),
-            body: body.into_iter().map(suppress_try_in_closure).collect(),
-            ty,
-        },
-        RustExpr::While { condition, body, ty } => RustExpr::While {
-            condition: Box::new(suppress_try_in_closure(*condition)),
-            body: body.into_iter().map(suppress_try_in_closure).collect(),
-            ty,
-        },
-        RustExpr::Loop { body, ty } => RustExpr::Loop {
-            body: body.into_iter().map(suppress_try_in_closure).collect(),
-            ty,
-        },
-    }
-}
-fn fixup_closure_raw(s: &str) -> String {
-    let mut s = s
-        .replace(
-            ".map_err(|e| DomainError::External(format!(\"{:?}\", e)))?",
-            ".unwrap()",
-        )
-        .replace(
-            ".map_err(|e| DomainError::External(format!(\"{e:?}\")))?",
-            ".unwrap()",
-        )
-        .replace(
-            ".map_err(|e| DomainError::External(e.to_string()))?",
-            ".unwrap()",
-        );
-    // Replace trailing `)?` with `).unwrap()`
-    while let Some(pos) = s.find(")?") {
-        let after = if pos + 2 < s.len() {
-            &s[pos + 2..pos + 3]
-        } else {
-            ""
-        };
-        if after.is_empty()
-            || after == ")"
-            || after == "."
-            || after == ","
-            || after == ";"
-            || after == " "
-        {
-            s = format!("{}).unwrap(){}", &s[..pos], &s[pos + 2..]);
-        } else {
-            break;
-        }
-    }
-    s
 }
 
 /// Lower `Expr::Closure` to a structured `RustExpr`, applying try-suppression
@@ -2951,507 +1988,3 @@ fn lower_closure(params: &[String], body: &[Expr], ctx: &GenCtx) -> RustExpr {
     }
 }
 
-// ─── Tests ───────────────────────────────────────────────────────────────────
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn emit_string_lit() {
-        let expr = RustExpr::StringLit("hello".to_string());
-        assert_eq!(emit(&expr), r#""hello""#);
-    }
-
-    #[test]
-    fn emit_string_lit_escaped() {
-        let expr = RustExpr::StringLit(r#"say "hi""#.to_string());
-        assert_eq!(emit(&expr), r#""say \"hi\"""#);
-    }
-
-    #[test]
-    fn emit_string_lit_backslash() {
-        let expr = RustExpr::StringLit(r"path\to\file".to_string());
-        assert_eq!(emit(&expr), r#""path\\to\\file""#);
-    }
-
-    #[test]
-    fn emit_int_lit() {
-        let expr = RustExpr::IntLit(42);
-        assert_eq!(emit(&expr), "42");
-    }
-
-    #[test]
-    fn emit_int_lit_negative() {
-        let expr = RustExpr::IntLit(-7);
-        assert_eq!(emit(&expr), "-7");
-    }
-
-    #[test]
-    fn emit_float_lit() {
-        let expr = RustExpr::FloatLit(3.14);
-        assert_eq!(emit(&expr), "3.14");
-    }
-
-    #[test]
-    fn emit_bool_lit() {
-        assert_eq!(emit(&RustExpr::BoolLit(true)), "true");
-        assert_eq!(emit(&RustExpr::BoolLit(false)), "false");
-    }
-
-    #[test]
-    fn emit_raw_passthrough() {
-        let expr = RustExpr::Statement {
-            text: "some_complex_expr.await?".to_string(),
-            ty: None,
-        };
-        assert_eq!(emit(&expr), "some_complex_expr.await?");
-    }
-
-    #[test]
-    fn emit_ident() {
-        let expr = RustExpr::Ident {
-            name: "my_var".to_string(),
-            ty: None,
-        };
-        assert_eq!(emit(&expr), "my_var");
-    }
-
-    #[test]
-    fn emit_clone() {
-        let expr = RustExpr::Clone(Box::new(RustExpr::Ident {
-            name: "x".to_string(),
-            ty: None,
-        }));
-        assert_eq!(emit(&expr), "x.clone()");
-    }
-
-    #[test]
-    fn emit_borrow() {
-        let expr = RustExpr::Borrow {
-            inner: Box::new(RustExpr::Ident {
-                name: "x".to_string(),
-                ty: None,
-            }),
-            mutable: false,
-        };
-        assert_eq!(emit(&expr), "&x");
-
-        let mut_expr = RustExpr::Borrow {
-            inner: Box::new(RustExpr::Ident {
-                name: "y".to_string(),
-                ty: None,
-            }),
-            mutable: true,
-        };
-        assert_eq!(emit(&mut_expr), "&mut y");
-    }
-
-    #[test]
-    fn emit_await() {
-        let expr = RustExpr::Await(Box::new(RustExpr::Ident {
-            name: "future".to_string(),
-            ty: None,
-        }));
-        assert_eq!(emit(&expr), "future.await");
-    }
-
-    #[test]
-    fn emit_try() {
-        let expr = RustExpr::Try(Box::new(RustExpr::Ident {
-            name: "result".to_string(),
-            ty: None,
-        }));
-        assert_eq!(emit(&expr), "result?");
-    }
-
-    #[test]
-    fn emit_method_call_simple() {
-        let expr = RustExpr::MethodCall {
-            receiver: Box::new(RustExpr::Ident {
-                name: "self.repo".to_string(),
-                ty: None,
-            }),
-            method: "find".to_string(),
-            args: vec![RustExpr::Ident {
-                name: "id".to_string(),
-                ty: None,
-            }],
-            ty: None,
-            is_async: false,
-            is_fallible: false,
-        };
-        assert_eq!(emit(&expr), "self.repo.find(id)");
-    }
-
-    #[test]
-    fn emit_method_call_async_fallible() {
-        let expr = RustExpr::MethodCall {
-            receiver: Box::new(RustExpr::Ident {
-                name: "deps.repo".to_string(),
-                ty: None,
-            }),
-            method: "save".to_string(),
-            args: vec![RustExpr::Ident {
-                name: "entity".to_string(),
-                ty: None,
-            }],
-            ty: None,
-            is_async: true,
-            is_fallible: true,
-        };
-        assert_eq!(emit(&expr), "deps.repo.save(entity).await?");
-    }
-
-    #[test]
-    fn emit_fn_call() {
-        let expr = RustExpr::FnCall {
-            path: "serde_json::from_str".to_string(),
-            args: vec![RustExpr::Ident {
-                name: "input".to_string(),
-                ty: None,
-            }],
-            ty: None,
-        };
-        assert_eq!(emit(&expr), "serde_json::from_str(input)");
-    }
-
-    #[test]
-    fn emit_let_binding() {
-        let expr = RustExpr::Let {
-            name: "x".to_string(),
-            mutable: false,
-            ty: None,
-            value: Box::new(RustExpr::IntLit(42)),
-        };
-        assert_eq!(emit(&expr), "let x = 42");
-    }
-
-    #[test]
-    fn emit_let_mut_typed() {
-        let expr = RustExpr::Let {
-            name: "count".to_string(),
-            mutable: true,
-            ty: Some("i64".to_string()),
-            value: Box::new(RustExpr::IntLit(0)),
-        };
-        assert_eq!(emit(&expr), "let mut count: i64 = 0");
-    }
-
-    #[test]
-    fn rust_type_from_str_basic() {
-        assert_eq!(RustType::parse("i64"), RustType::Named("i64".to_string()));
-        assert_eq!(RustType::parse("()"), RustType::Unit);
-        assert_eq!(RustType::parse("serde_json::Value"), RustType::Json);
-    }
-
-    #[test]
-    fn rust_type_from_str_option() {
-        assert_eq!(
-            RustType::parse("Option<String>"),
-            RustType::Option(Box::new(RustType::Named("String".to_string())))
-        );
-    }
-
-    #[test]
-    fn rust_type_from_str_vec() {
-        assert_eq!(
-            RustType::parse("Vec<Customer>"),
-            RustType::Vec(Box::new(RustType::Named("Customer".to_string())))
-        );
-    }
-
-    #[test]
-    fn rust_type_is_copy() {
-        assert!(RustType::Named("i64".to_string()).is_copy());
-        assert!(RustType::Named("bool".to_string()).is_copy());
-        assert!(RustType::Unit.is_copy());
-        assert!(!RustType::Named("String".to_string()).is_copy());
-        assert!(!RustType::Named("Customer".to_string()).is_copy());
-    }
-
-    // ─── apply_ownership tests ───────────────────────────────────────
-
-    fn make_ctx_with_uses(name: &str, uses: usize) -> GenCtx {
-        use std::collections::HashMap;
-        let mut ctx = GenCtx::new(HashMap::new());
-        ctx.ident_uses.insert(name.to_string(), uses);
-        ctx
-    }
-
-    #[test]
-    fn ownership_clone_not_needed_for_literals() {
-        let ctx = GenCtx::new(std::collections::HashMap::new());
-        let expr = RustExpr::StringLit("hello".to_string());
-        let result = apply_ownership(expr.clone(), &ctx);
-        assert_eq!(emit(&result), emit(&expr)); // unchanged
-    }
-
-    #[test]
-    fn ownership_clone_not_needed_for_copy_ident() {
-        let mut ctx = make_ctx_with_uses("count", 3);
-        ctx.local_types.insert("count".to_string(), "i64".to_string());
-        let expr = RustExpr::Ident {
-            name: "count".to_string(),
-            ty: Some(RustType::Named("i64".to_string())),
-        };
-        let result = apply_ownership(expr, &ctx);
-        assert_eq!(emit(&result), "count"); // no clone
-    }
-
-    #[test]
-    fn ownership_clone_multi_use_ident() {
-        let ctx = make_ctx_with_uses("name", 2);
-        let expr = RustExpr::Ident {
-            name: "name".to_string(),
-            ty: Some(RustType::Named("String".to_string())),
-        };
-        let result = apply_ownership(expr, &ctx);
-        assert_eq!(emit(&result), "name.clone()");
-    }
-
-    #[test]
-    fn ownership_no_clone_single_use_ident() {
-        let ctx = make_ctx_with_uses("name", 1);
-        let expr = RustExpr::Ident {
-            name: "name".to_string(),
-            ty: Some(RustType::Named("String".to_string())),
-        };
-        let result = apply_ownership(expr, &ctx);
-        assert_eq!(emit(&result), "name"); // last use, move
-    }
-
-    #[test]
-    fn ownership_no_double_clone() {
-        let ctx = make_ctx_with_uses("x", 3);
-        let expr = RustExpr::Clone(Box::new(RustExpr::Ident {
-            name: "x".to_string(),
-            ty: None,
-        }));
-        let result = apply_ownership(expr, &ctx);
-        assert_eq!(emit(&result), "x.clone()"); // not x.clone().clone()
-    }
-
-    #[test]
-    fn ownership_ref_elem_always_clones() {
-        let mut ctx = make_ctx_with_uses("item", 1);
-        ctx.ref_elem_locals.insert("item".to_string());
-        let expr = RustExpr::Ident {
-            name: "item".to_string(),
-            ty: Some(RustType::Named("String".to_string())),
-        };
-        let result = apply_ownership(expr, &ctx);
-        assert_eq!(emit(&result), "item.clone()");
-    }
-
-    #[test]
-    fn ownership_ref_local_no_clone() {
-        let mut ctx = make_ctx_with_uses("data", 3);
-        ctx.local_types.insert("data".to_string(), "&str".to_string());
-        let expr = RustExpr::Ident {
-            name: "data".to_string(),
-            ty: Some(RustType::Ref(Box::new(RustType::Named("str".to_string())))),
-        };
-        let result = apply_ownership(expr, &ctx);
-        assert_eq!(emit(&result), "data"); // refs are copy
-    }
-
-    // ─── lower_string_interp tests ───────────────────────────────────
-
-    #[test]
-    fn lower_string_interp_basic() {
-        use veil_ir::ast::StringPart;
-        let ctx = GenCtx::new(std::collections::HashMap::new());
-        let parts = vec![
-            StringPart::Literal("Hello, ".to_string()),
-            StringPart::Expr(Expr::Ident("name".to_string())),
-            StringPart::Literal("!".to_string()),
-        ];
-        let result = lower_string_interp(&parts, &ctx);
-        assert_eq!(emit(&result), "format!(\"Hello, {}!\", name)");
-    }
-
-    #[test]
-    fn lower_string_interp_no_exprs() {
-        use veil_ir::ast::StringPart;
-        let ctx = GenCtx::new(std::collections::HashMap::new());
-        let parts = vec![StringPart::Literal("static text".to_string())];
-        let result = lower_string_interp(&parts, &ctx);
-        assert_eq!(emit(&result), "\"static text\".to_string()");
-    }
-
-    #[test]
-    fn lower_string_interp_brace_escape() {
-        use veil_ir::ast::StringPart;
-        let ctx = GenCtx::new(std::collections::HashMap::new());
-        let parts = vec![
-            StringPart::Literal("/{".to_string()),
-            StringPart::Expr(Expr::Ident("id".to_string())),
-            StringPart::Literal("}".to_string()),
-        ];
-        let result = lower_string_interp(&parts, &ctx);
-        // `{` → `{{`, `}` → `}}` in literal parts; expr part → `{}`
-        // Template: /{{ + {} + }} = /{{{}}}, which renders as /{<value>}
-        assert_eq!(emit(&result), "format!(\"/{{{}}}\", id)");
-    }
-
-    // ─── lower_call tests ────────────────────────────────────────────
-
-    #[test]
-    fn lower_call_wraps_translate_call_output() {
-        use veil_ir::ast::CallExpr;
-        use veil_ir::Span;
-        let ctx = GenCtx::new(std::collections::HashMap::new());
-        let call = CallExpr {
-            target: "Uuid".to_string(),
-            method: "new_v4".to_string(),
-            args: vec![],
-            receiver: None,
-            sugar: None,
-            span: Span::default(),
-        };
-        let result = lower_call(&call, &ctx);
-        assert_eq!(emit(&result), "Uuid::new_v4()");
-    }
-
-    // ─── apply_ownership on call results ─────────────────────────────
-
-    #[test]
-    fn ownership_raw_call_result_no_clone() {
-        let ctx = GenCtx::new(std::collections::HashMap::new());
-        // A function call result is already owned
-        let expr = RustExpr::Statement {
-            text: "Uuid::new_v4()".to_string(),
-            ty: Some(RustType::Named("Uuid".to_string())),
-        };
-        let result = apply_ownership(expr, &ctx);
-        assert_eq!(emit(&result), "Uuid::new_v4()"); // no clone
-    }
-
-    #[test]
-    fn ownership_raw_async_fallible_no_clone() {
-        let ctx = GenCtx::new(std::collections::HashMap::new());
-        // async+fallible call result is owned
-        let expr = RustExpr::Statement {
-            text: "deps.repo.save(entity).await?".to_string(),
-            ty: Some(RustType::Named("String".to_string())),
-        };
-        let result = apply_ownership(expr, &ctx);
-        assert_eq!(emit(&result), "deps.repo.save(entity).await?"); // no clone
-    }
-
-    #[test]
-    fn ownership_raw_block_expr_no_clone() {
-        let ctx = GenCtx::new(std::collections::HashMap::new());
-        // Block expression is owned
-        let expr = RustExpr::Statement {
-            text: "{ let x = 1; x }".to_string(),
-            ty: Some(RustType::Named("i64".to_string())),
-        };
-        let result = apply_ownership(expr, &ctx);
-        assert_eq!(emit(&result), "{ let x = 1; x }"); // no clone
-    }
-
-    #[test]
-    fn ownership_raw_bare_ident_still_clones() {
-        let ctx = make_ctx_with_uses("data", 2);
-        // A bare ident in Raw should still get cloned when multi-use
-        let expr = RustExpr::Statement {
-            text: "data".to_string(),
-            ty: Some(RustType::Named("String".to_string())),
-        };
-        let result = apply_ownership(expr, &ctx);
-        assert_eq!(emit(&result), "data.clone()");
-    }
-
-    // ─── suppress_try_in_closure tests ───────────────────────────────
-
-    #[test]
-    fn suppress_try_converts_try_to_unwrap() {
-        let expr = RustExpr::Try(Box::new(RustExpr::Ident {
-            name: "result".to_string(),
-            ty: None,
-        }));
-        let result = suppress_try_in_closure(expr);
-        assert_eq!(emit(&result), "result.unwrap()");
-    }
-
-    #[test]
-    fn suppress_try_converts_map_err_to_unwrap() {
-        let expr = RustExpr::MapErr {
-            inner: Box::new(RustExpr::MethodCall {
-                receiver: Box::new(RustExpr::Ident {
-                    name: "serde_json".to_string(),
-                    ty: None,
-                }),
-                method: "from_str".to_string(),
-                args: vec![RustExpr::Ident {
-                    name: "s".to_string(),
-                    ty: None,
-                }],
-                ty: None,
-                is_async: false,
-                is_fallible: false,
-            }),
-            variant: "DomainError::External".to_string(),
-        };
-        let result = suppress_try_in_closure(expr);
-        assert_eq!(emit(&result), "serde_json.from_str(s).unwrap()");
-    }
-
-    #[test]
-    fn suppress_try_converts_fallible_method_call() {
-        let expr = RustExpr::MethodCall {
-            receiver: Box::new(RustExpr::Ident {
-                name: "repo".to_string(),
-                ty: None,
-            }),
-            method: "save".to_string(),
-            args: vec![],
-            ty: None,
-            is_async: true,
-            is_fallible: true,
-        };
-        let result = suppress_try_in_closure(expr);
-        // save().await? → save().await.unwrap()
-        assert_eq!(emit(&result), "repo.save().await.unwrap()");
-    }
-
-    #[test]
-    fn suppress_try_raw_fixup_map_err() {
-        let expr = RustExpr::Statement {
-            text: "serde_json::from_str(&s).map_err(|e| DomainError::External(format!(\"{e:?}\")))?".to_string(),
-            ty: None,
-        };
-        let result = suppress_try_in_closure(expr);
-        assert_eq!(emit(&result), "serde_json::from_str(&s).unwrap()");
-    }
-
-    #[test]
-    fn suppress_try_raw_fixup_question_mark() {
-        // `)?` pattern: parenthesized expr followed by `?`
-        let expr = RustExpr::Statement {
-            text: "serde_json::from_str(&s)?".to_string(),
-            ty: None,
-        };
-        let result = suppress_try_in_closure(expr);
-        assert_eq!(emit(&result), "serde_json::from_str(&s).unwrap()");
-    }
-
-    #[test]
-    fn suppress_try_leaves_non_fallible_unchanged() {
-        let expr = RustExpr::MethodCall {
-            receiver: Box::new(RustExpr::Ident {
-                name: "items".to_string(),
-                ty: None,
-            }),
-            method: "len".to_string(),
-            args: vec![],
-            ty: Some(RustType::Named("usize".to_string())),
-            is_async: false,
-            is_fallible: false,
-        };
-        let result = suppress_try_in_closure(expr);
-        assert_eq!(emit(&result), "items.len()");
-    }
-}

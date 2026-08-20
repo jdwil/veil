@@ -82,7 +82,7 @@ pub fn stub_ctor_path(ctx: &GenCtx, type_name: &str) -> String {
 /// module — `rust_type_path` on the stub is the only source of `types::` /
 /// `primitives::`.
 pub fn stub_type_parts<'a>(ctx: &'a GenCtx, type_name: &str) -> Option<(&'a str, &'a str)> {
-    if let Some((c, p)) = ctx.stub_type_crate.get(type_name) {
+    if let Some((c, p)) = ctx.stubs.stub_type_crate.get(type_name) {
         return Some((c.as_str(), p.as_str()));
     }
     let leaf = lang_type_leaf(type_name);
@@ -96,13 +96,13 @@ pub fn stub_type_parts<'a>(ctx: &'a GenCtx, type_name: &str) -> Option<(&'a str,
             format!("{crate_guess}.{leaf}"),
             format!("{crate_guess}::{leaf}"),
         ] {
-            if let Some((c, p)) = ctx.stub_type_crate.get(&key) {
+            if let Some((c, p)) = ctx.stubs.stub_type_crate.get(&key) {
                 return Some((c.as_str(), p.as_str()));
             }
         }
     }
     if leaf != type_name
-        && let Some((c, p)) = ctx.stub_type_crate.get(leaf) {
+        && let Some((c, p)) = ctx.stubs.stub_type_crate.get(leaf) {
             return Some((c.as_str(), p.as_str()));
         }
     None
@@ -269,14 +269,14 @@ pub fn should_clone_ident(name: &str, ctx: &GenCtx) -> bool {
         return false;
     }
     // Shared-ref loop element (`for x in &xs`) is `&T`. Owned slots need `.clone()`.
-    if ctx.ref_elem_locals.contains(name) {
+    if ctx.ownership.ref_elem_locals.contains(name) {
         return true;
     }
     if is_ref_local(name, ctx) {
         return false;
     }
     // Unknown count → clone (safe). Count of 1 → last/only use → move.
-    ctx.ident_uses.get(name).copied().unwrap_or(2) > 1
+    ctx.ownership.ident_uses.get(name).copied().unwrap_or(2) > 1
 }
 
 pub fn rust_success_is_str(ty: &str) -> bool {
@@ -371,7 +371,7 @@ pub fn should_decode_as_ref_to_str(recv: &Expr, ctx: &GenCtx) -> bool {
     {
         return true;
     }
-    ctx.method_returns.iter().any(|((ty, method), ret)| {
+    ctx.types.method_returns.iter().any(|((ty, method), ret)| {
         method_bare(method) == "as_ref"
             && is_str_like_return(ret)
             && !rust_ty_is_option_or_result(ty)
@@ -483,10 +483,10 @@ pub fn wrap_as_option_value(expr: &Expr, rust: String, ctx: &GenCtx) -> String {
 /// Stub metadata only — never a type-name special case (`Query` is also a
 /// DynamoDB rustdoc type with `fn new()`).
 pub fn stub_new_is_module_free_fn(ctx: &GenCtx, effective_target: &str, type_leaf: &str) -> bool {
-    ctx.stub_typed_ctors.contains_key(effective_target)
-        || ctx.stub_typed_ctors.contains_key(type_leaf)
+    ctx.stubs.stub_typed_ctors.contains_key(effective_target)
+        || ctx.stubs.stub_typed_ctors.contains_key(type_leaf)
         || ctx
-            .stub_type_crate
+            .stubs.stub_type_crate
             .contains_key(&format!("{type_leaf}As"))
         || ctx.name_to_shape.contains_key(&format!("{type_leaf}As"))
 }

@@ -18,7 +18,7 @@ pub fn element_type_of(iterable: &Expr, ctx: &GenCtx) -> Option<String> {
             // Self fields in method bodies: `for x in api_endpoints` after bare-field rewrite.
             if ctx.in_method && ctx.self_fields.contains(name.as_str()) {
                 // Look up via any struct_fields entry that has this field.
-                ctx.struct_fields.values().find_map(|fields| {
+                ctx.types.struct_fields.values().find_map(|fields| {
                     fields
                         .iter()
                         .find(|(n, _)| n == name)
@@ -31,7 +31,7 @@ pub fn element_type_of(iterable: &Expr, ctx: &GenCtx) -> Option<String> {
         Expr::FieldAccess(base, field) => {
             if let Expr::Ident(base_name) = base.as_ref() {
                 if base_name == "self" && ctx.in_method {
-                    ctx.struct_fields.values().find_map(|fields| {
+                    ctx.types.struct_fields.values().find_map(|fields| {
                         fields
                             .iter()
                             .find(|(n, _)| n == field)
@@ -206,9 +206,9 @@ pub fn infer_expr_type(expr: &Expr, ctx: &GenCtx) -> Option<String> {
             }
             // Envelope routing: cross-boundary calls yield `serde_json::Value`
             // (unless the target is a direct trait dep).
-            if ctx.envelope_routing && call.receiver.is_none() && !ctx.is_trait_target(&call.target)
+            if ctx.routing.envelope_routing && call.receiver.is_none() && !ctx.is_trait_target(&call.target)
                 && (ctx.is_struct_target(&call.target) || ctx.is_local(&call.target) || !call.method.is_empty())
-                    && !ctx.stub_pkg_crate.contains_key(&call.target)
+                    && !ctx.stubs.stub_pkg_crate.contains_key(&call.target)
                 {
                     return Some("serde_json::Value".to_string());
                 }
@@ -225,7 +225,7 @@ pub fn infer_expr_type(expr: &Expr, ctx: &GenCtx) -> Option<String> {
                 // when that type is in scope for this crate.
                 if matches!(bare, "invoke" | "request")
                     && let Some(msg) = bus_message_name_from_args(&call.args)
-                        && let Some(ret) = ctx.bus_returns.get(&msg)
+                        && let Some(ret) = ctx.routing.bus_returns.get(&msg)
                             && bus_return_type_in_scope(ctx, ret) {
                                 return Some(ret.clone());
                             }
@@ -271,7 +271,7 @@ pub fn infer_expr_type(expr: &Expr, ctx: &GenCtx) -> Option<String> {
             }
             // Stub package free functions: `gix.init_bare(path)` → target is "gix",
             // method is "init_bare". Look up (stub_name, method) in method_returns.
-            if ctx.stub_pkg_crate.contains_key(&call.target) {
+            if ctx.stubs.stub_pkg_crate.contains_key(&call.target) {
                 let method = call.method.trim_end_matches(['!', '?']);
                 if let Some(t) = ctx.return_type_of(&call.target, method) {
                     return Some(t.to_string());
@@ -281,7 +281,7 @@ pub fn infer_expr_type(expr: &Expr, ctx: &GenCtx) -> Option<String> {
             if let Some(recv) = &call.receiver {
                 if let Expr::Ident(recv_name) = recv.as_ref() {
                     // Receiver is a stub package (e.g. `gix.init_bare(...)`)
-                    if ctx.stub_pkg_crate.contains_key(recv_name) {
+                    if ctx.stubs.stub_pkg_crate.contains_key(recv_name) {
                         let method = call.method.trim_end_matches(['!', '?']);
                         if let Some(t) = ctx.return_type_of(recv_name, method) {
                             return Some(t.to_string());

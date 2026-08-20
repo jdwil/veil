@@ -152,10 +152,10 @@ futures = "0.3"
         for p in &f.params {
             ctx.locals.insert(p.name.clone());
             // Track the trait name (unboxed) so method calls resolve to .await?.
-            ctx.local_types.insert(p.name.clone(), local_type_for_param(&p.type_expr, &trait_names));
+            ctx.types.local_types.insert(p.name.clone(), local_type_for_param(&p.type_expr, &trait_names));
         }
-        ctx.mut_locals = crate::expr::analyze_mut_locals(&f.body);
-        ctx.ident_uses = crate::expr::count_ident_uses(&f.body);
+        ctx.ownership.mut_locals = crate::expr::analyze_mut_locals(&f.body);
+        ctx.ownership.ident_uses = crate::expr::count_ident_uses(&f.body);
 
         let params = f
             .params
@@ -457,7 +457,7 @@ pub fn gen_impls(
                             let fname = fname.trim().to_string();
                             let ftype = ftype.trim();
                             let qualified_type = if let Some((crate_name, original_name)) =
-                                seeded.stub_type_crate.get(ftype)
+                                seeded.stubs.stub_type_crate.get(ftype)
                             {
                                 format!("{}::{}", crate_name, original_name)
                             } else if let Some((crate_name, path)) =
@@ -712,13 +712,13 @@ pub fn gen_impls(
                             Some(t) => monomorphize_type(&p.type_expr, c, t),
                             None => p.type_expr.clone(),
                         };
-                        ctx.local_types
+                        ctx.types.local_types
                             .insert(to_snake(&p.name), type_to_rust(&ty));
                         ctx.locals.insert(to_snake(&p.name));
                     }
                 }
-                ctx.mut_locals = crate::expr::analyze_mut_locals(&mimpl.body);
-                ctx.ident_uses = crate::expr::count_ident_uses(&mimpl.body);
+                ctx.ownership.mut_locals = crate::expr::analyze_mut_locals(&mimpl.body);
+                ctx.ownership.ident_uses = crate::expr::count_ident_uses(&mimpl.body);
                 // @env annotation fields are available as self.field in the body.
                 ctx.in_method = true;
                 for ann in &c.annotations {
@@ -783,18 +783,18 @@ pub fn gen_impls(
                 }
                 // Seed name→shape and method returns from stubs too.
                 let seeded = build_ctx_from_solution(solution, name_to_shape.clone(), registry);
-                ctx.method_returns = seeded.method_returns;
-                ctx.method_params = seeded.method_params;
-                ctx.struct_fields = seeded.struct_fields;
-                ctx.stub_type_crate = seeded.stub_type_crate;
-                ctx.fallible_methods = seeded.fallible_methods;
-                ctx.non_fallible_methods = seeded.non_fallible_methods;
-                ctx.type_fallible_methods = seeded.type_fallible_methods;
-                ctx.async_fallible_methods = seeded.async_fallible_methods;
-                ctx.stub_pkg_crate = seeded.stub_pkg_crate;
-                ctx.stub_free_fns = seeded.stub_free_fns;
+                ctx.types.method_returns = seeded.types.method_returns;
+                ctx.types.method_params = seeded.types.method_params;
+                ctx.types.struct_fields = seeded.types.struct_fields;
+                ctx.stubs.stub_type_crate = seeded.stubs.stub_type_crate;
+                ctx.stubs.fallible_methods = seeded.stubs.fallible_methods;
+                ctx.stubs.non_fallible_methods = seeded.stubs.non_fallible_methods;
+                ctx.stubs.type_fallible_methods = seeded.stubs.type_fallible_methods;
+                ctx.stubs.async_fallible_methods = seeded.stubs.async_fallible_methods;
+                ctx.stubs.stub_pkg_crate = seeded.stubs.stub_pkg_crate;
+                ctx.stubs.stub_free_fns = seeded.stubs.stub_free_fns;
                 ctx.async_fns = seeded.async_fns;
-                ctx.ref_params = seeded.ref_params;
+                ctx.types.ref_params = seeded.types.ref_params;
                 ctx.name_to_shape = seeded.name_to_shape;
                 ctx.enum_variants = seeded.enum_variants;
                 ctx.unit_enums = seeded.unit_enums;
@@ -810,7 +810,7 @@ pub fn gen_impls(
                 let uses_stub_sdk = mimpl
                     .body
                     .iter()
-                    .any(|e| expr_refs_stub_type(e, &ctx.stub_type_crate));
+                    .any(|e| expr_refs_stub_type(e, &ctx.stubs.stub_type_crate));
 
                 // Only short-circuit empty bodies that *would* be cloud SDKs with
                 // no authored lines. Non-empty bodies always try expr_to_rust —
@@ -854,9 +854,9 @@ pub fn gen_impls(
                                 // Infer type for local variables so downstream calls
                                 // (e.g. `blob_id.detach()`) resolve the receiver type.
                                 if let Some(ty) = ty_ann {
-                                    ctx.local_types.insert(name.clone(), crate::rust::type_to_rust(ty));
+                                    ctx.types.local_types.insert(name.clone(), crate::rust::type_to_rust(ty));
                                 } else if let Some(t) = crate::expr::infer_expr_type_pub(rhs, &ctx) {
-                                    ctx.local_types.insert(name.clone(), t);
+                                    ctx.types.local_types.insert(name.clone(), t);
                                 }
                             }
                         if is_last {
@@ -959,11 +959,11 @@ pub fn gen_impls(
             let mut ctx = build_ctx_from_solution(solution, name_to_shape.clone(), registry);
             for p in &f.params {
                 ctx.locals.insert(p.name.clone());
-                ctx.local_types
+                ctx.types.local_types
                     .insert(p.name.clone(), type_to_rust(&p.type_expr));
             }
-            ctx.mut_locals = crate::expr::analyze_mut_locals(&f.body);
-            ctx.ident_uses = crate::expr::count_ident_uses(&f.body);
+            ctx.ownership.mut_locals = crate::expr::analyze_mut_locals(&f.body);
+            ctx.ownership.ident_uses = crate::expr::count_ident_uses(&f.body);
             let params = f
                 .params
                 .iter()

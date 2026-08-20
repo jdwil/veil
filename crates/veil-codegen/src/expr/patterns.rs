@@ -138,39 +138,22 @@ impl GenCtx {
             locals: self.locals.clone(),
             self_fields: self.self_fields.clone(),
             in_method: self.in_method,
-            envelope_routing: self.envelope_routing,
-            method_returns: self.method_returns.clone(),
-            method_params: self.method_params.clone(),
-            ref_params: self.ref_params.clone(),
-            local_types: self.local_types.clone(),
-            struct_fields: self.struct_fields.clone(),
-            routing_ref: self.routing_ref.clone(),
-            routing_traits: self.routing_traits.clone(),
+            types: self.types.clone(),
+            ownership: self.ownership.clone(),
+            stubs: self.stubs.clone(),
+            routing: self.routing.clone(),
             async_fns: self.async_fns.clone(),
             state_locals: self.state_locals.clone(),
-            stub_type_crate: self.stub_type_crate.clone(),
-            stub_typed_ctors: self.stub_typed_ctors.clone(),
-            fallible_methods: self.fallible_methods.clone(),
-            non_fallible_methods: self.non_fallible_methods.clone(),
-            type_fallible_methods: self.type_fallible_methods.clone(),
-            async_fallible_methods: self.async_fallible_methods.clone(),
             expected_return_rust: self.expected_return_rust.clone(),
             option_value_wrap: self.option_value_wrap,
             defaultable_types: self.defaultable_types.clone(),
             dep_fields: self.dep_fields.clone(),
-            mut_locals: self.mut_locals.clone(),
-            stub_pkg_crate: self.stub_pkg_crate.clone(),
-            stub_free_fns: self.stub_free_fns.clone(),
-            bus_returns: self.bus_returns.clone(),
             local_domain_types: self.local_domain_types.clone(),
             self_field_types: self.self_field_types.clone(),
             statement_specs: self.statement_specs.clone(),
             enum_variants: self.enum_variants.clone(),
             unit_enums: self.unit_enums.clone(),
-            ident_uses: self.ident_uses.clone(),
-            ref_elem_locals: self.ref_elem_locals.clone(),
             known_modules: self.known_modules.clone(),
-            borrow_fields: self.borrow_fields.clone(),
             error_model: self.error_model.clone(),
         }
     }
@@ -221,7 +204,7 @@ pub fn emit_value_block(body: &[Expr], ctx: &GenCtx, indent: &str) -> String {
 pub fn emit_block_lines(body: &[Expr], ctx: &GenCtx, indent: &str, last_is_value: bool) -> String {
     let mut body_ctx = ctx.clone_for_inference();
     body_ctx.option_value_wrap = false;
-    body_ctx.mut_locals.extend(analyze_mut_locals(body));
+    body_ctx.ownership.mut_locals.extend(analyze_mut_locals(body));
     let mut lines = Vec::new();
     for (i, e) in body.iter().enumerate() {
         let is_last = i + 1 == body.len();
@@ -237,7 +220,7 @@ pub fn emit_block_lines(body: &[Expr], ctx: &GenCtx, indent: &str, last_is_value
             && !name.contains('.') {
                 body_ctx.locals.insert(name.clone());
                 if let Some(t) = infer_expr_type(rhs, &body_ctx) {
-                    body_ctx.local_types.insert(name.clone(), t);
+                    body_ctx.types.local_types.insert(name.clone(), t);
                 }
             }
         let semi = !(is_last && last_is_value) && !is_rust_block_stmt(e);

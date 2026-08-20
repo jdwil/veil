@@ -158,11 +158,11 @@ pub fn translate_action(a: &ActionExpr, ctx: &GenCtx) -> String {
         // targets only) — emit a deps call mirroring the desugared path.
         if let (Some(port), Some(method)) = (&spec.port_target, &spec.port_method) {
             let dep = ctx.deps_field_for(port);
-            let rref = if ctx.routing_traits.contains(port) {
-                if ctx.routing_ref.is_empty() {
+            let rref = if ctx.routing.routing_traits.contains(port) {
+                if ctx.routing.routing_ref.is_empty() {
                     format!("deps.{}", dep)
                 } else {
-                    ctx.routing_ref.clone()
+                    ctx.routing.routing_ref.clone()
                 }
             } else if ctx.in_method {
                 format!("self.{}", dep)
@@ -209,7 +209,7 @@ pub fn translate_action(a: &ActionExpr, ctx: &GenCtx) -> String {
                 Some(cond @ Expr::Call(c))
                     if !c.method.is_empty()
                         && (ctx.name_to_shape.contains_key(&c.target)
-                            || ctx.fallible_methods.contains(&c.method)
+                            || ctx.stubs.fallible_methods.contains(&c.method)
                             || c.method == "validate") =>
                 {
                     let call_str = expr_to_rust(cond, ctx);
@@ -248,7 +248,7 @@ pub fn translate_action(a: &ActionExpr, ctx: &GenCtx) -> String {
                     // Portable bang (ACS-010) does NOT auto-ok_or on find! — Opt stays Opt.
                     if let Expr::Call(c) = cond
                         && c.method == "is_some" && ctx.locals.contains(&c.target) {
-                            let var_type = ctx.local_types.get(&c.target);
+                            let var_type = ctx.types.local_types.get(&c.target);
                             let is_option = var_type
                                 .map(|t| t.starts_with("Option<") || t == "Option")
                                 .unwrap_or(true); // unknown → keep guard
@@ -319,10 +319,10 @@ pub fn stmt_to_rust(expr: &Expr, ctx: &mut GenCtx) -> String {
                 // Prefer explicit type annotation (`mut x: Json = …`) so field
                 // access on serde_json::Value lowers to indexing.
                 if let Some(ty) = ty_ann {
-                    ctx.local_types
+                    ctx.types.local_types
                         .insert(name.clone(), crate::rust::type_to_rust(ty));
                 } else if let Some(t) = infer_expr_type(rhs, ctx) {
-                    ctx.local_types.insert(name.clone(), t);
+                    ctx.types.local_types.insert(name.clone(), t);
                 }
             }
             format!("    {};", s)
@@ -331,7 +331,7 @@ pub fn stmt_to_rust(expr: &Expr, ctx: &mut GenCtx) -> String {
             let name = a.result_binding.as_ref().unwrap().clone();
             ctx.locals.insert(name.clone());
             if let Some(t) = infer_expr_type(expr, ctx) {
-                ctx.local_types.insert(name, t);
+                ctx.types.local_types.insert(name, t);
             }
             format!("    {};", expr_to_rust(expr, ctx))
         }

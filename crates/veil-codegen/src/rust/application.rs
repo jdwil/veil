@@ -474,9 +474,9 @@ pub fn infer_flow_return_type(
                         ctx.locals.insert(name.clone());
                         if envelope_routing {
                             // Envelope-routing locals are JSON message results.
-                            ctx.local_types.insert(name.clone(), "serde_json::Value".to_string());
+                            ctx.types.local_types.insert(name.clone(), "serde_json::Value".to_string());
                         } else if let Some(t) = crate::expr::infer_expr_type_pub(rhs, &ctx) {
-                            ctx.local_types.insert(name.clone(), t);
+                            ctx.types.local_types.insert(name.clone(), t);
                         }
                     }
             }
@@ -833,13 +833,13 @@ pub fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, cra
 
         // Build context for this flow
         let mut ctx = build_ctx_from_solution(solution, effective_name_to_shape.clone(), registry);
-        ctx.envelope_routing = envelope_routing;
-        if envelope_routing && ctx.routing_ref.is_empty() {
-            ctx.routing_ref = ctx.default_routing_ref_as_dep();
+        ctx.routing.envelope_routing = envelope_routing;
+        if envelope_routing && ctx.routing.routing_ref.is_empty() {
+            ctx.routing.routing_ref = ctx.default_routing_ref_as_dep();
         }
         ctx.dep_fields = dep_field_names.clone();
         ctx.local_domain_types = base_ctx.local_domain_types.clone();
-        ctx.bus_returns = base_ctx.bus_returns.clone();
+        ctx.routing.bus_returns = base_ctx.routing.bus_returns.clone();
         // Register inputs as locals, with their declared types for inference.
         // Skip dependency-role inputs — accessed via deps.x, not as locals.
         for input in inputs {
@@ -859,7 +859,7 @@ pub fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, cra
                 continue;
             }
             ctx.locals.insert(input.name.clone());
-            ctx.local_types.insert(input.name.clone(), type_to_rust(&input.type_expr));
+            ctx.types.local_types.insert(input.name.clone(), type_to_rust(&input.type_expr));
         }
         // For DomainService flows: register step-level dep call targets as Trait
         // and copy method_returns / method_params so Option<T> pass-through works.
@@ -869,7 +869,7 @@ pub fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, cra
             }
             // Copy method_returns from PascalCase trait to the field name
             let mut extra: Vec<((String, String), String)> = Vec::new();
-            for ((tn, mn), ret) in &ctx.method_returns {
+            for ((tn, mn), ret) in &ctx.types.method_returns {
                 if tn == trait_name {
                     extra.push(((field_name.clone(), mn.clone()), ret.clone()));
                     let clean = mn.trim_end_matches('!').to_string();
@@ -879,12 +879,12 @@ pub fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, cra
                 }
             }
             for (k, v) in extra {
-                ctx.method_returns.entry(k).or_insert(v);
+                ctx.types.method_returns.entry(k).or_insert(v);
             }
             // Copy method_params so call-site Option args are not auto-unwrapped
             // when the port expects Option (e.g. list_by_repo status: Opt<…>).
             let mut extra_params: Vec<((String, String), Vec<String>)> = Vec::new();
-            for ((tn, mn), params) in &ctx.method_params {
+            for ((tn, mn), params) in &ctx.types.method_params {
                 if tn == trait_name {
                     extra_params.push(((field_name.clone(), mn.clone()), params.clone()));
                     let clean = mn.trim_end_matches('!').to_string();
@@ -894,7 +894,7 @@ pub fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, cra
                 }
             }
             for (k, v) in extra_params {
-                ctx.method_params.entry(k).or_insert(v);
+                ctx.types.method_params.entry(k).or_insert(v);
             }
         }
 
@@ -936,8 +936,8 @@ pub fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, cra
         ));
 
         // GEN-010: only `let mut` when the binding is actually mutated later.
-        ctx.mut_locals = crate::expr::analyze_mut_locals_in_steps(steps);
-        ctx.ident_uses = crate::expr::count_ident_uses_in_steps(steps);
+        ctx.ownership.mut_locals = crate::expr::analyze_mut_locals_in_steps(steps);
+        ctx.ownership.ident_uses = crate::expr::count_ident_uses_in_steps(steps);
 
         for step in steps {
             match step {
@@ -1049,7 +1049,7 @@ pub fn emit_runtime_delegated(
 
     // Trait names in scope for param rendering (step trait + routing + any
     // named traits the step methods reference).
-    let mut trait_names: std::collections::HashSet<String> = ctx.routing_traits.clone();
+    let mut trait_names: std::collections::HashSet<String> = ctx.routing.routing_traits.clone();
     trait_names.insert(step_trait.clone());
     if let Some(tc) = step_trait_construct {
         for m in &tc.methods {
@@ -1057,7 +1057,7 @@ pub fn emit_runtime_delegated(
                 if let TypeExpr::Named(n) = &p.type_expr
                     && n.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
                         // Candidate trait/type name — only box known traits.
-                        if ctx.routing_traits.contains(n) || n == step_trait {
+                        if ctx.routing.routing_traits.contains(n) || n == step_trait {
                             trait_names.insert(n.clone());
                         }
                     }
@@ -1087,7 +1087,7 @@ pub fn emit_runtime_delegated(
         .and_then(|m| {
             m.params.iter().find_map(|p| {
                 if let TypeExpr::Named(ty) = &p.type_expr
-                    && ctx.routing_traits.contains(ty) {
+                    && ctx.routing.routing_traits.contains(ty) {
                         return Some(to_snake(&p.name));
                     }
                 None
@@ -1096,7 +1096,7 @@ pub fn emit_runtime_delegated(
         .or_else(|| ctx.primary_routing_trait().map(to_snake))
         .unwrap_or_default();
 
-    let use_envelope = !ctx.routing_traits.is_empty();
+    let use_envelope = !ctx.routing.routing_traits.is_empty();
 
     // One struct + impl per Step (skip par/match — delegated runtimes use
     // plain steps).
@@ -1118,16 +1118,16 @@ pub fn emit_runtime_delegated(
         // param from the step-trait signature; cross-step locals live in threaded state.
         let mut step_ctx = ctx.clone_for_inference();
         step_ctx.locals.clear(); // Step body starts fresh — inputs are self_fields, not locals.
-        step_ctx.envelope_routing = use_envelope;
-        step_ctx.routing_ref = routing_param.clone();
+        step_ctx.routing.envelope_routing = use_envelope;
+        step_ctx.routing.routing_ref = routing_param.clone();
         step_ctx.in_method = true; // input idents render as self.<field>
         for (fname, ftype) in &input_fields {
             step_ctx.self_fields.insert(fname.clone());
-            step_ctx.local_types.insert(fname.clone(), ftype.clone());
+            step_ctx.types.local_types.insert(fname.clone(), ftype.clone());
         }
         for (fname, ftype) in &dep_fields {
             step_ctx.self_fields.insert(fname.clone());
-            step_ctx.local_types.insert(fname.clone(), ftype.clone());
+            step_ctx.types.local_types.insert(fname.clone(), ftype.clone());
         }
         step_ctx.state_locals = state_locals.clone();
 
@@ -1252,8 +1252,8 @@ pub fn emit_step_method(
         method, sep, params_str, ret_inner
     ));
     let mut ctx = base_ctx.clone_for_inference();
-    ctx.mut_locals = crate::expr::analyze_mut_locals(body);
-    ctx.ident_uses = crate::expr::count_ident_uses(body);
+    ctx.ownership.mut_locals = crate::expr::analyze_mut_locals(body);
+    ctx.ownership.ident_uses = crate::expr::count_ident_uses(body);
     for expr in body {
         let stmt = crate::expr::stmt_to_rust(expr, &mut ctx);
         let stmt = stmt.trim_start();

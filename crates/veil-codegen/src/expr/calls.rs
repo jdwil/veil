@@ -36,7 +36,7 @@ pub fn receiver_call_suffix(recv: &Expr, method: &str, ctx: &GenCtx) -> String {
                     peel_dyn_trait_name(t)
                         .unwrap_or_else(|| t.clone()),
                 )
-            } else if ctx.stub_type_crate.contains_key(name) {
+            } else if ctx.stubs.stub_type_crate.contains_key(name) {
                 Some(name.clone())
             } else {
                 None
@@ -78,10 +78,10 @@ pub fn receiver_call_suffix(recv: &Expr, method: &str, ctx: &GenCtx) -> String {
         // Peel Box<dyn Trait + …> / bare trait names stored in local_types
         let bare = peel_dyn_trait_name(ty).unwrap_or_else(|| ty.clone());
         if ctx.name_to_shape.get(bare.as_str()) == Some(&Shape::Struct)
-            || ctx.stub_type_crate.contains_key(bare.as_str())
-            || ctx.stub_type_crate.contains_key(ty.as_str())
+            || ctx.stubs.stub_type_crate.contains_key(bare.as_str())
+            || ctx.stubs.stub_type_crate.contains_key(ty.as_str())
         {
-            if ctx.async_fallible_methods.contains(method)
+            if ctx.stubs.async_fallible_methods.contains(method)
             {
                 // async+fallible → unwrap Result; bare send() keeps Result so .is_ok()/.is_err() work.
                 if has_bang {
@@ -90,7 +90,7 @@ pub fn receiver_call_suffix(recv: &Expr, method: &str, ctx: &GenCtx) -> String {
                     return ".await".to_string();
                 }
             }
-            if ctx.fallible_methods.contains(method) {
+            if ctx.stubs.fallible_methods.contains(method) {
                 let suffix = if should_own_str_result(ctx, Some(ty.as_str()), method) {
                     map_err_domain_own_str(&ctx.error_model)
                 } else {
@@ -98,11 +98,11 @@ pub fn receiver_call_suffix(recv: &Expr, method: &str, ctx: &GenCtx) -> String {
                 };
                 // Only apply fallible suffix if this specific type has the method as fallible.
                 // Use type_fallible_methods: (Type, method) set for precision.
-                if ctx.type_fallible_methods.contains(&(bare.clone(), method.to_string())) {
+                if ctx.stubs.type_fallible_methods.contains(&(bare.clone(), method.to_string())) {
                     return suffix.to_string();
                 }
                 // If the method is ONLY fallible (not ambiguous), apply it.
-                if !ctx.non_fallible_methods.contains(method) {
+                if !ctx.stubs.non_fallible_methods.contains(method) {
                     return suffix.to_string();
                 }
                 // Ambiguous and not confirmed fallible on this type: no suffix.
@@ -114,10 +114,10 @@ pub fn receiver_call_suffix(recv: &Expr, method: &str, ctx: &GenCtx) -> String {
         {
             let fallible = has_bang
                 || ctx
-                    .type_fallible_methods
+                    .stubs.type_fallible_methods
                     .contains(&(bare.clone(), method.to_string()))
                 || ctx
-                    .type_fallible_methods
+                    .stubs.type_fallible_methods
                     .contains(&(ty.clone(), method.to_string()));
             return if fallible {
                 ".await?".to_string()
@@ -128,7 +128,7 @@ pub fn receiver_call_suffix(recv: &Expr, method: &str, ctx: &GenCtx) -> String {
     }
 
     // Fluent SDK send / async fallible stubs (untyped receivers).
-    if ctx.async_fallible_methods.contains(method)
+    if ctx.stubs.async_fallible_methods.contains(method)
     {
         // async+fallible → unwrap; bare send() keeps Result so .is_ok()/.is_err() work.
         if has_bang {
@@ -141,12 +141,12 @@ pub fn receiver_call_suffix(recv: &Expr, method: &str, ctx: &GenCtx) -> String {
     // If a stub/struct also has the same method name (e.g. `delete`), do not
     // force await — that would break reqwest Client.delete. List elements of
     // trait objects are handled via Index + peel above (SagaStep.action).
-    let is_trait_method = ctx.method_returns.keys().any(|(ty, m)| {
+    let is_trait_method = ctx.types.method_returns.keys().any(|(ty, m)| {
         m == method && ctx.name_to_shape.get(ty) == Some(&Shape::Trait)
     });
-    let is_stub_or_struct_method = ctx.method_returns.keys().any(|(ty, m)| {
+    let is_stub_or_struct_method = ctx.types.method_returns.keys().any(|(ty, m)| {
         m == method
-            && (ctx.stub_type_crate.contains_key(ty)
+            && (ctx.stubs.stub_type_crate.contains_key(ty)
                 || ctx.name_to_shape.get(ty) == Some(&Shape::Struct))
     });
     if is_trait_method && !is_stub_or_struct_method {
@@ -165,8 +165,8 @@ pub fn receiver_call_suffix(recv: &Expr, method: &str, ctx: &GenCtx) -> String {
     // across different stub types (e.g. gix Id.detach() is non-fallible but
     // Pathspec.detach() is fallible).
     let recv_is_chain = matches!(recv, Expr::Call(_));
-    let is_ambiguous = ctx.non_fallible_methods.contains(method);
-    if ctx.fallible_methods.contains(method) && !recv_is_chain && !is_ambiguous {
+    let is_ambiguous = ctx.stubs.non_fallible_methods.contains(method);
+    if ctx.stubs.fallible_methods.contains(method) && !recv_is_chain && !is_ambiguous {
         let own = should_own_str_result(ctx, recv_type_name.as_deref(), method);
         return if own {
             map_err_domain_own_str(&ctx.error_model)
@@ -307,16 +307,16 @@ fn clone_args(args: &[Expr], ctx: &GenCtx) -> String {
         .map(|a| match a {
             Expr::Ident(n) if ctx.state_locals.contains(n.as_str()) => format!("state[\"{}\"].clone()", n),
             // The routing reference and Copy scalars are passed as-is.
-            Expr::Ident(n) if !ctx.routing_ref.is_empty() && *n == ctx.routing_ref => n.clone(),
+            Expr::Ident(n) if !ctx.routing.routing_ref.is_empty() && *n == ctx.routing.routing_ref => n.clone(),
             Expr::Ident(n) if is_copy_local(n, ctx) => n.clone(),
             Expr::Ident(n) if is_ref_local(n, ctx) => n.clone(),
             // Stub-declared borrow fields (e.g. sqlx Executor requires &Pool).
-            Expr::Ident(n) if ctx.borrow_fields.contains(n.as_str()) => format!("&self.{n}"),
+            Expr::Ident(n) if ctx.ownership.borrow_fields.contains(n.as_str()) => format!("&self.{n}"),
             Expr::Ident(n) if ctx.is_local(n) && should_clone_ident(n, ctx) => {
                 format!("{n}.clone()")
             }
             Expr::FieldAccess(base, field)
-                if ctx.borrow_fields.contains(field.as_str())
+                if ctx.ownership.borrow_fields.contains(field.as_str())
                     && matches!(base.as_ref(), Expr::Ident(n) if n == "self") =>
             {
                 format!("&self.{field}")
@@ -340,7 +340,7 @@ pub fn clone_args_for_typed_method(recv_type: Option<&str>, method: &str, args: 
     // Check ref_params for this specific (type, method) combination.
     // If found, emit &arg for ref positions instead of arg.clone().
     if let Some(type_name) = recv_type
-        && let Some(ref_flags) = ctx.ref_params.get(&(type_name.to_string(), method.to_string())) {
+        && let Some(ref_flags) = ctx.types.ref_params.get(&(type_name.to_string(), method.to_string())) {
             return args.iter().enumerate().map(|(i, a)| {
                 let is_ref = ref_flags.get(i).copied().unwrap_or(false);
                 if is_ref {
@@ -654,14 +654,14 @@ pub fn param_types_for(recv: Option<&str>, method: &str, ctx: &GenCtx) -> Vec<St
         }
     }
     for k in &keys {
-        if let Some(p) = ctx.method_params.get(k) {
+        if let Some(p) = ctx.types.method_params.get(k) {
             return p.clone();
         }
     }
     // Prefer a unique Map-bearing signature for this method when the
     // receiver key missed (dep field vs stub fluent of the same name).
     let map_hits: Vec<&Vec<String>> = ctx
-        .method_params
+        .types.method_params
         .iter()
         .filter(|((_, m), tys)| {
             (*m == method || *m == bare)
@@ -679,7 +679,7 @@ pub fn param_types_for(recv: Option<&str>, method: &str, ctx: &GenCtx) -> Vec<St
             return (*first).clone();
         }
     let hits: Vec<&Vec<String>> = ctx
-        .method_params
+        .types.method_params
         .iter()
         .filter(|((_, m), _)| *m == method || *m == bare)
         .map(|(_, v)| v)
@@ -747,10 +747,10 @@ pub(super) fn arg_to_rust(arg: &Expr, param_ty: Option<&str>, ctx: &GenCtx) -> S
                     format!("state[\"{n}\"].clone()")
                 }
             }
-            Expr::Ident(n) if !ctx.routing_ref.is_empty() && *n == ctx.routing_ref => n.clone(),
+            Expr::Ident(n) if !ctx.routing.routing_ref.is_empty() && *n == ctx.routing.routing_ref => n.clone(),
             Expr::Ident(n) if is_copy_local(n, ctx) => n.clone(),
             Expr::Ident(n) if is_ref_local(n, ctx) => n.clone(),
-            Expr::Ident(n) if ctx.borrow_fields.contains(n.as_str()) => format!("&self.{n}"),
+            Expr::Ident(n) if ctx.ownership.borrow_fields.contains(n.as_str()) => format!("&self.{n}"),
             Expr::Ident(n) if ctx.is_local(n) && should_clone_ident(n, ctx) => {
                 format!("{n}.clone()")
             }
@@ -762,7 +762,7 @@ pub(super) fn arg_to_rust(arg: &Expr, param_ty: Option<&str>, ctx: &GenCtx) -> S
                 rust_string_lit_owned(s)
             }
             Expr::FieldAccess(base, field)
-                if ctx.borrow_fields.contains(field.as_str()) && matches!(base.as_ref(), Expr::Ident(n) if n == "self") =>
+                if ctx.ownership.borrow_fields.contains(field.as_str()) && matches!(base.as_ref(), Expr::Ident(n) if n == "self") =>
             {
                 format!("&self.{field}")
             }
@@ -1124,11 +1124,11 @@ pub fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
         };
         // Routing traits use `routing_ref` (`deps.<trait>` in a flow, injected
         // param inside a step impl); other trait deps come from `deps`.
-        if ctx.routing_traits.contains(&call.target) {
-            let rref = if ctx.routing_ref.is_empty() {
+        if ctx.routing.routing_traits.contains(&call.target) {
+            let rref = if ctx.routing.routing_ref.is_empty() {
                 format!("deps.{}", dep_name)
             } else {
-                ctx.routing_ref.clone()
+                ctx.routing.routing_ref.clone()
             };
             let bare = to_snake(method);
             let call_expr = format!("{}.{}({}).await?", rref, bare, final_args);
@@ -1136,7 +1136,7 @@ pub fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
             // domain return, deserialize instead of leaving serde_json::Value.
             if matches!(bare.as_str(), "invoke" | "request")
                 && let Some(msg) = bus_message_name_from_args(&call.args)
-                    && let Some(ret) = ctx.bus_returns.get(&msg) {
+                    && let Some(ret) = ctx.routing.bus_returns.get(&msg) {
                         // Only decode types this crate can name (local domain /
                         // primitives). Cross-context domain types (e.g. tools
                         // invoking storage CreateRepo → Repo) stay as Value.
@@ -1203,14 +1203,14 @@ pub fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
         "Dt" | "DateTime" | "Uuid" | "Map" | "List" | "Opt" | "Json" | "Env" | "Str" | "Id" | "Int" | "UUID"
     );
     let is_typed_local = ctx.is_local(&call.target) && ctx.local_type(&call.target).is_some();
-    if ctx.envelope_routing && !is_lang_target && !is_typed_local
-        && !ctx.stub_pkg_crate.contains_key(&call.target)
+    if ctx.routing.envelope_routing && !is_lang_target && !is_typed_local
+        && !ctx.stubs.stub_pkg_crate.contains_key(&call.target)
         && (ctx.is_struct_target(&call.target) || ctx.is_local(&call.target) || !call.method.is_empty()) {
         let method = if call.method.is_empty() { "new" } else { &call.method };
-        let rref = if ctx.routing_ref.is_empty() {
+        let rref = if ctx.routing.routing_ref.is_empty() {
             "deps".to_string() // should not happen when envelope_routing is set
         } else {
-            ctx.routing_ref.clone()
+            ctx.routing.routing_ref.clone()
         };
         return format!(
             "{}.invoke({}).await?",
@@ -1398,11 +1398,11 @@ pub fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
         (None, call.target.clone())
     };
     if ctx.is_struct_target(&effective_target)
-        || ctx.stub_type_crate.contains_key(&effective_target)
+        || ctx.stubs.stub_type_crate.contains_key(&effective_target)
         || module_prefix
             .as_ref()
             .map(|m| {
-                ctx.stub_type_crate.values().any(|(c, _)| {
+                ctx.stubs.stub_type_crate.values().any(|(c, _)| {
                     c.replace('-', "_") == *m || c.as_str() == m
                 })
             })
@@ -1427,7 +1427,7 @@ pub fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
                 // Unloaded stub or no matching crate: keep author module path.
                 format!("{}::{}", prefix, effective_target)
             }
-        } else if let Some((crate_name, original_name)) = ctx.stub_type_crate.get(&effective_target) {
+        } else if let Some((crate_name, original_name)) = ctx.stubs.stub_type_crate.get(&effective_target) {
             // Never crate-qualify Rust built-in types (String, Vec, etc.) even if a
             // stub happens to declare a struct with the same name (e.g. gix has `struct String`).
             let is_builtin = matches!(effective_target.as_str(),
@@ -1484,19 +1484,19 @@ pub fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
 
                     // Prefer explicit stub metadata; fall back to sibling `TypeAs` heuristic.
                     let typed_meta = ctx
-                        .stub_typed_ctors
+                        .stubs.stub_typed_ctors
                         .get(&effective_target)
-                        .or_else(|| ctx.stub_typed_ctors.get(type_leaf));
+                        .or_else(|| ctx.stubs.stub_typed_ctors.get(type_leaf));
 
                     // query_as only when fetch_* on this type returns a domain row,
                     // not Opt<Str>/List<Str> (JSON payload columns use plain query +
                     // from_str). Method return type alone is not enough — find() may
                     // return Opt<Entity> while the SQL selects a text payload.
                     let fetch_ret = ctx
-                        .method_returns
+                        .types.method_returns
                         .get(&(type_leaf.to_string(), "fetch_optional".into()))
                         .or_else(|| {
-                            ctx.method_returns
+                            ctx.types.method_returns
                                 .get(&(effective_target.clone(), "fetch_optional".into()))
                         })
                         .map(|s| s.as_str());
@@ -1524,7 +1524,7 @@ pub fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
                         }
                         // Heuristic: Query + QueryAs both registered → query_as
                         let typed_struct = format!("{type_leaf}As");
-                        let has_sibling = ctx.stub_type_crate.contains_key(&typed_struct)
+                        let has_sibling = ctx.stubs.stub_type_crate.contains_key(&typed_struct)
                             || ctx.name_to_shape.contains_key(&typed_struct);
                         if has_sibling {
                             let typed_fn_name = format!("{fn_name}_as");
@@ -1549,7 +1549,7 @@ pub fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
             }
             // If the struct has an `id` field and the caller doesn't provide it
             // (arg count is one fewer than expected), auto-insert Uuid::new_v4() as first arg.
-            let has_id_field = ctx.struct_fields.get(&effective_target)
+            let has_id_field = ctx.types.struct_fields.get(&effective_target)
                 .map(|fields| fields.iter().any(|(n, _)| n == "id"))
                 .unwrap_or(false);
             let final_args = if has_id_field && !call.args.is_empty() {
@@ -1567,7 +1567,7 @@ pub fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
                 cloned
             };
             // If the constructor returns Result (invariant type), append ? to unwrap
-            let returns_result = ctx.method_returns.get(&(effective_target.clone(), "new".to_string()))
+            let returns_result = ctx.types.method_returns.get(&(effective_target.clone(), "new".to_string()))
                 .map(|t| t.starts_with("Result<"))
                 .unwrap_or(false);
             let suffix = if returns_result { "?" } else { "" };
@@ -1576,7 +1576,7 @@ pub fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
             // field fill + `..T::default()`. Skips a leading `id: Uuid` so
             // `Greeting.new(message)` still maps onto `message`, not `id`.
             if ctx.defaultable_types.contains(&effective_target) && !call.args.is_empty()
-                && let Some(fields) = ctx.struct_fields.get(&effective_target) {
+                && let Some(fields) = ctx.types.struct_fields.get(&effective_target) {
                     let mut field_iter = fields.iter().peekable();
                     let mut parts: Vec<String> = Vec::new();
                     if let Some((fname, fty)) = field_iter.peek()
@@ -1961,10 +1961,10 @@ pub fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
                 let bare_ty = peel_dyn_trait_name(type_name).unwrap_or_else(|| type_name.to_string());
                 let fallible = call.method.ends_with('!')
                     || ctx
-                        .type_fallible_methods
+                        .stubs.type_fallible_methods
                         .contains(&(bare_ty, method.clone()))
                     || ctx
-                        .type_fallible_methods
+                        .stubs.type_fallible_methods
                         .contains(&(type_name.to_string(), method.clone()));
                 let suffix = if fallible { ".await?" } else { ".await" };
                 return format!("{}.{}({}){}", call.target, method, args_str, suffix);
@@ -2014,8 +2014,8 @@ pub fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
                 }
             }
             // Known concrete method (e.g. aggregate fn) — call with ?
-            if ctx.method_returns.contains_key(&(type_name.to_string(), call.method.clone()))
-                || ctx.method_returns.contains_key(&(
+            if ctx.types.method_returns.contains_key(&(type_name.to_string(), call.method.clone()))
+                || ctx.types.method_returns.contains_key(&(
                     type_name.to_string(),
                     call.method.trim_end_matches(['!', '?']).to_string(),
                 ))
@@ -2118,11 +2118,11 @@ pub fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
                 let dep_method_match = ctx.dep_fields.iter().find_map(|(trait_name, field_name)| {
                     // Strategy 1: bare_target is a registered method on this trait
                     let key = (trait_name.clone(), bare_target.to_string());
-                    if ctx.method_returns.contains_key(&key) {
+                    if ctx.types.method_returns.contains_key(&key) {
                         return Some(field_name.clone());
                     }
                     let key2 = (field_name.clone(), bare_target.to_string());
-                    if ctx.method_returns.contains_key(&key2) {
+                    if ctx.types.method_returns.contains_key(&key2) {
                         return Some(field_name.clone());
                     }
                     // Strategy 2: bare_target starts with the dep field name
@@ -2179,9 +2179,9 @@ pub fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
             let struct_name = parts.last().unwrap_or(&"");
             // Qualify via stub map when present
             let qualified = if let Some((crate_name, original_name)) =
-                ctx.stub_type_crate.get(*struct_name).or_else(|| {
+                ctx.stubs.stub_type_crate.get(*struct_name).or_else(|| {
                     // case-insensitive match for Client vs client
-                    ctx.stub_type_crate
+                    ctx.stubs.stub_type_crate
                         .iter()
                         .find(|(k, _)| k.eq_ignore_ascii_case(struct_name))
                         .map(|(_, v)| v)
@@ -2192,10 +2192,10 @@ pub fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
             };
             let m = rust_method_name(&call.method);
             let bare = call.method.trim_end_matches(['!', '?']);
-            let suffix = if ctx.async_fallible_methods.contains(bare)
+            let suffix = if ctx.stubs.async_fallible_methods.contains(bare)
             {
                 map_err_await_domain(&ctx.error_model)
-            } else if ctx.fallible_methods.contains(bare) {
+            } else if ctx.stubs.fallible_methods.contains(bare) {
                 "?".to_string()
             } else {
                 String::new()
@@ -2207,7 +2207,7 @@ pub fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
         let target_snake = to_snake(&call.target);
         if ctx.known_modules.contains(&target_snake) {
             let m = to_snake(&call.method);
-            let suffix = if ctx.fallible_methods.contains(&call.method)
+            let suffix = if ctx.stubs.fallible_methods.contains(&call.method)
                 || call.method == "from_str"
                 || call.method == "to_string"
                 || call.method == "parse"
@@ -2237,13 +2237,13 @@ pub fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
         // Stub package free functions: `crypto.hmac_sha256_hex(s, m)` or
         // `relay_crypto.aes_gcm_encrypt!(k, p)` → `relay_crypto::fn(&…)` (+ `?` if Res!).
         if let Some(rust_crate) = ctx
-            .stub_pkg_crate
+            .stubs.stub_pkg_crate
             .get(&call.target)
-            .or_else(|| ctx.stub_pkg_crate.get(&target_snake))
+            .or_else(|| ctx.stubs.stub_pkg_crate.get(&target_snake))
         {
             let bare = call.method.trim_end_matches(['!', '?']);
             if let Some(&fallible) = ctx
-                .stub_free_fns
+                .stubs.stub_free_fns
                 .get(&(rust_crate.clone(), bare.to_string()))
             {
                 let m = to_snake(bare);
