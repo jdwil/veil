@@ -19,6 +19,8 @@ fn generate_example(src: &str) -> String {
         .expect("di layer should load");
     reg.load_content("rest_english", include_str!("../../../layers/rest_english.layer"))
         .expect("rest_english layer should load");
+    reg.load_content("bus", include_str!("../../../layers/bus.layer"))
+        .expect("bus layer should load");
     reg.load_content("bus_handle", include_str!("../../../layers/bus_handle.layer"))
         .expect("bus_handle layer should load");
     reg.load_content("auth_local", include_str!("../../../layers/auth_local.layer"))
@@ -696,7 +698,7 @@ fn generate_ts_example(src: &str) -> String {
         .expect("ddd layer should load");
     let tokens = veil_parser::lex(src);
     let sol = veil_parser::parse_with_registry(&tokens, reg.clone()).expect("parse failed");
-    let project = veil_codegen::generate_ts(&sol, &reg);
+    let project = veil_codegen::generate_ts_ir(&sol, &reg);
     project
         .files
         .iter()
@@ -716,9 +718,9 @@ fn ts_struct_generates_interface() {
 #[test]
 fn ts_trait_generates_interface_with_async_methods() {
     let out = generate_ts_example(include_str!("../../../examples/customer_onboarding.veil"));
-    assert!(out.contains("export interface CustomerRepo"), "trait not mapped to TS interface");
-    assert!(out.contains("save(c: Customer): Promise<void>"), "Res! not mapped to Promise<void>");
-    assert!(out.contains("find(id: string): Promise<Customer | null>"), "Res!<Opt<T>> not mapped to Promise<T | null>");
+    assert!(out.contains("interface CustomerRepo"), "trait not mapped to TS interface");
+    assert!(out.contains("save(c: T.Customer): Promise<void>"), "Res! not mapped to Promise<void>");
+    assert!(out.contains("find(id: string): Promise<T.Customer | null>"), "Res!<Opt<T>> not mapped to Promise<T | null>");
 }
 
 #[test]
@@ -1019,7 +1021,7 @@ pkg UiApp
         Ok(s) => s,
         Err(_) => return, // layer parse quirks — skip
     };
-    let project = veil_codegen::generate_ts(&sol, &reg);
+    let project = veil_codegen::generate_ts_ir(&sol, &reg);
     let has_dist = project.files.iter().any(|f| f.path == "dist/index.html");
     let spa = project
         .files
@@ -1085,7 +1087,7 @@ pkg WearUi
         app.annotations
     );
 
-    let project = veil_codegen::generate_ts(&sol, &reg);
+    let project = veil_codegen::generate_ts_ir(&sol, &reg);
     let hooks = project
         .files
         .iter()
@@ -1158,7 +1160,7 @@ pkg WearUi
     }
     let tokens = veil_parser::lex(src);
     let sol = veil_parser::parse_with_registry(&tokens, reg.clone()).expect("parse");
-    let project = veil_codegen::generate_ts(&sol, &reg);
+    let project = veil_codegen::generate_ts_ir(&sol, &reg);
     let paths: Vec<&str> = project.files.iter().map(|f| f.path.as_str()).collect();
     assert!(
         paths.contains(&"src/routes/pulls/[id]/+page.svelte"),
@@ -1452,7 +1454,7 @@ fn ts_svelte_demo_generates_project() {
     let src = include_str!("../../../examples/svelte_present_demo.veil");
     let tokens = veil_parser::lex(src);
     let sol = veil_parser::parse_with_registry(&tokens, reg.clone()).expect("parse");
-    let project = veil_codegen::generate_ts(&sol, &reg);
+    let project = veil_codegen::generate_ts_ir(&sol, &reg);
     let joined: String = project
         .files
         .iter()
