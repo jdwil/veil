@@ -780,6 +780,42 @@ pub fn build_ctx_from_solution(solution: &Solution, name_to_shape: HashMap<Strin
     // Layer declared method lowering templates (e.g. ApiClient.fetch → fetch(...)).
     ctx.method_lowers_to = registry.method_lowers_to.clone();
 
+    // Stub method templates: populate method_lowers_to from parsed lowers_to blocks
+    // on stub methods. These serve the same role as layer-declared templates and
+    // use the same interpolation machinery in translate_call.
+    for stub in &registry.stubs {
+        for s in &stub.structs {
+            for method in &s.methods {
+                if !method.lowers_to.is_empty() {
+                    ctx.method_lowers_to
+                        .entry((s.name.clone(), method.name.clone()))
+                        .or_default()
+                        .extend(method.lowers_to.iter().map(|(k, v)| (k.clone(), v.clone())));
+                }
+            }
+        }
+        for imp in &stub.impls {
+            for method in &imp.methods {
+                if !method.lowers_to.is_empty() {
+                    ctx.method_lowers_to
+                        .entry((imp.target.clone(), method.name.clone()))
+                        .or_default()
+                        .extend(method.lowers_to.iter().map(|(k, v)| (k.clone(), v.clone())));
+                }
+            }
+        }
+        for ff in &stub.free_fns {
+            if !ff.lowers_to.is_empty() {
+                // Free functions: keyed as (crate_name, fn_name) for lookup
+                let rust_crate = stub.name.replace('-', "_");
+                ctx.method_lowers_to
+                    .entry((rust_crate, ff.name.clone()))
+                    .or_default()
+                    .extend(ff.lowers_to.iter().map(|(k, v)| (k.clone(), v.clone())));
+            }
+        }
+    }
+
     // Track layer-declared free functions as async — they generate as
     // `pub async fn` and calls to them need `.await?`. Product free fns are
     // emitted in the product crate (sync unless they call async helpers).

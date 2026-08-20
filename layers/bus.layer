@@ -77,6 +77,126 @@ layer bus
       dispatch(envelope: Json) -> Res!
       request(envelope: Json) -> Res!<Json>
 
+  # ─── Shared Emit ───────────────────────────────────────────────────────────
+  # Raw Rust code emitted into veil_shared when this layer is loaded.
+  # Provides InProcessBus (local harness implementation of Bus) and the
+  # handler registry (HANDLER_NAMES, register_all, handler_count).
+
+  shared_emit rust
+    // ─── InProcessBus (local harness, RT-001 / RT-004) ─────────────────────────
+    // Generated from bus.layer — in-process message bus for local multi-context runs.
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    use futures::future::BoxFuture;
+    use futures::FutureExt;
+
+    type BusHandler = Arc<
+        dyn Fn(serde_json::Value) -> BoxFuture<'static, Result<serde_json::Value, {error_type}>>
+            + Send
+            + Sync,
+    >;
+
+    /// In-process message bus for local multi-context runs.
+    #[derive(Clone, Default)]
+    pub struct InProcessBus {
+        handlers: Arc<std::sync::Mutex<HashMap<String, BusHandler>>>,
+    }
+
+    impl InProcessBus {
+        pub fn new() -> Self {
+            Self {
+                handlers: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            }
+        }
+
+        /// Register a handler for a message type name (manifest `handlers` keys).
+        pub fn register<F, Fut>(&self, name: impl Into<String>, f: F)
+        where
+            F: Fn(serde_json::Value) -> Fut + Send + Sync + 'static,
+            Fut: std::future::Future<Output = Result<serde_json::Value, {error_type}>> + Send + 'static,
+        {
+            let name = name.into();
+            let handler: BusHandler = Arc::new(move |v| f(v).boxed());
+            self.handlers
+                .lock()
+                .expect("bus lock")
+                .insert(name, handler);
+        }
+
+        fn lookup(&self, type_name: &str) -> Option<BusHandler> {
+            self.handlers
+                .lock()
+                .expect("bus lock")
+                .get(type_name)
+                .cloned()
+        }
+    }
+
+    #[async_trait]
+    impl Bus for InProcessBus {
+        async fn invoke(&self, envelope: serde_json::Value) -> Result<serde_json::Value, {error_type}> {
+            let type_name = envelope
+                .get("type")
+                .and_then(|t| t.as_str())
+                .unwrap_or("")
+                .to_string();
+            let handler = self
+                .lookup(&type_name)
+                .ok_or({error_type}::{not_found_variant})?;
+            handler(envelope).await
+        }
+
+        async fn dispatch(&self, envelope: serde_json::Value) -> Result<(), {error_type}> {
+            let type_name = envelope
+                .get("type")
+                .and_then(|t| t.as_str())
+                .unwrap_or("")
+                .to_string();
+            if let Some(handler) = self.lookup(&type_name) {
+                let payload = envelope.clone();
+                tokio::spawn(async move {
+                    let _ = handler(payload).await;
+                });
+            }
+            Ok(())
+        }
+
+        async fn request(&self, envelope: serde_json::Value) -> Result<serde_json::Value, {error_type}> {
+            let type_name = envelope
+                .get("type")
+                .and_then(|t| t.as_str())
+                .unwrap_or("")
+                .to_string();
+            let handler = self
+                .lookup(&type_name)
+                .ok_or({error_type}::{not_found_variant})?;
+            handler(envelope).await
+        }
+    }
+
+    // ─── Handler Registry (CAP-003) ───────────────────────────────────────────
+    // Host calls `register_all` once to wire names → dispatch.
+
+    /// All Bus message types exported by this workspace.
+    pub const HANDLER_NAMES: &[&str] = &[
+    {handler_names_entries}
+    ];
+
+    /// Register every generated handler name with a host-supplied registrar.
+    pub fn register_all<F>(mut register: F)
+    where
+        F: FnMut(&'static str),
+    {
+        for name in HANDLER_NAMES {
+            register(name);
+        }
+    }
+
+    /// Number of handlers in this workspace.
+    pub fn handler_count() -> usize {
+        HANDLER_NAMES.len()
+    }
+
   # ─── LLM Prompt ─────────────────────────────────────────────────────────────
   prompt
     You are writing VEIL code that uses a message bus for inter-context communication.

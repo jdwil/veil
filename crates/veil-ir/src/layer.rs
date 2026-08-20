@@ -590,6 +590,10 @@ pub struct LayerRegistry {
     /// Populated from `declare` blocks with `lowers_to` on methods.
     /// Example: `("ApiClient", "fetch")` → `{ "typescript" → "..." }`.
     pub method_lowers_to: HashMap<(String, String), HashMap<String, String>>,
+    /// Raw target-language code to emit into the shared crate.
+    /// Each entry is `(target, code_template)`. Templates support `{error_type}` substitution.
+    /// Populated from `shared_emit <target>` blocks in layer files.
+    pub shared_emit: Vec<(String, String)>,
 }
 
 /// Layer-declared bus message naming (no hard-coded `Handle` in the engine).
@@ -677,6 +681,7 @@ impl Default for LayerRegistry {
             extra_layer_roots: Vec::new(),
             codegen_http_from_toml: false,
             method_lowers_to: HashMap::new(),
+            shared_emit: Vec::new(),
         }
     }
 }
@@ -707,6 +712,7 @@ impl Clone for LayerRegistry {
             extra_layer_roots: self.extra_layer_roots.clone(),
             codegen_http_from_toml: self.codegen_http_from_toml,
             method_lowers_to: self.method_lowers_to.clone(),
+            shared_emit: self.shared_emit.clone(),
         }
     }
 }
@@ -1888,6 +1894,11 @@ impl LayerRegistry {
             self.method_lowers_to.entry(key).or_default().extend(targets);
         }
 
+        // Accumulate shared_emit blocks from layers.
+        for entry in raw.shared_emit {
+            self.shared_emit.push(entry);
+        }
+
         // Validate presentation construct-name refs + enums (LAY-002).
         let known: std::collections::HashSet<String> =
             self.constructs.iter().map(|c| c.name.clone()).collect();
@@ -2233,6 +2244,11 @@ pub struct StubMethod {
     pub name: String,
     pub params: Vec<(String, String, bool)>, // (param_name, type_string, is_ref)
     pub return_type: Option<String>,         // VEIL type syntax (e.g. "Res!<Str>")
+    /// Per-target lowering templates: target name (e.g. "rust") → template string.
+    /// When present, the codegen engine uses this template directly instead of
+    /// heuristic suffix detection (async/fallible/builder patterns).
+    #[serde(default)]
+    pub lowers_to: HashMap<String, String>,
 }
 
 /// Apply a `# key value` or bare directive provenance line onto a stub.
@@ -2339,6 +2355,17 @@ pub fn parse_stub_file(content: &str) -> Option<StubCrate> {
     let mut harness_field_name: Option<String> = None;
     let mut harness_field_buf: Option<String> = None;
     let mut saw_header = false;
+    // lowers_to block parsing: tracks whether we're inside a lowers_to block
+    // and which method container (struct/impl/free_fns) + index the template attaches to.
+    let mut in_lowers_to = false;
+    let mut lowers_to_base_indent: usize = 0;
+    // Which container and index the lowers_to block belongs to
+    enum LowersToTarget {
+        StructMethod(usize),  // index in current_struct.methods
+        ImplMethod(usize),    // index in current_impl.methods
+        FreeFn(usize),        // index in stub.free_fns
+    }
+    let mut lowers_to_target: Option<LowersToTarget> = None;
 
     for line in content.lines() {
         // Finish multi-line harness_field raw string
@@ -2375,6 +2402,75 @@ pub fn parse_stub_file(content: &str) -> Option<StubCrate> {
             continue;
         }
         let indent = line.len() - line.trim_start().len();
+
+        // lowers_to block parsing: if we're inside a lowers_to block, accumulate
+        // `target: "template"` lines until indent drops back.
+        if in_lowers_to {
+            if indent > lowers_to_base_indent {
+                // Parse `rust: "template string"` or `typescript: "template"`
+                if let Some(colon_pos) = trimmed.find(':') {
+                    let target = trimmed[..colon_pos].trim();
+                    let value = trimmed[colon_pos + 1..].trim();
+                    // Strip surrounding quotes
+                    let template = if (value.starts_with('"') && value.ends_with('"'))
+                        || (value.starts_with('\'') && value.ends_with('\''))
+                    {
+                        value[1..value.len() - 1].to_string()
+                    } else {
+                        value.to_string()
+                    };
+                    if !target.is_empty() && !template.is_empty() {
+                        // Attach to the correct method
+                        match &lowers_to_target {
+                            Some(LowersToTarget::StructMethod(idx)) => {
+                                if let Some(ref mut s) = current_struct {
+                                    if let Some(m) = s.methods.get_mut(*idx) {
+                                        m.lowers_to.insert(target.to_string(), template);
+                                    }
+                                }
+                            }
+                            Some(LowersToTarget::ImplMethod(idx)) => {
+                                if let Some(ref mut i) = current_impl {
+                                    if let Some(m) = i.methods.get_mut(*idx) {
+                                        m.lowers_to.insert(target.to_string(), template);
+                                    }
+                                }
+                            }
+                            Some(LowersToTarget::FreeFn(idx)) => {
+                                if let Some(m) = stub.free_fns.get_mut(*idx) {
+                                    m.lowers_to.insert(target.to_string(), template);
+                                }
+                            }
+                            None => {}
+                        }
+                    }
+                }
+                continue;
+            } else {
+                // Indent dropped — exit lowers_to mode, fall through to normal parsing
+                in_lowers_to = false;
+                lowers_to_target = None;
+            }
+        }
+
+        // Detect `lowers_to` keyword (deeper indent than the method it follows)
+        if trimmed == "lowers_to" {
+            in_lowers_to = true;
+            lowers_to_base_indent = indent;
+            // Determine which method we're attaching to
+            if let Some(ref s) = current_struct {
+                if !s.methods.is_empty() {
+                    lowers_to_target = Some(LowersToTarget::StructMethod(s.methods.len() - 1));
+                }
+            } else if let Some(ref i) = current_impl {
+                if !i.methods.is_empty() {
+                    lowers_to_target = Some(LowersToTarget::ImplMethod(i.methods.len() - 1));
+                }
+            } else if !stub.free_fns.is_empty() {
+                lowers_to_target = Some(LowersToTarget::FreeFn(stub.free_fns.len() - 1));
+            }
+            continue;
+        }
 
         // Header: stub <name> <version>
         if trimmed.starts_with("stub ") {
@@ -2681,6 +2777,7 @@ pub fn parse_stub_file(content: &str) -> Option<StubCrate> {
                         name: vname,
                         params,
                         return_type: ret_type,
+                        lowers_to: HashMap::new(),
                     });
                 }
             }
@@ -2779,7 +2876,7 @@ fn parse_stub_method(line: &str) -> StubMethod {
             .collect()
     };
 
-    StubMethod { name, params, return_type: ret }
+    StubMethod { name, params, return_type: ret, lowers_to: HashMap::new() }
 }
 
 /// Split on commas that are not inside `<…>` or `(…)`.
@@ -2824,6 +2921,10 @@ pub struct RawLayer {
     /// Per-target lowering templates for declared trait/struct methods.
     /// Key: `(TypeName, MethodName)`, Value: `{ target → template }`.
     pub method_lowers_to: HashMap<(String, String), HashMap<String, String>>,
+    /// Raw target-language code to emit into the shared crate.
+    /// Each entry is `(target, code_template)`. Templates support `{error_type}` substitution.
+    /// Populated from `shared_emit <target>` blocks in layer files.
+    pub shared_emit: Vec<(String, String)>,
 }
 
 /// Pkg-level `use` names in a layer body (`use deploy`, `use harness`, …).
@@ -2884,6 +2985,12 @@ pub fn parse_layer_file(content: &str, layer_name: &str) -> Result<RawLayer, Str
     let mut codegen_target: String = String::new();
     let mut codegen_base_indent: usize = 0;
     let mut codegen_lines: Vec<String> = Vec::new();
+    // shared_emit block parsing state
+    let mut shared_emit: Vec<(String, String)> = Vec::new();
+    let mut in_shared_emit = false;
+    let mut shared_emit_target: String = String::new();
+    let mut shared_emit_base_indent: usize = 0;
+    let mut shared_emit_lines: Vec<String> = Vec::new();
     // In-progress `view` under `present` (flushed on next view / role / section).
     let mut present_view: Option<crate::presentation::ViewSpec> = None;
     let mut errors: Vec<String> = Vec::new();
@@ -3136,6 +3243,61 @@ pub fn parse_layer_file(content: &str, layer_name: &str) -> Result<RawLayer, Str
                     trimmed
                 };
                 current_decl_lines.push(dedented.to_string());
+                continue;
+            }
+        }
+
+        // Handle `shared_emit <target>` blocks: raw target-language code for the shared crate
+        if trimmed.starts_with("shared_emit ") && indent <= 2 {
+            // Flush any in-progress sections
+            if in_shared_emit && !shared_emit_lines.is_empty() {
+                shared_emit.push((shared_emit_target.clone(), shared_emit_lines.join("\n")));
+                shared_emit_lines.clear();
+            }
+            if in_declare && !current_decl_lines.is_empty() {
+                while current_decl_lines.last().map(|l| l.is_empty()).unwrap_or(false) {
+                    current_decl_lines.pop();
+                }
+                declarations.push(current_decl_lines.join("\n"));
+                current_decl_lines.clear();
+            }
+            if in_codegen && !codegen_lines.is_empty() {
+                let template = parse_codegen_block(&codegen_target, &codegen_lines, layer_name);
+                codegen_templates.push(template);
+                codegen_lines.clear();
+            }
+            if let Some(item) = current.take() {
+                items.push(item);
+            }
+            in_declare = false;
+            in_prompt = false;
+            in_codegen = false;
+            shared_emit_target = trimmed.strip_prefix("shared_emit ").unwrap().trim().to_string();
+            in_shared_emit = true;
+            shared_emit_base_indent = indent + 4; // content inside is indented
+            section = Section::None;
+            continue;
+        }
+
+        if in_shared_emit {
+            if indent <= 2 && !trimmed.is_empty() {
+                // Leaving shared_emit — flush
+                if !shared_emit_lines.is_empty() {
+                    shared_emit.push((shared_emit_target.clone(), shared_emit_lines.join("\n")));
+                    shared_emit_lines.clear();
+                }
+                in_shared_emit = false;
+                // Fall through to normal parsing of this line
+            } else {
+                // Accumulate raw code lines (dedented)
+                let dedented = if line.len() > shared_emit_base_indent {
+                    &line[shared_emit_base_indent..]
+                } else if trimmed.is_empty() {
+                    ""
+                } else {
+                    trimmed
+                };
+                shared_emit_lines.push(dedented.to_string());
                 continue;
             }
         }
@@ -3600,6 +3762,11 @@ pub fn parse_layer_file(content: &str, layer_name: &str) -> Result<RawLayer, Str
         codegen_templates.push(template);
     }
 
+    // Flush any trailing shared_emit block
+    if in_shared_emit && !shared_emit_lines.is_empty() {
+        shared_emit.push((shared_emit_target.clone(), shared_emit_lines.join("\n")));
+    }
+
     // Flush any trailing prompt content
     let prompt = if !prompt_lines.is_empty() {
         while prompt_lines.last().map(|l| l.is_empty()).unwrap_or(false) {
@@ -3622,6 +3789,7 @@ pub fn parse_layer_file(content: &str, layer_name: &str) -> Result<RawLayer, Str
         prompt,
         codegen_templates,
         method_lowers_to,
+        shared_emit,
     })
 }
 

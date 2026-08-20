@@ -1061,19 +1061,20 @@ pub fn emit_runtime_delegated(
         step_trait_construct.and_then(|t| t.methods.iter().find(|m| m.name == method))
     };
 
-    // Trait names in scope for param rendering (step trait + routing + any
-    // named traits the step methods reference).
-    let mut trait_names: std::collections::HashSet<String> = registry.routing_traits().into_iter().collect();
+    // Trait names in scope for param rendering (step trait + any named traits
+    // the step methods reference). Used for boxing decisions (&dyn Trait).
+    let mut trait_names: std::collections::HashSet<String> = std::collections::HashSet::new();
     trait_names.insert(step_trait.clone());
+    // Layer-declared types are traits (they live in veil_shared as async_trait).
+    for name in registry.declared_type_names() {
+        trait_names.insert(name);
+    }
     if let Some(tc) = step_trait_construct {
         for m in &tc.methods {
             for p in &m.params {
                 if let TypeExpr::Named(n) = &p.type_expr
                     && n.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
-                        // Candidate trait/type name — only box known traits.
-                        if trait_names.contains(n) || n == step_trait {
-                            trait_names.insert(n.clone());
-                        }
+                        trait_names.insert(n.clone());
                     }
             }
         }
@@ -1092,26 +1093,6 @@ pub fn emit_runtime_delegated(
             }
         }
     }
-
-    // Routing param name from the step trait's first method that names a
-    // routing trait (e.g. `bus: Bus` → `"bus"`). Falls back to snake_case of
-    // the primary routing trait from loaded layers.
-    let layer_routing_traits = registry.routing_traits();
-    let routing_param = lookup_method("action")
-        .or_else(|| step_trait_construct.and_then(|t| t.methods.first()))
-        .and_then(|m| {
-            m.params.iter().find_map(|p| {
-                if let TypeExpr::Named(ty) = &p.type_expr
-                    && layer_routing_traits.contains(&ty.to_string()) {
-                        return Some(to_snake(&p.name));
-                    }
-                None
-            })
-        })
-        .or_else(|| layer_routing_traits.first().map(|t| to_snake(t)))
-        .unwrap_or_default();
-
-    let use_envelope = !layer_routing_traits.is_empty();
 
     // One struct + impl per Step (skip par/match — delegated runtimes use
     // plain steps).
@@ -1204,13 +1185,23 @@ pub fn emit_runtime_delegated(
         out.push_str(&format!("        Box::new({} {{ {} }}),\n", type_name, ctor_args));
     }
     out.push_str("    ];\n");
-    // Coordinator args follow the layer-declared fn. A routing-trait first
-    // argument is only passed when a loaded layer actually declared one.
+    // Coordinator args: if the step trait's `action` method has a trait-typed
+    // first param (e.g. `bus: Bus`), pass it from deps. Otherwise just pass steps.
     let coord = to_snake(&rt.coordinator);
-    match registry.routing_traits().first() {
-        Some(t) => out.push_str(&format!(
-            "    {coord}(deps.{}.as_ref(), &steps){await_suffix}\n",
-            to_snake(t)
+    let routing_param = lookup_method("action")
+        .or_else(|| step_trait_construct.and_then(|t| t.methods.first()))
+        .and_then(|m| {
+            m.params.iter().find_map(|p| {
+                if let TypeExpr::Named(ty) = &p.type_expr
+                    && trait_names.contains(ty) && ty != step_trait {
+                        return Some(to_snake(&p.name));
+                    }
+                None
+            })
+        });
+    match routing_param {
+        Some(param) => out.push_str(&format!(
+            "    {coord}(deps.{param}.as_ref(), &steps){await_suffix}\n"
         )),
         None => out.push_str(&format!("    {coord}(&steps){await_suffix}\n")),
     }

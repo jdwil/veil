@@ -177,7 +177,8 @@ pub fn generate(solution: &Solution, registry: &LayerRegistry) -> GeneratedProje
         || package_has_main_annotation(solution, registry)
         || wants_product_host
         || has_compose
-        || has_declared_endpoints;
+        || has_declared_endpoints
+        || harness_ir.contexts.iter().any(|c| !c.endpoints.is_empty());
     let has_main = !emit_blocked && has_entry;
     // role:deploy_hook → veil_hooks bin (provisioner). Not zipped into Lambda.
     if let Some(hook_files) = crate::emit_hooks::emit_hooks_crate(solution, &modules, registry, &harness_ir)
@@ -196,7 +197,7 @@ pub fn generate(solution: &Solution, registry: &LayerRegistry) -> GeneratedProje
     if has_main {
         let module_crates: Vec<String> = modules.iter().map(|m| module_crate_name(m, solution)).collect();
         let main_body = if wants_product_host {
-            gen_product_host_main(solution, &handler_names)
+            gen_product_host_main(solution, &handler_names, registry)
         } else if !modules.is_empty() {
             gen_local_harness_main(solution, &modules, registry, &harness_ir)
         } else if let Some(body) = crate::template::compose_main_section(&template_output, "rust")

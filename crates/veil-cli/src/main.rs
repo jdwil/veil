@@ -1209,14 +1209,14 @@ fn convert_rustdoc_json_to_stub(
 
     // Collect structs and their impl items
     let mut struct_ids: Vec<(String, String)> = Vec::new(); // (id, name)
-    let mut struct_impls: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new(); // name → method signatures
+    let mut struct_impls: std::collections::HashMap<String, Vec<MethodSigInfo>> = std::collections::HashMap::new(); // name → method infos
     // rustdoc `paths[id].path` → module under the crate (`primitives` for Blob).
     let mut struct_module_paths: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
     let rustdoc_paths = data.get("paths").and_then(|v| v.as_object());
     let mut enum_defs: Vec<(String, Vec<String>)> = Vec::new(); // (name, variants)
     let mut trait_names: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    let mut free_fns: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new(); // name → veil sig
+    let mut free_fns: std::collections::BTreeMap<String, MethodSigInfo> = std::collections::BTreeMap::new(); // name → method info
     // Type alias: alias_name → last segment of target (e.g. PgPool → Pool)
     let mut type_aliases: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
 
@@ -1236,8 +1236,8 @@ fn convert_rustdoc_json_to_stub(
             if name.chars().next().map(|c| c.is_lowercase()).unwrap_or(false)
                 && !function_item_has_self(item)
             {
-                if let Some(sig) = extract_method_sig(item) {
-                    free_fns.insert(name.to_string(), sig);
+                if let Some(info) = extract_method_sig_with_info(item) {
+                    free_fns.insert(name.to_string(), info);
                 }
             }
         }
@@ -1288,10 +1288,10 @@ fn convert_rustdoc_json_to_stub(
                                                 if let Some(method) = index.get(&mid) {
                                                     let method_vis = method.get("visibility").and_then(|v| v.as_str()).unwrap_or("");
                                                     if method_vis != "public" { continue; }
-                                                    if let Some(sig) = extract_method_sig(method) {
+                                                    if let Some(info) = extract_method_sig_with_info(method) {
                                                         struct_impls.entry(name.to_string())
                                                             .or_default()
-                                                            .push(sig);
+                                                            .push(info);
                                                     }
                                                 }
                                             }
@@ -1377,10 +1377,10 @@ fn convert_rustdoc_json_to_stub(
                                                 if let Some(method) = index.get(&mid) {
                                                     let method_vis = method.get("visibility").and_then(|v| v.as_str()).unwrap_or("");
                                                     if method_vis != "public" { continue; }
-                                                    if let Some(sig) = extract_method_sig(method) {
+                                                    if let Some(info) = extract_method_sig_with_info(method) {
                                                         struct_impls.entry(name.to_string())
                                                             .or_default()
-                                                            .push(sig);
+                                                            .push(info);
                                                     }
                                                 }
                                             }
@@ -1492,8 +1492,9 @@ fn convert_rustdoc_json_to_stub(
             .unwrap_or("Pool")
     };
     if has_pool {
-        let methods = struct_impls.get("Pool").cloned().unwrap_or_default();
-        let has_connect_lazy = methods.iter().any(|m| m.contains("fn connect_lazy"));
+        let has_connect_lazy = struct_impls.get("Pool")
+            .map(|ms| ms.iter().any(|m| m.sig.contains("fn connect_lazy")))
+            .unwrap_or(false);
         if has_connect_lazy || pool_rust != "Pool" {
             out.push_str(&format!(
                 "  harness_field Pool \"\"\"\n{{\n    let url = std::env::var(\"DATABASE_URL\").unwrap_or_else(|_| \"postgres://localhost/test\".into());\n    {rust_crate}::{pool_rust}::connect_lazy(&url).expect(\"pool\")\n}}\n\"\"\"\n"
@@ -1508,7 +1509,7 @@ fn convert_rustdoc_json_to_stub(
         && (crate_name == "reqwest"
             || struct_impls
                 .get("Client")
-                .map(|ms| ms.iter().any(|m| m.starts_with("fn new()")))
+                .map(|ms| ms.iter().any(|m| m.name == "new"))
                 .unwrap_or(false))
         && !crate_name.starts_with("aws_sdk_")
         && !crate_name.starts_with("aws-sdk-")
@@ -1573,11 +1574,7 @@ fn convert_rustdoc_json_to_stub(
     let method_names: std::collections::HashSet<String> = struct_impls
         .values()
         .flat_map(|ms| {
-            ms.iter().filter_map(|sig| {
-                let rest = sig.strip_prefix("fn ")?;
-                let name = rest.split('(').next()?;
-                Some(name.to_string())
-            })
+            ms.iter().map(|info| info.name.clone())
         })
         .collect();
     let mut free_fn_names: Vec<_> = free_fns.keys().cloned().collect();
@@ -1592,8 +1589,8 @@ fn convert_rustdoc_json_to_stub(
                 continue; // constructor free-fn, surfaced on the struct
             }
         }
-        if let Some(sig) = free_fns.get(name) {
-            out.push_str(&format!("  {sig}\n"));
+        if let Some(info) = free_fns.get(name) {
+            emit_method_with_template(&mut out, info, None, &rust_crate, 2);
         }
     }
 
@@ -1620,25 +1617,36 @@ fn convert_rustdoc_json_to_stub(
                 out.push_str("    typed_type_params _, return_type\n");
                 let already_has_new = struct_impls
                     .get(name)
-                    .map(|ms| ms.iter().any(|m| m.starts_with("fn new(")))
+                    .map(|ms| ms.iter().any(|m| m.name == "new"))
                     .unwrap_or(false);
                 if !already_has_new {
-                    if let Some(sig) = free_fns.get(base_fn) {
-                        if let Some(params) = sig
+                    if let Some(info) = free_fns.get(base_fn) {
+                        if let Some(params) = info.sig
                             .strip_prefix(&format!("fn {base_fn}("))
                             .and_then(|s| s.split(')').next())
                         {
-                            out.push_str(&format!("    fn new({params}) -> Self\n"));
+                            // Synthesized `new` constructor from free-fn — emit with template
+                            let new_info = MethodSigInfo {
+                                sig: format!("fn new({params}) -> Self"),
+                                name: "new".to_string(),
+                                is_async: info.is_async,
+                                is_fallible: info.is_fallible,
+                                has_self: false,
+                                param_names: info.param_names.clone(),
+                            };
+                            emit_method_with_template(&mut out, &new_info, Some(name), &rust_crate, 4);
                         } else {
                             out.push_str("    fn new(sql: Str) -> Self\n");
+                            out.push_str("      lowers_to\n");
+                            out.push_str(&format!("        rust: \"{rust_crate}::{name}::new({{{{sql}}}})\"\n"));
                         }
                     }
                 }
             }
         }
         if let Some(methods) = struct_impls.get(name) {
-            for sig in methods {
-                out.push_str(&format!("    {}\n", sig));
+            for info in methods {
+                emit_method_with_template(&mut out, info, Some(name), &rust_crate, 4);
             }
         }
     }
@@ -1652,8 +1660,8 @@ fn convert_rustdoc_json_to_stub(
         // Enum methods (from impl blocks)
         if let Some(methods) = struct_impls.get(name) {
             out.push('\n');
-            for sig in methods {
-                out.push_str(&format!("    {}\n", sig));
+            for info in methods {
+                emit_method_with_template(&mut out, info, Some(name), &rust_crate, 4);
             }
         }
     }
@@ -1671,7 +1679,7 @@ fn convert_rustdoc_json_to_stub(
 
         if let Some(trait_data) = inner.get("trait").and_then(|v| v.as_object()) {
             let items = trait_data.get("items").and_then(|v| v.as_array());
-            let mut methods = Vec::new();
+            let mut methods: Vec<MethodSigInfo> = Vec::new();
             if let Some(items) = items {
                 for method_id in items {
                     let method_id_str = method_id.as_u64().map(|n| n.to_string())
@@ -1681,8 +1689,8 @@ fn convert_rustdoc_json_to_stub(
                             // Only include function items (skip associated types, consts)
                             if let Some(method_inner) = method.get("inner").and_then(|v| v.as_object()) {
                                 if method_inner.contains_key("function") {
-                                    if let Some(sig) = extract_method_sig(method) {
-                                        methods.push(sig);
+                                    if let Some(info) = extract_method_sig_with_info(method) {
+                                        methods.push(info);
                                     }
                                 }
                             }
@@ -1692,8 +1700,8 @@ fn convert_rustdoc_json_to_stub(
             }
             if !methods.is_empty() {
                 out.push_str(&format!("\n  trait {}\n", name));
-                for sig in &methods {
-                    out.push_str(&format!("    {}\n", sig));
+                for info in &methods {
+                    emit_method_with_template(&mut out, info, Some(name), &rust_crate, 4);
                 }
             }
         }
@@ -1743,7 +1751,29 @@ fn function_item_has_self(item: &serde_json::Value) -> bool {
 }
 
 /// Extract a method signature from a rustdoc JSON item.
+#[allow(dead_code)]
 fn extract_method_sig(item: &serde_json::Value) -> Option<String> {
+    extract_method_sig_with_info(item).map(|info| info.sig)
+}
+
+/// Metadata extracted from a rustdoc method item for template generation.
+struct MethodSigInfo {
+    /// The VEIL signature string (e.g. "fn send() -> BoxFuture<Res!<Response>>")
+    sig: String,
+    /// Method name
+    name: String,
+    /// Whether the original Rust function is async
+    is_async: bool,
+    /// Whether the return type is Result/Res!
+    is_fallible: bool,
+    /// Whether the method takes `self` (instance method vs static/constructor)
+    has_self: bool,
+    /// Parameter names (excluding self), for template variable interpolation
+    param_names: Vec<String>,
+}
+
+/// Extract a method signature plus metadata from a rustdoc JSON item.
+fn extract_method_sig_with_info(item: &serde_json::Value) -> Option<MethodSigInfo> {
     let name = item.get("name")?.as_str()?;
     let inner = item.get("inner")?.as_object()?;
     let func = inner.get("function")?.as_object()?;
@@ -1751,12 +1781,15 @@ fn extract_method_sig(item: &serde_json::Value) -> Option<String> {
 
     // Build params
     let inputs = sig.get("inputs").and_then(|v| v.as_array())?;
+    let mut has_self = false;
+    let mut param_names: Vec<String> = Vec::new();
     let params: Vec<String> = inputs.iter().filter_map(|input| {
         let arr = input.as_array()?;
         let param_name = arr.get(0)?.as_str()?;
-        if param_name == "self" { return None; } // Skip self
+        if param_name == "self" { has_self = true; return None; }
         let type_val = arr.get(1)?;
         let type_str = rustdoc_type_to_veil(type_val);
+        param_names.push(param_name.to_string());
         Some(format!("{}: {}", param_name, type_str))
     }).collect();
 
@@ -1768,7 +1801,7 @@ fn extract_method_sig(item: &serde_json::Value) -> Option<String> {
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
     let output = sig.get("output");
-    let mut ret = output.and_then(|o| {
+    let raw_ret = output.and_then(|o| {
         if o.is_null() {
             return None;
         }
@@ -1779,6 +1812,12 @@ fn extract_method_sig(item: &serde_json::Value) -> Option<String> {
             Some(t)
         }
     });
+    // Determine fallibility from the raw return type (before BoxFuture wrapping)
+    let is_fallible = raw_ret.as_ref().map(|t| {
+        t.starts_with("Res!") || t.starts_with("Res!<") || t.contains("Res!")
+    }).unwrap_or(false);
+
+    let mut ret = raw_ret;
     // `async fn` → BoxFuture so codegen applies `.await.map_err…?`
     if is_async {
         ret = Some(match ret {
@@ -1787,12 +1826,101 @@ fn extract_method_sig(item: &serde_json::Value) -> Option<String> {
         });
     }
 
-    let sig_str = if let Some(ret) = ret {
+    let sig_str = if let Some(ref ret) = ret {
         format!("fn {}({}) -> {}", name, params.join(", "), ret)
     } else {
         format!("fn {}({})", name, params.join(", "))
     };
-    Some(sig_str)
+    Some(MethodSigInfo {
+        sig: sig_str,
+        name: name.to_string(),
+        is_async,
+        is_fallible,
+        has_self,
+        param_names,
+    })
+}
+
+/// Generate a `lowers_to` Rust template for a method based on its metadata.
+///
+/// Template variables:
+/// - `{{self}}` — the receiver expression
+/// - `{{args}}` — all arguments comma-separated
+/// - `{{param_name}}` — individual argument by name
+/// - `{{error_model.external}}` — resolved from layer error model at codegen time
+///
+/// For static/constructor methods (no self), uses `{QualifiedPath}::{method}(...)`.
+fn generate_lowers_to_template(
+    info: &MethodSigInfo,
+    struct_name: Option<&str>,
+    rust_crate: &str,
+) -> String {
+    let method = &info.name;
+
+    // Build the args portion: use named params for positional clarity
+    let args_str = if info.param_names.is_empty() {
+        "{{args}}".to_string()
+    } else {
+        info.param_names
+            .iter()
+            .map(|n| format!("{{{{{n}}}}}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+
+    if !info.has_self {
+        // Static/constructor: qualified path
+        let qualified = if let Some(sname) = struct_name {
+            format!("{rust_crate}::{sname}")
+        } else {
+            rust_crate.to_string()
+        };
+        if info.is_async && info.is_fallible {
+            format!(
+                "{qualified}::{method}({args_str}).await.map_err(|e| {{{{error_model.external}}}}(format!(\"{{e:?}}\")))?",
+            )
+        } else if info.is_async {
+            format!("{qualified}::{method}({args_str}).await")
+        } else if info.is_fallible {
+            format!(
+                "{qualified}::{method}({args_str}).map_err(|e| {{{{error_model.external}}}}(format!(\"{{e:?}}\")))?",
+            )
+        } else {
+            format!("{qualified}::{method}({args_str})")
+        }
+    } else {
+        // Instance method with self
+        if info.is_async && info.is_fallible {
+            format!(
+                "{{{{self}}}}.{method}({args_str}).await.map_err(|e| {{{{error_model.external}}}}(format!(\"{{e:?}}\")))?",
+            )
+        } else if info.is_async {
+            format!("{{{{self}}}}.{method}({args_str}).await")
+        } else if info.is_fallible {
+            format!(
+                "{{{{self}}}}.{method}({args_str}).map_err(|e| {{{{error_model.external}}}}(format!(\"{{e:?}}\")))?",
+            )
+        } else {
+            format!("{{{{self}}}}.{method}({args_str})")
+        }
+    }
+}
+
+/// Emit a method signature line followed by its `lowers_to` block.
+/// `base_indent` is the number of spaces for the `fn` line (usually 4 for struct methods).
+fn emit_method_with_template(
+    out: &mut String,
+    info: &MethodSigInfo,
+    struct_name: Option<&str>,
+    rust_crate: &str,
+    base_indent: usize,
+) {
+    let indent = " ".repeat(base_indent);
+    let child_indent = " ".repeat(base_indent + 2);
+    let template = generate_lowers_to_template(info, struct_name, rust_crate);
+    out.push_str(&format!("{indent}{}\n", info.sig));
+    out.push_str(&format!("{child_indent}lowers_to\n"));
+    out.push_str(&format!("{child_indent}  rust: \"{template}\"\n"));
 }
 
 /// Convert a rustdoc JSON type representation to VEIL type syntax.

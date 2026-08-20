@@ -44,44 +44,11 @@ chrono.workspace = true
 tokio = { workspace = true }
 futures = "0.3"
 
-// ===== crates/veil_shared/src/register_handlers.rs =====
-//! CAP-003: generated Bus handler registry.
-//! Host calls `register_all` once to wire names → dispatch.
-
-/// All Bus message types exported by this workspace.
-pub const HANDLER_NAMES: &[&str] = &[
-    "CreateCustomerService",
-    "Onboard",
-    "run_saga",
-    "unwind",
-];
-
-/// Register every generated handler name with a host-supplied registrar.
-///
-/// The host provides the actual dispatch (ports / platform). This module
-/// only owns the name list so trampoline code never hardcodes it.
-pub fn register_all<F>(mut register: F)
-where
-F: FnMut(&'static str),
-{
-for name in HANDLER_NAMES {
-register(name);
-}
-}
-
-/// Number of handlers in this workspace.
-pub fn handler_count() -> usize {
-HANDLER_NAMES.len()
-}
-
 // ===== crates/veil_shared/src/lib.rs =====
 //! Shared types across all context crates — common errors and
 //! layer-provided infrastructure traits (routing ports, etc.).
 
 #![allow(unused_imports)]
-
-pub mod register_handlers;
-pub use register_handlers::{handler_count, register_all, HANDLER_NAMES};
 
 use async_trait::async_trait;
 use uuid::Uuid;
@@ -506,11 +473,12 @@ pub struct SmsTwilio {
 
 #[async_trait]
 impl Notifier for SmsTwilio {
-    async fn send_sms(&self, phone: Phone, msg: String) -> Result<(), __VEIL_NO_ERROR_MODEL__> {
-        Ok(compile_error!("unstubbed external `http.post` — install a .stub and call its types (@field + stub methods)"))
+    async fn send_sms(&self, phone: Phone, msg: String) -> Result<(), DomainError> {
+        compile_error!("unstubbed external `http.post` — install a .stub and call its types (@field + stub methods)");
+        Ok(())
     }
 
-    async fn send_email(&self, email: Email, subj: String, body: String) -> Result<(), __VEIL_NO_ERROR_MODEL__> {
+    async fn send_email(&self, email: Email, subj: String, body: String) -> Result<(), DomainError> {
         Ok(()) // TODO: implement
     }
 
@@ -803,11 +771,11 @@ pub struct StripeAdapter {
 
 #[async_trait]
 impl PaymentGateway for StripeAdapter {
-    async fn create_customer(&self, email: String) -> Result<ExtId, __VEIL_NO_ERROR_MODEL__> {
+    async fn create_customer(&self, email: String) -> Result<ExtId, DomainError> {
         Ok(compile_error!("unstubbed external `http.post` — install a .stub and call its types (@field + stub methods)"))
     }
 
-    async fn cancel_subscription(&self, sub_id: Uuid) -> Result<(), __VEIL_NO_ERROR_MODEL__> {
+    async fn cancel_subscription(&self, sub_id: Uuid) -> Result<(), DomainError> {
         Ok(()) // TODO: implement
     }
 
@@ -887,8 +855,8 @@ chrono.workspace = true
 tracing.workspace = true
 serde_json.workspace = true
 veil_shared = { path = "../veil_shared" }
-identity = { path = "../identity" }
 billing = { path = "../billing" }
+identity = { path = "../identity" }
 
 // ===== crates/onboarding/src/lib.rs =====
 //! Onboarding — Orchestrator.
@@ -995,13 +963,13 @@ struct OnboardStep0 {
 
 #[async_trait::async_trait]
 impl SagaStep for OnboardStep0 {
-    async fn action(&self, mut state: serde_json::Value) -> Result<serde_json::Value, DomainError> {
+    async fn action(&self, mut state: &(dyn Json + Send + Sync)) -> Result<serde_json::Value, DomainError> {
         state["c"] = serde_json::json!(Customer::new(Uuid::new_v4(), self.email.clone(), self.phone.clone()));
         self.customer_repo.save(serde_json::from_value::<Customer>(state["c"].clone()).map_err(|e| DomainError::External(e.to_string()))?).await;
         self.bus.dispatch(serde_json::json!({ "type": "CustomerCreated", "id": state["c"]["id"].clone(), "email": self.email.clone(), "created": state["c"]["created"].clone() })).await;
         Ok(state)
     }
-    async fn compensate(&self, mut state: serde_json::Value) -> Result<(), DomainError> {
+    async fn compensate(&self, mut state: &(dyn Json + Send + Sync)) -> Result<(), DomainError> {
         self.customer_repo.delete(serde_json::from_value::<Uuid>(state["c"]["id"].clone()).map_err(|e| DomainError::External(e.to_string()))?).await;
         Ok(())
     }
@@ -1020,12 +988,12 @@ struct OnboardStep1 {
 
 #[async_trait::async_trait]
 impl SagaStep for OnboardStep1 {
-    async fn action(&self, mut state: serde_json::Value) -> Result<serde_json::Value, DomainError> {
+    async fn action(&self, mut state: &(dyn Json + Send + Sync)) -> Result<serde_json::Value, DomainError> {
         state["result"] = serde_json::json!(self.k_y_c_provider.check(self.name.clone(), self.email.clone()).await?);
         compile_error!("unstubbed external `c.verify` — install a .stub and call its types (@field + stub methods)");
         Ok(state)
     }
-    async fn compensate(&self, mut state: serde_json::Value) -> Result<(), DomainError> {
+    async fn compensate(&self, mut state: &(dyn Json + Send + Sync)) -> Result<(), DomainError> {
         compile_error!("unstubbed external `c.reject` — install a .stub and call its types (@field + stub methods)");
         Ok(())
     }
@@ -1044,12 +1012,12 @@ struct OnboardStep2 {
 
 #[async_trait::async_trait]
 impl SagaStep for OnboardStep2 {
-    async fn action(&self, mut state: serde_json::Value) -> Result<serde_json::Value, DomainError> {
+    async fn action(&self, mut state: &(dyn Json + Send + Sync)) -> Result<serde_json::Value, DomainError> {
         self.payment_gateway.create_customer(self.email.clone().addr.clone()).await?;
         self.bus.invoke(serde_json::json!({ "type": "CreateTrial", "customer_id": state["c"]["id"].clone(), "plan": "FreeTier" })).await?;
         Ok(state)
     }
-    async fn compensate(&self, mut state: serde_json::Value) -> Result<(), DomainError> {
+    async fn compensate(&self, mut state: &(dyn Json + Send + Sync)) -> Result<(), DomainError> {
         self.bus.invoke(serde_json::json!({ "type": "CancelTrial", "customer_id": state["c"]["id"].clone() })).await?;
         Ok(())
     }
@@ -1062,7 +1030,7 @@ pub async fn onboard(deps: &Deps, email: Email, phone: Phone, name: String) -> R
         Box::new(OnboardStep1 { email: email.clone(), phone: phone.clone(), name: name.clone(), bus: deps.bus.clone(), customer_repo: deps.customer_repo.clone(), k_y_c_provider: deps.k_y_c_provider.clone(), payment_gateway: deps.payment_gateway.clone() }),
         Box::new(OnboardStep2 { email: email.clone(), phone: phone.clone(), name: name.clone(), bus: deps.bus.clone(), customer_repo: deps.customer_repo.clone(), k_y_c_provider: deps.k_y_c_provider.clone(), payment_gateway: deps.payment_gateway.clone() }),
     ];
-    run_saga(&steps).await
+    run_saga(deps.state.as_ref(), &steps).await
 }
 
 

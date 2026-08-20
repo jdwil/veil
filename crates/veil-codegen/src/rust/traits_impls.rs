@@ -42,18 +42,10 @@ futures = "0.3"
         content: shared_cargo,
     });
 
-    // CAP-003: always emit register_handlers module (may be empty list).
-    files.push(GeneratedFile {
-        path: "crates/veil_shared/src/register_handlers.rs".into(),
-        content: gen_register_handlers_module(handler_names),
-    });
-
     let mut lib = String::new();
     lib.push_str("//! Shared types across all context crates — common errors and\n");
     lib.push_str("//! layer-provided infrastructure traits (routing ports, etc.).\n\n");
     lib.push_str("#![allow(unused_imports)]\n\n");
-    lib.push_str("pub mod register_handlers;\n");
-    lib.push_str("pub use register_handlers::{handler_count, register_all, HANDLER_NAMES};\n\n");
     lib.push_str("use async_trait::async_trait;\nuse uuid::Uuid;\n\n");
 
     // ── Error model: generate from registry (layer-declared) ────────────
@@ -90,14 +82,9 @@ futures = "0.3"
     let trait_names: std::collections::HashSet<String> =
         traits.iter().map(|t| t.name.clone()).collect();
 
-    // Local harness impls: routing trait(s) + auth trait from layer policy.
-    let routing = registry.routing_traits();
-    let mut routing_trait: Option<&Construct> = None;
+    // Local harness impls: auth trait from layer policy.
     let mut auth_trait: Option<&Construct> = None;
     for t in traits {
-        if routing.iter().any(|r| r == &t.name) && routing_trait.is_none() {
-            routing_trait = Some(t);
-        }
         if registry.is_auth_service_trait(&t.name) {
             auth_trait = Some(t);
         }
@@ -136,10 +123,27 @@ futures = "0.3"
         lib.push_str("}\n\n");
     }
 
-    // RT-001 / RT-004: InProcessBus methods from the routing trait surface only.
-    if let Some(rt) = routing_trait {
-        lib.push_str(&gen_inprocess_bus_impl(rt, &trait_names, registry));
+    // Layer-provided shared_emit blocks (e.g. InProcessBus + handler registry from bus.layer).
+    // Substitute {error_type}, {not_found_variant}, {handler_names_entries} placeholders.
+    let err_type_name = registry.error_model.as_ref().map(|em| em.type_name.as_str()).unwrap_or("__VEIL_NO_ERROR_MODEL__");
+    let not_found_variant = registry.error_model.as_ref()
+        .and_then(|em| em.variant("not_found"))
+        .unwrap_or("__NO_NOT_FOUND__");
+    let handler_entries: String = handler_names.iter()
+        .map(|n| format!("    \"{n}\","))
+        .collect::<Vec<_>>()
+        .join("\n");
+    for (target, code) in &registry.shared_emit {
+        if target == "rust" {
+            let substituted = code
+                .replace("{error_type}", err_type_name)
+                .replace("{not_found_variant}", not_found_variant)
+                .replace("{handler_names_entries}", &handler_entries);
+            lib.push_str(&substituted);
+            lib.push('\n');
+        }
     }
+
     // RT-008: AllowAllAuth methods from the configured auth trait + Principal-like struct.
     if let Some(at) = auth_trait {
         lib.push_str(&gen_allow_all_auth_impl(at, structs, &trait_names, registry));
@@ -268,12 +272,10 @@ pub fn gen_traits(
             let rust = to_snake(&fn_name);
             out.push_str(&format!("pub use veil_shared::{rust};\n"));
         }
-        if !registry.routing_traits().is_empty() {
-            out.push_str("pub use veil_shared::InProcessBus;\n");
-        }
-        out.push_str(
-            "pub use veil_shared::{register_all, handler_count, HANDLER_NAMES};\n\n",
-        );
+        // Layer shared_emit items (bus impl, handler registry, etc.) are
+        // covered by the glob when no conflict, or by the selective imports
+        // of declared type names above. No explicit bus-specific re-exports.
+        out.push('\n');
     } else {
         out.push_str("pub use veil_shared::*;\n\n");
     }

@@ -396,7 +396,12 @@ pkg mini v1
   construct Handler
     keyword handler
     maps_to fn
-    allowed_in Context";
+    allowed_in Context
+  construct DepField
+    kw dep
+    mt struct
+    ann
+      dep: \"Injected dependency\" field role:dependency";
     let app = r#"sol MiniApp
   use mini
   ctx App
@@ -537,7 +542,8 @@ fn saga_lowers_to_step_impls_and_delegates_to_coordinator() {
     );
     // The saga fn just builds the step list and calls the layer coordinator.
     assert!(
-        out.contains("run_saga(&steps).await") || out.contains("run_saga(steps).await"),
+        out.contains("run_saga(&steps).await") || out.contains("run_saga(steps).await")
+            || out.contains("run_saga(deps.bus.as_ref(), &steps).await"),
         "coordinator call missing:\n{}",
         grep(&out, "run_saga")
     );
@@ -816,15 +822,27 @@ pkg BusApp
         ret "ok"
 "#;
     let mut reg = LayerRegistry::builtin();
+    reg.load_content("base", include_str!("../../../layers/base.layer")).unwrap();
+    reg.load_content("rust", include_str!("../../../layers/rust.layer")).unwrap();
+    reg.load_content("tokio", include_str!("../../../layers/tokio.layer")).unwrap();
+    reg.load_content("di", include_str!("../../../layers/di.layer")).unwrap();
+    reg.load_content("rest_english", include_str!("../../../layers/rest_english.layer")).unwrap();
+    reg.load_content("bus", include_str!("../../../layers/bus.layer")).unwrap();
+    reg.load_content("bus_handle", include_str!("../../../layers/bus_handle.layer")).unwrap();
+    reg.load_content("auth_local", include_str!("../../../layers/auth_local.layer")).unwrap();
+    reg.load_content("harness", include_str!("../../../layers/harness.layer")).unwrap();
+    reg.load_content("deploy", include_str!("../../../layers/deploy.layer")).unwrap();
     reg.load_content("ddd", include_str!("../../../layers/ddd.layer"))
         .expect("ddd");
+    reg.load_content("tokio_ddd", include_str!("../../../layers/tokio_ddd.layer")).unwrap();
+    reg.load_content("ddd_fullstack", include_str!("../../../layers/ddd_fullstack.layer")).unwrap();
     let tokens = veil_parser::lex(src);
     let sol = veil_parser::parse_with_registry(&tokens, reg.clone()).expect("parse");
     let project = veil_codegen::generate(&sol, &reg);
     let reg_mod = project
         .files
         .iter()
-        .find(|f| f.path.ends_with("register_handlers.rs"))
+        .find(|f| f.path.ends_with("register_handlers.rs") || f.path.ends_with("lib.rs") && f.content.contains("register_all"))
         .expect("register_handlers.rs");
     assert!(
         reg_mod.content.contains("pub fn register_all"),
@@ -847,7 +865,11 @@ pkg BusApp
         .iter()
         .find(|f| f.path == "crates/veil_shared/src/lib.rs")
         .expect("shared lib");
-    assert!(shared.content.contains("pub mod register_handlers"));
+    assert!(
+        shared.content.contains("pub mod register_handlers") || shared.content.contains("register_all"),
+        "shared lib must reference register_all:\n{}",
+        shared.content
+    );
 }
 
 /// CAP-002/006: link veil_server + @main → ProductHost bin main.
@@ -864,10 +886,19 @@ pkg HostApp
       ret Ok
 "#;
     let mut reg = LayerRegistry::builtin();
-    reg.load_content("ddd", include_str!("../../../layers/ddd.layer"))
-        .expect("ddd");
-    reg.load_content("di", include_str!("../../../layers/di.layer"))
-        .expect("di");
+    reg.load_content("base", include_str!("../../../layers/base.layer")).unwrap();
+    reg.load_content("rust", include_str!("../../../layers/rust.layer")).unwrap();
+    reg.load_content("tokio", include_str!("../../../layers/tokio.layer")).unwrap();
+    reg.load_content("di", include_str!("../../../layers/di.layer")).unwrap();
+    reg.load_content("rest_english", include_str!("../../../layers/rest_english.layer")).unwrap();
+    reg.load_content("bus", include_str!("../../../layers/bus.layer")).unwrap();
+    reg.load_content("bus_handle", include_str!("../../../layers/bus_handle.layer")).unwrap();
+    reg.load_content("auth_local", include_str!("../../../layers/auth_local.layer")).unwrap();
+    reg.load_content("harness", include_str!("../../../layers/harness.layer")).unwrap();
+    reg.load_content("deploy", include_str!("../../../layers/deploy.layer")).unwrap();
+    reg.load_content("ddd", include_str!("../../../layers/ddd.layer")).unwrap();
+    reg.load_content("tokio_ddd", include_str!("../../../layers/tokio_ddd.layer")).unwrap();
+    reg.load_content("ddd_fullstack", include_str!("../../../layers/ddd_fullstack.layer")).unwrap();
     let tokens = veil_parser::lex(src);
     let sol = veil_parser::parse_with_registry(&tokens, reg.clone()).expect("parse");
     let project = veil_codegen::generate(&sol, &reg);
@@ -1698,8 +1729,19 @@ pkg App
         ret name
 "#;
     let mut reg = LayerRegistry::builtin();
-    reg.load_content("ddd", include_str!("../../../layers/ddd.layer"))
-        .unwrap();
+    reg.load_content("base", include_str!("../../../layers/base.layer")).unwrap();
+    reg.load_content("rust", include_str!("../../../layers/rust.layer")).unwrap();
+    reg.load_content("tokio", include_str!("../../../layers/tokio.layer")).unwrap();
+    reg.load_content("di", include_str!("../../../layers/di.layer")).unwrap();
+    reg.load_content("rest_english", include_str!("../../../layers/rest_english.layer")).unwrap();
+    reg.load_content("bus", include_str!("../../../layers/bus.layer")).unwrap();
+    reg.load_content("bus_handle", include_str!("../../../layers/bus_handle.layer")).unwrap();
+    reg.load_content("auth_local", include_str!("../../../layers/auth_local.layer")).unwrap();
+    reg.load_content("harness", include_str!("../../../layers/harness.layer")).unwrap();
+    reg.load_content("deploy", include_str!("../../../layers/deploy.layer")).unwrap();
+    reg.load_content("ddd", include_str!("../../../layers/ddd.layer")).unwrap();
+    reg.load_content("tokio_ddd", include_str!("../../../layers/tokio_ddd.layer")).unwrap();
+    reg.load_content("ddd_fullstack", include_str!("../../../layers/ddd_fullstack.layer")).unwrap();
     let tokens = veil_parser::lex(src);
     let sol = veil_parser::parse_with_registry(&tokens, reg.clone()).expect("parse");
     let project = veil_codegen::generate(&sol, &reg);
@@ -1737,8 +1779,19 @@ pkg App
         ret name
 "#;
     let mut reg = LayerRegistry::builtin();
-    reg.load_content("ddd", include_str!("../../../layers/ddd.layer"))
-        .unwrap();
+    reg.load_content("base", include_str!("../../../layers/base.layer")).unwrap();
+    reg.load_content("rust", include_str!("../../../layers/rust.layer")).unwrap();
+    reg.load_content("tokio", include_str!("../../../layers/tokio.layer")).unwrap();
+    reg.load_content("di", include_str!("../../../layers/di.layer")).unwrap();
+    reg.load_content("rest_english", include_str!("../../../layers/rest_english.layer")).unwrap();
+    reg.load_content("bus", include_str!("../../../layers/bus.layer")).unwrap();
+    reg.load_content("bus_handle", include_str!("../../../layers/bus_handle.layer")).unwrap();
+    reg.load_content("auth_local", include_str!("../../../layers/auth_local.layer")).unwrap();
+    reg.load_content("harness", include_str!("../../../layers/harness.layer")).unwrap();
+    reg.load_content("deploy", include_str!("../../../layers/deploy.layer")).unwrap();
+    reg.load_content("ddd", include_str!("../../../layers/ddd.layer")).unwrap();
+    reg.load_content("tokio_ddd", include_str!("../../../layers/tokio_ddd.layer")).unwrap();
+    reg.load_content("ddd_fullstack", include_str!("../../../layers/ddd_fullstack.layer")).unwrap();
     reg.harness_policy.emit_bin = Some(veil_ir::EmitBin::Never);
     let tokens = veil_parser::lex(src);
     let sol = veil_parser::parse_with_registry(&tokens, reg.clone()).expect("parse");

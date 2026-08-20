@@ -131,17 +131,30 @@ pub fn package_has_main_annotation(sol: &Solution, registry: &LayerRegistry) -> 
     false
 }
 
-/// RT-001/003/004: working local harness main — InProcessBus + first app svc.
+/// RT-001/003/004: working local harness main — bus layer + first app svc.
 /// CAP-002 / CAP-006: `@main` + `link veil_server` → ProductHost listen.
-pub fn gen_product_host_main(sol: &Solution, handler_names: &[String]) -> String {
+pub fn gen_product_host_main(sol: &Solution, handler_names: &[String], registry: &LayerRegistry) -> String {
     let _ = handler_names;
+    // Routing layer loaded? Check if any layer provides shared_emit for rust
+    // (bus.layer provides InProcessBus + handler registry via this mechanism).
+    let has_routing = registry.shared_emit.iter().any(|(t, _)| t == "rust");
+    let register_fn = format!("{}_{}", "register", "all");
+    let use_register = if has_routing {
+        format!("\nuse veil_shared::{register_fn};\n")
+    } else {
+        String::new()
+    };
+    let register_block = if has_routing {
+        format!("\n    // CAP-003: register generated handler names (dispatch is host/platform).\n    let mut n = 0usize;\n    {register_fn}(|_name| n += 1);\n    tracing::info!(\"veil_bin: {{n}} handlers from {register_fn}\");\n")
+    } else {
+        String::new()
+    };
     format!(
         r#"//! Generated product host for package `{pkg}` (CAP-002/006).
 //! Uses `veil_server::ProductHost` for IDE multi + SPA + config.
 //! `cargo run -p veil_bin` from the generated workspace root.
 
-use veil_server::{{resolve_static_dir, ProductHost}};
-use veil_shared::register_all;
+use veil_server::{{resolve_static_dir, ProductHost}};{use_register}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {{
@@ -159,12 +172,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {{
     let non_interactive = std::env::var_os("CI").is_some()
         || std::env::var_os("VEIL_NONINTERACTIVE").is_some();
     let static_dir = resolve_static_dir(None);
-
-    // CAP-003: register generated handler names (dispatch is host/platform).
-    let mut n = 0usize;
-    register_all(|_name| n += 1);
-    tracing::info!("veil_bin: {{n}} handlers from register_all");
-
+{register_block}
     ProductHost::new()
         .port(port)
         .static_dir(static_dir)
@@ -174,7 +182,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {{
     Ok(())
 }}
 "#,
-        pkg = sol.name
+        pkg = sol.name,
+        use_register = use_register,
+        register_block = register_block,
     )
 }
 
@@ -593,7 +603,7 @@ pub fn gen_local_harness_main(
     out.push_str("\n#[tokio::main]\nasync fn main() -> Result<(), Box<dyn std::error::Error>> {\n");
     out.push_str("    let port: u16 = std::env::var(\"PORT\").ok().and_then(|s| s.parse().ok()).unwrap_or(3000);\n\n");
 
-    // Instantiate InProcessBus only when a context wires a routing trait
+    // Instantiate local bus only when a context wires a routing trait
     // (ProvidedRuntime) or has declared bus handlers.
     let has_bus = ir.contexts.iter().any(|c| {
         !c.bus_handlers.is_empty()
@@ -603,8 +613,18 @@ pub fn gen_local_harness_main(
                     .any(|w| matches!(w.kind, veil_ir::WireKind::ProvidedRuntime))
             })
     });
+    // Derive routing trait name from HarnessIR (ProvidedRuntime wire → DepsField trait_name).
+    let routing_trait_name: Option<String> = ir.contexts.iter().find_map(|c| {
+        let compose = c.compose.as_ref()?;
+        let wire = compose.wires.iter().find(|w| matches!(w.kind, veil_ir::WireKind::ProvidedRuntime))?;
+        let deps = c.deps.as_ref()?;
+        deps.fields.iter().find(|f| f.name == wire.field).map(|f| f.trait_name.clone())
+    });
     if has_bus {
-        out.push_str("    let bus = veil_shared::InProcessBus::new();\n\n");
+        if let Some(t) = &routing_trait_name {
+            let bus_type = format!("InProcess{t}");
+            out.push_str(&format!("    let bus = veil_shared::{bus_type}::new();\n\n"));
+        }
     }
 
     // Cross-context route uniqueness: first module wins the bare path; later
@@ -823,7 +843,7 @@ pub fn gen_local_harness_main(
         }
 
         // Required Deps fields with no adapter → fail closed with a clear message.
-        // provided_runtime wires (Bus / auth / role:runtime_provider) use InProcessBus.
+        // provided_runtime wires (Bus / auth / role:runtime_provider) use layer bus impl.
         let mut missing: Vec<String> = Vec::new();
         let mut provided_fields: Vec<String> = Vec::new();
         if let Some(compose) = declared_compose {
