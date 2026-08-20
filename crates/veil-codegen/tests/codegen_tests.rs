@@ -2592,3 +2592,172 @@ sol App
         types_section
     );
 }
+
+
+// ─── Construct lowers_to tests ───────────────────────────────────────────────
+
+#[test]
+fn construct_lowers_to_struct_uses_template() {
+    // Layer declares lowers_to for a struct-shaped construct; codegen should
+    // emit the template instead of the default derive/struct/impl.
+    let layer = "\
+pkg test v1
+  construct Context
+    keyword ctx
+    maps_to mod
+    allowed_in top
+  construct ValueObject
+    kw val
+    mt struct
+    allowed_in Context
+    constraint equality_by_value
+    lowers_to
+      rust: \"\"\"
+        #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+        pub struct {{name}} {
+            {{for field in fields}}pub {{field.name}}: {{field.type}},
+            {{end}}
+        }
+      \"\"\"";
+    let app = "sol App\n  use test\n  ctx Main\n    val Price\n      amount: F64\n      currency: Str";
+    let out = generate_with_layer("test", layer, app);
+    // Should contain the template output
+    assert!(
+        out.contains("#[derive(Debug, Clone, PartialEq, Eq, Hash)]"),
+        "lowers_to template should be used; got:\n{}",
+        out
+    );
+    assert!(
+        out.contains("pub struct Price"),
+        "template should interpolate name; got:\n{}",
+        out
+    );
+    assert!(
+        out.contains("pub amount: f64,"),
+        "template should iterate fields with type conversion; got:\n{}",
+        out
+    );
+    assert!(
+        out.contains("pub currency: String,"),
+        "template should iterate all fields; got:\n{}",
+        out
+    );
+    // Should NOT contain default emission (Serialize, Deserialize)
+    assert!(
+        !out.contains("Serialize, Deserialize"),
+        "lowers_to should suppress default derives; got:\n{}",
+        out
+    );
+}
+
+#[test]
+fn construct_without_lowers_to_uses_default_emission() {
+    // Construct with NO lowers_to should emit the standard shape-based code.
+    let layer = "\
+pkg test v1
+  construct Context
+    keyword ctx
+    maps_to mod
+    allowed_in top
+  construct ValueObject
+    kw val
+    mt struct
+    allowed_in Context
+    constraint equality_by_value";
+    let app = "sol App\n  use test\n  ctx Main\n    val Price\n      amount: F64\n      currency: Str";
+    let out = generate_with_layer("test", layer, app);
+    // Default emission includes Serialize/Deserialize and struct
+    assert!(
+        out.contains("Serialize, Deserialize"),
+        "without lowers_to, default derives should be emitted; got:\n{}",
+        out
+    );
+    assert!(
+        out.contains("pub struct Price"),
+        "without lowers_to, struct should still be generated; got:\n{}",
+        out
+    );
+    assert!(
+        out.contains("pub amount: f64,"),
+        "fields should be emitted with default gen_struct; got:\n{}",
+        out
+    );
+}
+
+#[test]
+fn construct_lowers_to_field_iteration() {
+    // Verify {{for field in fields}} iterates all fields correctly
+    let layer = "\
+pkg test v1
+  construct Context
+    keyword ctx
+    maps_to mod
+    allowed_in top
+  construct Entity
+    kw ent
+    mt struct
+    allowed_in Context
+    lowers_to
+      rust: \"\"\"
+        // FIELDS_START
+        {{for field in fields}}// field: {{field.name}} -> {{field.type}}
+        {{end}}// FIELDS_END
+        pub struct {{name}} {}
+      \"\"\"";
+    let app = "sol App\n  use test\n  ctx Main\n    ent Customer\n      name: Str\n      email: Str\n      age: Int";
+    let out = generate_with_layer("test", layer, app);
+    assert!(
+        out.contains("// field: name -> String"),
+        "should iterate field name; got:\n{}",
+        out
+    );
+    assert!(
+        out.contains("// field: email -> String"),
+        "should iterate all fields; got:\n{}",
+        out
+    );
+    assert!(
+        out.contains("// field: age -> i64"),
+        "should convert types; got:\n{}",
+        out
+    );
+    assert!(
+        out.contains("pub struct Customer {}"),
+        "name should interpolate; got:\n{}",
+        out
+    );
+}
+
+#[test]
+fn construct_lowers_to_single_line_template() {
+    // Single-line (quoted) template should also work
+    let layer = "\
+pkg test v1
+  construct Context
+    keyword ctx
+    maps_to mod
+    allowed_in top
+  construct Marker
+    kw mark
+    mt struct
+    allowed_in Context
+    lowers_to
+      rust: \"pub struct {{name}};\"";
+    let app = "sol App\n  use test\n  ctx Main\n    mark Empty";
+    let out = generate_with_layer("test", layer, app);
+    assert!(
+        out.contains("pub struct Empty;"),
+        "single-line lowers_to should work; got:\n{}",
+        out
+    );
+    // The types.rs section should not contain default derives for Empty
+    let types_section = out
+        .split("// ==== ")
+        .find(|s| s.contains("domain/types.rs"))
+        .unwrap_or("");
+    assert!(
+        !types_section.contains("#[derive"),
+        "single-line lowers_to should suppress default in types.rs; got:\n{}",
+        types_section
+    );
+}

@@ -5209,4 +5209,46 @@ types_module types
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&sys);
     }
+
+    #[test]
+    fn construct_lowers_to_parses_multiline_and_single_line() {
+        let src = r#"
+pkg test v1
+  construct ValueObject
+    kw val
+    mt struct
+    lowers_to
+      rust: """
+        #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+        pub struct {{name}} {
+            {{for field in fields}}pub {{field.name}}: {{field.type}},
+            {{end}}
+        }
+      """
+      typescript: "export interface {{name}} {}"
+"#;
+        let mut reg = LayerRegistry::builtin();
+        reg.load_content("test", src).expect("layer should load");
+        let spec = reg.construct("val").expect("val construct");
+        // Multi-line template
+        let rust_tpl = spec.lowers_to.get("rust").expect("rust template");
+        assert!(
+            rust_tpl.contains("#[derive(Debug, Clone, PartialEq, Eq, Hash)]"),
+            "multi-line template should preserve derives: {}",
+            rust_tpl
+        );
+        assert!(
+            rust_tpl.contains("pub struct {{name}}"),
+            "multi-line template should preserve placeholders: {}",
+            rust_tpl
+        );
+        assert!(
+            rust_tpl.contains("{{for field in fields}}"),
+            "multi-line template should preserve loop: {}",
+            rust_tpl
+        );
+        // Single-line template
+        let ts_tpl = spec.lowers_to.get("typescript").expect("typescript template");
+        assert_eq!(ts_tpl, "export interface {{name}} {}");
+    }
 }
