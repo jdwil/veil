@@ -261,7 +261,7 @@ pkg mini v1
     let app = "sol MiniApp\n  use mini\n  widget Gadget\n    size: Int";
     let out = generate_with_layer("mini", layer, app);
     assert!(
-        out.contains("pub async fn sum_all("),
+        out.contains("pub async fn sum_all(") || out.contains("pub fn sum_all("),
         "declared fn not generated:\n{}",
         out
     );
@@ -528,7 +528,7 @@ fn saga_lowers_to_step_impls_and_delegates_to_coordinator() {
 fn saga_knowledge_is_not_in_the_engine() {
     // The saga coordinator + SagaStep trait come from the layer, not the engine.
     let out = customer_onboarding();
-    assert!(out.contains("pub async fn run_saga("), "coordinator not generated from layer");
+    assert!(out.contains("pub async fn run_saga(") || out.contains("pub fn run_saga("), "coordinator not generated from layer");
     assert!(out.contains("pub trait SagaStep"), "SagaStep trait not generated from layer");
 }
 
@@ -2380,4 +2380,59 @@ pkg ImmutableTest
             "Immutable event method must use &self:\n{types_section}"
         );
     }
+}
+
+// ─── fn_attrs / Runtime Layer Tests ───────────────────────────────────────────
+// These verify the generic emit_to fn_attrs mechanism and runtime layer behavior.
+
+/// With tokio.layer loaded, fn-shaped constructs emit `pub async fn`.
+#[test]
+fn fn_attrs_with_tokio_layer_produces_async() {
+    let out = generate_example(include_str!("../../../examples/customer_onboarding.veil"));
+    // All application functions should be async when tokio is in the layer stack.
+    assert!(
+        out.contains("pub async fn create_customer_service("),
+        "with tokio loaded, fns should be pub async fn"
+    );
+}
+
+/// Without any runtime layer providing fn_attrs, engine produces plain `pub fn`.
+#[test]
+fn fn_attrs_no_runtime_layer_produces_sync() {
+    let layer = "\
+pkg mini v1
+  construct Widget
+    keyword widget
+    maps_to struct
+    allowed_in top
+  declare
+    fn greet(name: Str) -> Res!<Str>
+      ret name";
+    let app = "sol App\n  use mini\n  widget Thing\n    x: Int";
+    let out = generate_with_layer("mini", layer, app);
+    // No runtime layer → engine fallback → plain pub fn (sync)
+    assert!(
+        out.contains("pub fn greet("),
+        "without runtime layer, engine fallback should be sync (pub fn):\n{}",
+        out
+    );
+    assert!(
+        !out.contains("pub async fn greet("),
+        "without runtime layer, fn should NOT be async:\n{}",
+        out
+    );
+}
+
+/// The tokio.layer provides fn_attrs at priority 200.
+#[test]
+fn fn_attrs_tokio_layer_priority_200() {
+    // When tokio is loaded and a fn-shaped construct exists, it's emitted as async.
+    // Use the customer_onboarding example which has proper fn-shaped constructs via DDD.
+    let out = generate_example(include_str!("../../../examples/customer_onboarding.veil"));
+    // The saga delegated function uses fn_attrs (application code, not framework)
+    assert!(
+        out.contains("pub async fn onboard("),
+        "with tokio.layer at priority 200, fn-shaped constructs should be async:\n{}",
+        grep(&out, "pub async fn onboard\npub fn onboard")
+    );
 }

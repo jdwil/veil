@@ -43,10 +43,3 @@ layer rust
       emit """
         #[async_trait::async_trait]
       """
-
-    # Fn-shaped constructs default to async
-    match fn
-      emit_to "fn_attrs" priority 100
-      emit """
-        async
-      """

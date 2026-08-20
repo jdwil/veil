@@ -1,0 +1,28 @@
+layer tokio
+  use rust
+
+  annotation sync
+  annotation async
+
+  codegen rust
+    # Default: all fn-shaped constructs are async.
+    # Runtime layer (priority 200) overrides platform (rust.layer, priority 100).
+    match fn
+      emit_to "fn_attrs" priority 200
+      emit """
+        pub async
+      """
+
+    # Per-construct override: @sync strips async (highest priority).
+    match fn where has_annotation("sync")
+      emit_to "fn_attrs" priority 999
+      emit """
+        pub
+      """
+
+    # Per-construct override: @async forces async (useful in a sync-default context).
+    match fn where has_annotation("async")
+      emit_to "fn_attrs" priority 999
+      emit """
+        pub async
+      """

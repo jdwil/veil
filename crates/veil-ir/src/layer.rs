@@ -2806,9 +2806,20 @@ pub fn parse_layer_file(content: &str, layer_name: &str) -> Result<RawLayer, Str
             if in_declare && !current_decl_lines.is_empty() {
                 current_decl_lines.push(String::new());
             }
-            // Blank lines inside codegen blocks are preserved
+            // Inside codegen blocks, blank lines are preserved AND lines starting
+            // with # are real code (e.g. #[derive(...)]), not layer comments.
             if in_codegen {
-                codegen_lines.push(String::new());
+                if trimmed.is_empty() {
+                    codegen_lines.push(String::new());
+                } else {
+                    // # line inside codegen — treat as code content, not comment
+                    let dedented = if line.len() > codegen_base_indent {
+                        &line[codegen_base_indent..]
+                    } else {
+                        trimmed
+                    };
+                    codegen_lines.push(dedented.to_string());
+                }
             }
             continue;
         }

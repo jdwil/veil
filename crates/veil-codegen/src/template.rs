@@ -184,13 +184,13 @@ pub fn compose_section(output: &TemplateOutput, section: &str) -> Option<String>
     if contributions.is_empty() {
         return None;
     }
-    // Contributions are already sorted by priority in execute_templates.
-    let body: String = contributions
-        .iter()
-        .map(|c| c.content.trim().to_string())
-        .collect::<Vec<_>>()
-        .join("\n");
-    Some(body)
+    // Contributions are sorted by priority ascending. Highest priority wins —
+    // take the last contribution (highest priority). When multiple
+    // contributions share the same highest priority, take the first of that
+    // tier (they should all be identical — e.g. derives from the same rule
+    // matching multiple constructs).
+    let highest = contributions.last()?;
+    Some(highest.content.trim().to_string())
 }
 
 /// Check if a construct matches a rule's conditions.

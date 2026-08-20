@@ -277,6 +277,7 @@ pub fn gen_module_crate(
     harness_ir: &veil_ir::HarnessIR,
     layer_derives: Option<&str>,
     layer_trait_attrs: Option<&str>,
+    layer_fn_attrs: Option<&str>,
 ) -> Vec<GeneratedFile> {
     let crate_name = module_crate_name(module, solution);
     let mut files = Vec::new();
@@ -429,6 +430,7 @@ uuid.workspace = true"#);
         solution,
         registry,
         deps_decl.as_ref(),
+        layer_fn_attrs,
     ));
 
     // Generate manifest.json only for deployment units (constructs marked with `au`)

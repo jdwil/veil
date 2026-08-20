@@ -26,6 +26,8 @@ pub fn is_platform_layer_name(stem: &str) -> bool {
             | "functional"
             | "rust"
             | "harness"
+            | "tokio"
+            | "tokio_ddd"
             | "ui"
             | "svelte5"
             | "sveltekit5"

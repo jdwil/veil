@@ -3,6 +3,7 @@ pkg harness v1
   author "VEIL"
   use base
   use di
+  use tokio
 
   harness_policy
     profile axum_http

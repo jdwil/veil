@@ -239,15 +239,15 @@ pub async fn run_saga(steps: &[Box<dyn SagaStep + Send + Sync>]) -> Result<(), D
     let mut i = 0;
     while i < (steps.len() as i64) {
             match steps.get(i as usize).ok_or(DomainError::NotFound)?.action(state.clone()).await {
-            Ok(next) => {
-            state = next;
-            i += 1
-        },
-            Err(e) => {
-            unwind(steps, i, state.clone()).await?;
-            return Err(e)
-        },
-        };
+                    Ok(next) => {
+                    state = next.clone();
+                    i += 1
+                },
+                    Err(e) => {
+                    unwind(steps, i, state.clone()).await?;
+                    return Err(e)
+                },
+                }
         }
     Ok(())
 }
@@ -456,20 +456,20 @@ pub use veil_shared::{DomainError, ValidationError};
 pub use veil_shared::*;
 
 /// Port: Notifier
-#[async_trait]
+#[async_trait::async_trait]
 pub trait Notifier: Send + Sync {
     async fn send_sms(&self, phone: Phone, msg: String) -> Result<(), DomainError>;
     async fn send_email(&self, email: Email, subj: String, body: String) -> Result<(), DomainError>;
 }
 
 /// Port: KYCProvider
-#[async_trait]
+#[async_trait::async_trait]
 pub trait KYCProvider: Send + Sync {
     async fn check(&self, name: String, email: Email) -> Result<KYCResult, DomainError>;
 }
 
 /// Port: CustomerRepo
-#[async_trait]
+#[async_trait::async_trait]
 pub trait CustomerRepo: Send + Sync {
     async fn save(&self, c: Customer) -> Result<(), DomainError>;
     async fn find(&self, id: Uuid) -> Result<Option<Customer>, DomainError>;
@@ -477,7 +477,7 @@ pub trait CustomerRepo: Send + Sync {
 }
 
 /// Port: Bus
-#[async_trait]
+#[async_trait::async_trait]
 pub trait Bus: Send + Sync {
     async fn dispatch(&self, evt: serde_json::Value) -> Result<(), DomainError>;
     async fn invoke(&self, cmd: serde_json::Value) -> Result<serde_json::Value, DomainError>;
@@ -488,7 +488,7 @@ pub trait Bus: Send + Sync {
 // ===== crates/identity/src/adapters/mod.rs =====
 //! Implementations of traits.
 
-#![allow(unused_imports, unused_variables, dead_code)]
+#![allow(unused_imports, unused_variables)]
 
 use async_trait::async_trait;
 use crate::ports::*;
@@ -506,7 +506,8 @@ pub struct SmsTwilio {
 #[async_trait]
 impl Notifier for SmsTwilio {
     async fn send_sms(&self, phone: Phone, msg: String) -> Result<(), DomainError> {
-        { todo!("unstubbed external `http.post` — install a .stub and call its types (@field + stub methods)"); }
+        compile_error!("unstubbed external `http.post` — install a .stub and call its types (@field + stub methods)");
+        Ok(())
     }
 
     async fn send_email(&self, email: Email, subj: String, body: String) -> Result<(), DomainError> {
@@ -549,7 +550,7 @@ Ok(())
 // ===== crates/identity/src/application/mod.rs =====
 //! Application services and flow functions.
 
-#![allow(unused_imports, unused_variables, dead_code)]
+#![allow(unused_imports, unused_variables)]
 
 use crate::ports::*;
 use crate::domain::types::*;
@@ -776,7 +777,7 @@ pub use veil_shared::{DomainError, ValidationError};
 pub use veil_shared::*;
 
 /// Port: PaymentGateway
-#[async_trait]
+#[async_trait::async_trait]
 pub trait PaymentGateway: Send + Sync {
     async fn create_customer(&self, email: String) -> Result<ExtId, DomainError>;
     async fn cancel_subscription(&self, sub_id: Uuid) -> Result<(), DomainError>;
@@ -786,7 +787,7 @@ pub trait PaymentGateway: Send + Sync {
 // ===== crates/billing/src/adapters/mod.rs =====
 //! Implementations of traits.
 
-#![allow(unused_imports, unused_variables, dead_code)]
+#![allow(unused_imports, unused_variables)]
 
 use async_trait::async_trait;
 use crate::ports::*;
@@ -803,7 +804,7 @@ pub struct StripeAdapter {
 #[async_trait]
 impl PaymentGateway for StripeAdapter {
     async fn create_customer(&self, email: String) -> Result<ExtId, DomainError> {
-        { todo!("unstubbed external `http.post` — install a .stub and call its types (@field + stub methods)"); }
+        Ok(compile_error!("unstubbed external `http.post` — install a .stub and call its types (@field + stub methods)"))
     }
 
     async fn cancel_subscription(&self, sub_id: Uuid) -> Result<(), DomainError> {
@@ -816,7 +817,7 @@ impl PaymentGateway for StripeAdapter {
 // ===== crates/billing/src/application/mod.rs =====
 //! Application services and flow functions.
 
-#![allow(unused_imports, unused_variables, dead_code)]
+#![allow(unused_imports, unused_variables)]
 
 use crate::ports::*;
 use crate::domain::types::*;
@@ -886,8 +887,8 @@ chrono.workspace = true
 tracing.workspace = true
 serde_json.workspace = true
 veil_shared = { path = "../veil_shared" }
-identity = { path = "../identity" }
 billing = { path = "../billing" }
+identity = { path = "../identity" }
 
 // ===== crates/onboarding/src/lib.rs =====
 //! Onboarding — Orchestrator.
@@ -948,7 +949,7 @@ pub use veil_shared::*;
 // ===== crates/onboarding/src/adapters/mod.rs =====
 //! Implementations of traits.
 
-#![allow(unused_imports, unused_variables, dead_code)]
+#![allow(unused_imports, unused_variables)]
 
 use async_trait::async_trait;
 use crate::ports::*;
@@ -962,7 +963,7 @@ use chrono::Utc;
 // ===== crates/onboarding/src/application/mod.rs =====
 //! Application services and flow functions.
 
-#![allow(unused_imports, unused_variables, dead_code)]
+#![allow(unused_imports, unused_variables)]
 
 use crate::ports::*;
 use crate::domain::types::*;
@@ -1021,11 +1022,11 @@ struct OnboardStep1 {
 impl SagaStep for OnboardStep1 {
     async fn action(&self, mut state: serde_json::Value) -> Result<serde_json::Value, DomainError> {
         state["result"] = serde_json::json!(self.k_y_c_provider.check(self.name.clone(), self.email.clone()).await?);
-        { todo!("unstubbed external `c.verify` — install a .stub and call its types (@field + stub methods)"); };
+        compile_error!("unstubbed external `c.verify` — install a .stub and call its types (@field + stub methods)");
         Ok(state)
     }
     async fn compensate(&self, mut state: serde_json::Value) -> Result<(), DomainError> {
-        { todo!("unstubbed external `c.reject` — install a .stub and call its types (@field + stub methods)"); };
+        compile_error!("unstubbed external `c.reject` — install a .stub and call its types (@field + stub methods)");
         Ok(())
     }
 }

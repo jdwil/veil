@@ -105,6 +105,21 @@ pub fn generate(solution: &Solution, registry: &LayerRegistry) -> GeneratedProje
     // CAP-003: collect handler message names for register_all.
     let handler_names = collect_handler_names(solution, &modules, registry);
 
+    // ─── Layer Template Augmentation ─────────────────────────────────────
+    // Execute codegen templates from loaded layers (di.layer, rust.layer, etc.)
+    // BEFORE shared/module generation so sections (derives, trait_attrs, fn_attrs)
+    // are available to gen_shared_crate/gen_types/gen_traits/gen_impls.
+    let template_output = crate::template::execute_templates(solution, registry, "rust");
+
+    // Extract layer-declared section overrides. When present, these replace the
+    // backend's hardcoded defaults for derives, trait attributes, and fn modifiers.
+    let layer_derives = crate::template::compose_section(&template_output, "derives");
+    let layer_trait_attrs = crate::template::compose_section(&template_output, "trait_attrs");
+    // fn_attrs: runtime layers (tokio.layer) provide "pub async", composition
+    // layers (tokio_ddd.layer) refine per-role, annotations (@sync/@async)
+    // override at priority 999. Engine fallback (None) = plain `pub fn`.
+    let layer_fn_attrs = crate::template::compose_section(&template_output, "fn_attrs");
+
     files.extend(gen_shared_crate(
         &shared_traits,
         &shared_structs,
@@ -113,6 +128,7 @@ pub fn generate(solution: &Solution, registry: &LayerRegistry) -> GeneratedProje
         registry,
         &resolved_links,
         &handler_names,
+        layer_fn_attrs.as_deref(),
     ));
 
     // Impl-shaped constructs may live at top level or inside other modules;
@@ -132,21 +148,6 @@ pub fn generate(solution: &Solution, registry: &LayerRegistry) -> GeneratedProje
     let mut harness_ir = veil_ir::lower_harness(solution, registry);
     apply_compat_synthesis(&mut harness_ir, solution, registry);
 
-    // ─── Layer Template Augmentation ─────────────────────────────────────
-    // Execute codegen templates from loaded layers (di.layer, rust.layer, etc.)
-    // BEFORE module generation so sections (derives, trait_attrs, fn_attrs) are
-    // available to gen_types/gen_traits/gen_impls.
-    let template_output = crate::template::execute_templates(solution, registry, "rust");
-
-    // Extract layer-declared section overrides. When present, these replace the
-    // backend's hardcoded defaults for derives, trait attributes, and fn modifiers.
-    let layer_derives = crate::template::compose_section(&template_output, "derives");
-    let layer_trait_attrs = crate::template::compose_section(&template_output, "trait_attrs");
-    // NOTE: fn_attrs (e.g. "async") is declared in rust.layer but not consumed here
-    // because the backend hardcodes `pub async fn` for all fn-shaped constructs.
-    // If a future layer needs different fn modifiers, consume it here and pass
-    // through gen_module_crate → application::gen_flow.
-
     let mut flow_generated = false;
     for module in &modules {
         files.extend(gen_module_crate(
@@ -160,6 +161,7 @@ pub fn generate(solution: &Solution, registry: &LayerRegistry) -> GeneratedProje
             &harness_ir,
             layer_derives.as_deref(),
             layer_trait_attrs.as_deref(),
+            layer_fn_attrs.as_deref(),
         ));
     }
 

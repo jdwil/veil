@@ -11,6 +11,7 @@ pub fn gen_shared_crate(
     registry: &LayerRegistry,
     links: &[crate::links::ResolvedLink],
     handler_names: &[String],
+    layer_fn_attrs: Option<&str>,
 ) -> Vec<GeneratedFile> {
     use crate::expr::{build_ctx_from_solution, stmt_to_rust};
     let mut files = Vec::new();
@@ -168,8 +169,9 @@ futures = "0.3"
             None => "Result<(), DomainError>".to_string(),
         };
         ctx.expected_return_rust = Some(ret.clone());
+        let fn_mod = layer_fn_attrs.unwrap_or("pub");
         lib.push_str(&format!(
-            "/// Layer-declared coordinator.\npub async fn {}({}) -> {} {{\n",
+            "/// Layer-declared coordinator.\n{fn_mod} fn {}({}) -> {} {{\n",
             to_snake(&f.name),
             params,
             ret,

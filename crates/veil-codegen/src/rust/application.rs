@@ -552,7 +552,7 @@ pub fn scan_dep_calls(
     }
 }
 
-pub fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, crate_name: &str, solution: &Solution, registry: &LayerRegistry, deps_decl: Option<&veil_ir::DepsDecl>) -> GeneratedFile {
+pub fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, crate_name: &str, solution: &Solution, registry: &LayerRegistry, deps_decl: Option<&veil_ir::DepsDecl>, layer_fn_attrs: Option<&str>) -> GeneratedFile {
     use crate::expr::{build_ctx_from_solution, collect_deps, stmt_to_rust, expr_to_rust};
     use std::collections::HashMap;
 
@@ -817,10 +817,14 @@ pub fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, cra
                     .unwrap_or_else(|| "Result<(), DomainError>".to_string());
                 let deps_arg = if has_deps { "deps, " } else { "" };
                 let rest = call_args.join(", ");
+                // fn_attrs: layer-driven (e.g. "pub async" from tokio.layer).
+                // Engine fallback: plain "pub" (sync).
+                let fn_mod = layer_fn_attrs.unwrap_or("pub");
+                let await_suffix = if fn_mod.contains("async") { ".await" } else { "" };
                 out.push_str(&format!(
-                    "#[tracing::instrument(skip_all)]\npub async fn {}(\n    {}{}\n) -> {} {{\n\
+                    "#[tracing::instrument(skip_all)]\n{fn_mod} fn {}(\n    {}{}\n) -> {} {{\n\
                         // Thin HTTP/application surface — delegates to domain `{domain_fn}`.\n\
-                        {domain_fn}({deps_arg}{rest}).await\n}}\n\n",
+                        {domain_fn}({deps_arg}{rest}){await_suffix}\n}}\n\n",
                     to_snake(name),
                     deps_param,
                     params,
@@ -901,7 +905,7 @@ pub fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, cra
         if let Some(rt) = &runtime {
             // Runtime-delegated construct: emit the step impls + a body that
             // builds the step list and calls the coordinator.
-            emit_runtime_delegated(&mut out, name, inputs, steps, rt, deps_param, solution, registry, &ctx);
+            emit_runtime_delegated(&mut out, name, inputs, steps, rt, deps_param, solution, registry, &ctx, layer_fn_attrs);
             continue;
         }
 
@@ -928,7 +932,8 @@ pub fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, cra
         }
 
         out.push_str(&format!(
-            "#[tracing::instrument(skip_all)]\npub async fn {}(\n    {}{}\n) -> {} {{\n",
+            "#[tracing::instrument(skip_all)]\n{} fn {}(\n    {}{}\n) -> {} {{\n",
+            layer_fn_attrs.unwrap_or("pub"),
             to_snake(name),
             deps_param,
             params,
@@ -1007,6 +1012,7 @@ pub fn emit_runtime_delegated(
     solution: &Solution,
     registry: &LayerRegistry,
     ctx: &crate::expr::GenCtx,
+    layer_fn_attrs: Option<&str>,
 ) {
     let step_trait = &rt.step_trait;
     // Capture the construct's inputs on each step struct so step bodies can use
@@ -1167,8 +1173,10 @@ pub fn emit_runtime_delegated(
         .map(|f| format!("{}: {}", to_snake(&f.name), type_to_rust(&f.type_expr)))
         .collect::<Vec<_>>()
         .join(", ");
+    let fn_mod = layer_fn_attrs.unwrap_or("pub");
+    let await_suffix = if fn_mod.contains("async") { ".await" } else { "" };
     out.push_str(&format!(
-        "#[tracing::instrument(skip_all)]\npub async fn {}({}{}) -> Result<(), DomainError> {{\n",
+        "#[tracing::instrument(skip_all)]\n{fn_mod} fn {}({}{}) -> Result<(), DomainError> {{\n",
         to_snake(name),
         deps_param,
         params,
@@ -1193,10 +1201,10 @@ pub fn emit_runtime_delegated(
     let coord = to_snake(&rt.coordinator);
     match ctx.primary_routing_trait() {
         Some(t) => out.push_str(&format!(
-            "    {coord}(deps.{}.as_ref(), &steps).await\n",
+            "    {coord}(deps.{}.as_ref(), &steps){await_suffix}\n",
             to_snake(t)
         )),
-        None => out.push_str(&format!("    {coord}(&steps).await\n")),
+        None => out.push_str(&format!("    {coord}(&steps){await_suffix}\n")),
     }
     out.push_str("}\n\n");
 }
