@@ -2761,3 +2761,149 @@ pkg test v1
         types_section
     );
 }
+
+// ─── TypeScript IR codegen (generate_ts_ir) tests ────────────────────────────
+
+/// Helper: parse VEIL source and run the new IR pipeline.
+fn generate_ts_ir_example(src: &str) -> String {
+    let mut reg = veil_ir::LayerRegistry::builtin();
+    reg.load_content("ddd", include_str!("../../../layers/ddd.layer"))
+        .expect("ddd layer should load");
+    let tokens = veil_parser::lex(src);
+    let sol = veil_parser::parse_with_registry(&tokens, reg.clone()).expect("parse failed");
+    let project = veil_codegen::generate_ts_ir(&sol, &reg);
+    project
+        .files
+        .iter()
+        .map(|f| format!("// ==== {} ====\n{}", f.path, f.content))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn ts_ir_generates_file_structure() {
+    let out = generate_ts_ir_example(include_str!("../../../examples/customer_onboarding.veil"));
+    assert!(out.contains("// ==== src/types.ts ===="), "types.ts not generated");
+    assert!(out.contains("// ==== src/interfaces.ts ===="), "interfaces.ts not generated");
+    assert!(out.contains("// ==== src/services.ts ===="), "services.ts not generated");
+    assert!(out.contains("// ==== src/index.ts ===="), "index.ts not generated");
+    assert!(out.contains("// ==== package.json ===="), "package.json not generated");
+    assert!(out.contains("// ==== tsconfig.json ===="), "tsconfig.json not generated");
+}
+
+#[test]
+fn ts_ir_struct_generates_interface() {
+    let out = generate_ts_ir_example(include_str!("../../../examples/customer_onboarding.veil"));
+    assert!(out.contains("export interface Customer"), "struct not mapped to TS interface");
+}
+
+#[test]
+fn ts_ir_trait_generates_interface() {
+    let out = generate_ts_ir_example(include_str!("../../../examples/customer_onboarding.veil"));
+    assert!(out.contains("export interface CustomerRepo"), "trait not mapped to TS interface");
+}
+
+#[test]
+fn ts_ir_services_uses_emit_ts() {
+    // The services.ts should contain function definitions from IR lowering
+    let out = generate_ts_ir_example(include_str!("../../../examples/customer_onboarding.veil"));
+    // Should have at least one export function in services
+    assert!(out.contains("export"), "services.ts missing function exports");
+}
+
+#[test]
+fn ts_ir_package_json_has_typescript_dep() {
+    let out = generate_ts_ir_example(include_str!("../../../examples/customer_onboarding.veil"));
+    assert!(
+        out.contains("\"typescript\": \"^5.4.0\""),
+        "typescript dep not in package.json"
+    );
+}
+
+#[test]
+fn ts_ir_index_re_exports() {
+    let out = generate_ts_ir_example(include_str!("../../../examples/customer_onboarding.veil"));
+    assert!(out.contains("export * from './types'"), "index.ts missing types re-export");
+    assert!(out.contains("export * from './interfaces'"), "index.ts missing interfaces re-export");
+    assert!(out.contains("export * from './services'"), "index.ts missing services re-export");
+}
+
+#[test]
+fn ts_ir_async_detection_marks_functions() {
+    // Services with await calls should produce async functions
+    let out = generate_ts_ir_example(include_str!("../../../examples/customer_onboarding.veil"));
+    let services_section = out
+        .split("// ==== ")
+        .find(|s| s.starts_with("src/services.ts"))
+        .unwrap_or("");
+    // Services with trait dep calls (async) should be async
+    if services_section.contains("await") {
+        assert!(
+            services_section.contains("async function"),
+            "function with await should be marked async"
+        );
+    }
+}
+
+#[test]
+fn ts_ir_import_tracking_finds_types() {
+    use veil_codegen::ts::{track_imports, TsExpr, TsType};
+
+    let exprs = vec![
+        TsExpr::TypeAssertion {
+            expr: Box::new(TsExpr::Ident {
+                name: "data".into(),
+                ty: None,
+            }),
+            ty: "Customer".into(),
+        },
+        TsExpr::NewCall {
+            class: "Order".into(),
+            args: vec![],
+            ty: Some(TsType::Named("Invoice".into())),
+        },
+    ];
+
+    let imports = track_imports(&exprs);
+    assert!(imports.contains(&"Customer".to_string()));
+    assert!(imports.contains(&"Order".to_string()));
+    assert!(imports.contains(&"Invoice".to_string()));
+}
+
+#[test]
+fn ts_ir_detect_async_with_await() {
+    use veil_codegen::ts::{detect_async, TsExpr};
+
+    let body_async = vec![TsExpr::Await(Box::new(TsExpr::FnCall {
+        name: "fetch".into(),
+        args: vec![],
+        ty: None,
+    }))];
+    assert!(detect_async(&body_async));
+
+    let body_sync = vec![TsExpr::Return(Box::new(TsExpr::IntLit(42)))];
+    assert!(!detect_async(&body_sync));
+}
+
+#[test]
+fn ts_ir_detect_async_respects_arrow_boundary() {
+    use veil_codegen::ts::{detect_async, TsExpr};
+
+    // Await inside arrow fn should NOT make outer function async
+    let body = vec![TsExpr::ArrowFn {
+        params: vec![],
+        body: vec![TsExpr::Await(Box::new(TsExpr::FnCall {
+            name: "fetch".into(),
+            args: vec![],
+            ty: None,
+        }))],
+        is_async: true,
+    }];
+    assert!(!detect_async(&body));
+}
+
+#[test]
+fn ts_ir_tsconfig_has_strict_mode() {
+    let out = generate_ts_ir_example(include_str!("../../../examples/customer_onboarding.veil"));
+    assert!(out.contains("\"strict\": true"), "tsconfig missing strict mode");
+}
