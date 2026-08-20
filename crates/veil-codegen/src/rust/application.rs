@@ -552,7 +552,7 @@ pub fn scan_dep_calls(
     }
 }
 
-pub fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, crate_name: &str, solution: &Solution, registry: &LayerRegistry, deps_decl: Option<&veil_ir::DepsDecl>, layer_fn_attrs: Option<&str>) -> GeneratedFile {
+pub fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, crate_name: &str, solution: &Solution, registry: &LayerRegistry, deps_decl: Option<&veil_ir::DepsDecl>, layer_fn_attrs: Option<&str>, template_output: &crate::template::TemplateOutput) -> GeneratedFile {
     use crate::expr::{build_ctx_from_solution, collect_deps, stmt_to_rust, expr_to_rust};
     use std::collections::HashMap;
 
@@ -830,6 +830,11 @@ pub fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, cra
                     params,
                     ret_type,
                 ));
+                // Append inline template contributions for this fn.
+                if let Some(inline) = crate::template::compose_inline(template_output, name) {
+                    out.push_str(&inline);
+                    out.push_str("\n\n");
+                }
                 continue;
                 } // handler_step_count <= domain_step_count
             }
@@ -906,6 +911,11 @@ pub fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, cra
             // Runtime-delegated construct: emit the step impls + a body that
             // builds the step list and calls the coordinator.
             emit_runtime_delegated(&mut out, name, inputs, steps, rt, deps_param, solution, registry, &ctx, layer_fn_attrs);
+            // Append inline template contributions for this fn.
+            if let Some(inline) = crate::template::compose_inline(template_output, name) {
+                out.push_str(&inline);
+                out.push_str("\n\n");
+            }
             continue;
         }
 
@@ -990,6 +1000,11 @@ pub fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, cra
             }
         }
         out.push_str("}\n\n");
+        // Append inline template contributions for this fn (emit without emit_to/emit_file).
+        if let Some(inline) = crate::template::compose_inline(template_output, name) {
+            out.push_str(&inline);
+            out.push_str("\n\n");
+        }
     }
 
     GeneratedFile {

@@ -25,6 +25,7 @@ pub mod rust;
 pub mod swift;
 pub mod template;
 pub mod testing;
+pub mod ts;
 pub mod typescript;
 
 pub use links::{cargo_dep_line, resolve_link, resolve_links, ResolvedLink};

@@ -107,17 +107,14 @@ pub fn generate(solution: &Solution, registry: &LayerRegistry) -> GeneratedProje
 
     // ─── Layer Template Augmentation ─────────────────────────────────────
     // Execute codegen templates from loaded layers (di.layer, rust.layer, etc.)
-    // BEFORE shared/module generation so sections (derives, trait_attrs, fn_attrs)
-    // are available to gen_shared_crate/gen_types/gen_traits/gen_impls.
+    // BEFORE module generation so sections (derives, trait_attrs, fn_attrs) are
+    // available to gen_types/gen_traits/gen_impls.
     let template_output = crate::template::execute_templates(solution, registry, "rust");
 
     // Extract layer-declared section overrides. When present, these replace the
     // backend's hardcoded defaults for derives, trait attributes, and fn modifiers.
     let layer_derives = crate::template::compose_section(&template_output, "derives");
     let layer_trait_attrs = crate::template::compose_section(&template_output, "trait_attrs");
-    // fn_attrs: runtime layers (tokio.layer) provide "pub async", composition
-    // layers (tokio_ddd.layer) refine per-role, annotations (@sync/@async)
-    // override at priority 999. Engine fallback (None) = plain `pub fn`.
     let layer_fn_attrs = crate::template::compose_section(&template_output, "fn_attrs");
 
     files.extend(gen_shared_crate(
@@ -162,6 +159,7 @@ pub fn generate(solution: &Solution, registry: &LayerRegistry) -> GeneratedProje
             layer_derives.as_deref(),
             layer_trait_attrs.as_deref(),
             layer_fn_attrs.as_deref(),
+            &template_output,
         ));
     }
 

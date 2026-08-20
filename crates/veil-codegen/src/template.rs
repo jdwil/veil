@@ -16,6 +16,9 @@ pub struct TemplateOutput {
     pub files: Vec<TemplateFile>,
     /// Named sections (section name → ordered contributions).
     pub sections: HashMap<String, Vec<SectionContribution>>,
+    /// Per-construct inline contributions (emit without emit_to or emit_file).
+    /// Key is construct name, value is ordered contributions.
+    pub inline: HashMap<String, Vec<SectionContribution>>,
 }
 
 pub struct TemplateFile {
@@ -51,6 +54,7 @@ pub fn execute_templates(
         return TemplateOutput {
             files: Vec::new(),
             sections: HashMap::new(),
+            inline: HashMap::new(),
         };
     }
 
@@ -143,7 +147,7 @@ pub fn execute_templates(
         });
     }
 
-    TemplateOutput { files, sections }
+    TemplateOutput { files, sections, inline: HashMap::new() }
 }
 
 /// Compose the "main" section into a complete main function (target-specific).
@@ -191,6 +195,27 @@ pub fn compose_section(output: &TemplateOutput, section: &str) -> Option<String>
     // matching multiple constructs).
     let highest = contributions.last()?;
     Some(highest.content.trim().to_string())
+}
+
+/// Compose inline contributions for a specific construct. Returns the combined
+/// content from all layer contributions (sorted by priority — lower runs first),
+/// or None if no contributions exist for this construct.
+///
+/// Unlike `compose_section` which picks the highest-priority winner, inline
+/// contributions are ALL emitted (they represent distinct impl blocks, trait
+/// impls, etc. that layers inject after a construct's primary body).
+pub fn compose_inline(output: &TemplateOutput, construct_name: &str) -> Option<String> {
+    eprintln!("[DEBUG compose_inline] looking for '{}', inline keys: {:?}", construct_name, output.inline.keys().collect::<Vec<_>>());
+    let contributions = output.inline.get(construct_name)?;
+    if contributions.is_empty() {
+        return None;
+    }
+    let combined: String = contributions
+        .iter()
+        .map(|c| c.content.trim().to_string())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    Some(combined)
 }
 
 /// Check if a construct matches a rule's conditions.

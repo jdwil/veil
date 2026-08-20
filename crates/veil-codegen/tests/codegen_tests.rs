@@ -2436,3 +2436,159 @@ fn fn_attrs_tokio_layer_priority_200() {
         grep(&out, "pub async fn onboard\npub fn onboard")
     );
 }
+
+// ─── Template Inline Composition Tests ───────────────────────────────────────
+// Bare `emit` (no emit_to, no emit_file) now lands inline in the construct's
+// primary file instead of creating a separate _generated.rs file.
+
+/// A layer with bare `emit` on struct → output appears in domain/types.rs
+#[test]
+fn inline_emit_appears_in_struct_file() {
+    let layer = r#"
+pkg inline_test v1
+  construct Widget
+    keyword widget
+    maps_to struct
+    allowed_in mod
+
+  codegen rust
+    match struct
+      emit """
+        impl {{name}} {
+            pub fn custom_method(&self) -> &str {
+                "hello from layer"
+            }
+        }
+      """
+"#;
+    let app = r#"
+sol App
+  use inline_test
+  mod Core
+    widget Thing
+      x: Int
+"#;
+    let out = generate_with_layer("inline_test", layer, app);
+    // The impl block should appear in the same file as the struct (domain/types.rs)
+    let types_section = out
+        .split("// ==== ")
+        .find(|s| s.contains("domain/types.rs"))
+        .expect("domain/types.rs should exist");
+    assert!(
+        types_section.contains("impl Thing"),
+        "inline emit should appear in domain/types.rs:\n{}",
+        types_section
+    );
+    assert!(
+        types_section.contains("pub fn custom_method"),
+        "inline emit body should be in domain/types.rs:\n{}",
+        types_section
+    );
+    // No separate _generated.rs file should exist
+    assert!(
+        !out.contains("_generated.rs"),
+        "no _generated.rs file should be created for bare emit"
+    );
+}
+
+/// A layer with `emit_file` still creates a separate file at the specified path.
+#[test]
+fn emit_file_creates_separate_file() {
+    let layer = r#"
+pkg file_test v1
+  construct Widget
+    keyword widget
+    maps_to struct
+    allowed_in mod
+
+  codegen rust
+    match struct
+      emit_file "crates/{{name_lower}}_extra.rs"
+      emit """
+        // Extra code for {{name}}
+        pub fn extra() {}
+      """
+"#;
+    let app = r#"
+sol App
+  use file_test
+  mod Core
+    widget Gadget
+      y: Str
+"#;
+    let out = generate_with_layer("file_test", layer, app);
+    // The emit_file output should appear in its own file
+    assert!(
+        out.contains("// ==== crates/gadget_extra.rs ===="),
+        "emit_file should create a file at the specified path:\n{}",
+        out
+    );
+    // The content should be in that separate file
+    let file_section = out
+        .split("// ==== ")
+        .find(|s| s.starts_with("crates/gadget_extra.rs"))
+        .expect("gadget_extra.rs should exist");
+    assert!(
+        file_section.contains("pub fn extra()"),
+        "emit_file content should be in the separate file:\n{}",
+        file_section
+    );
+    // The domain/types.rs should NOT contain the emit_file content
+    let types_section = out
+        .split("// ==== ")
+        .find(|s| s.contains("domain/types.rs"))
+        .expect("domain/types.rs should exist");
+    assert!(
+        !types_section.contains("pub fn extra()"),
+        "emit_file content should NOT appear in domain/types.rs:\n{}",
+        types_section
+    );
+}
+
+/// Multiple inline contributions are all included (not just highest priority).
+#[test]
+fn inline_emit_multiple_contributions_all_included() {
+    let layer = r#"
+pkg multi_test v1
+  construct Widget
+    keyword widget
+    maps_to struct
+    allowed_in mod
+
+  codegen rust
+    match struct
+      emit """
+        impl {{name}} {
+            pub fn first(&self) -> i32 { 1 }
+        }
+      """
+    match struct
+      emit """
+        impl {{name}} {
+            pub fn second(&self) -> i32 { 2 }
+        }
+      """
+"#;
+    let app = r#"
+sol App
+  use multi_test
+  mod Core
+    widget Foo
+      val: Int
+"#;
+    let out = generate_with_layer("multi_test", layer, app);
+    let types_section = out
+        .split("// ==== ")
+        .find(|s| s.contains("domain/types.rs"))
+        .expect("domain/types.rs should exist");
+    assert!(
+        types_section.contains("pub fn first"),
+        "first inline contribution should be in types.rs:\n{}",
+        types_section
+    );
+    assert!(
+        types_section.contains("pub fn second"),
+        "second inline contribution should be in types.rs:\n{}",
+        types_section
+    );
+}

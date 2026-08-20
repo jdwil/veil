@@ -278,6 +278,7 @@ pub fn gen_module_crate(
     layer_derives: Option<&str>,
     layer_trait_attrs: Option<&str>,
     layer_fn_attrs: Option<&str>,
+    template_output: &crate::template::TemplateOutput,
 ) -> Vec<GeneratedFile> {
     let crate_name = module_crate_name(module, solution);
     let mut files = Vec::new();
@@ -371,7 +372,7 @@ uuid.workspace = true"#);
 
     // For modules that reference siblings, re-export ports from the first sibling
     // instead of generating duplicate DomainError / shared traits.
-    files.push(gen_traits(&contents, &crate_name, solution, registry, layer_trait_attrs));
+    files.push(gen_traits(&contents, &crate_name, solution, registry, layer_trait_attrs, template_output));
 
     // Impls targeting traits defined in this module (from anywhere in the tree),
     // or layer-provided generic ports (e.g. EntityRepo) implemented by product adapters.
@@ -431,6 +432,7 @@ uuid.workspace = true"#);
         registry,
         deps_decl.as_ref(),
         layer_fn_attrs,
+        template_output,
     ));
 
     // Generate manifest.json only for deployment units (constructs marked with `au`)

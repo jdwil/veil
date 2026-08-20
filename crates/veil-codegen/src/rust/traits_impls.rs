@@ -216,6 +216,7 @@ pub fn gen_traits(
     solution: &Solution,
     registry: &LayerRegistry,
     layer_trait_attrs: Option<&str>,
+    template_output: &crate::template::TemplateOutput,
 ) -> GeneratedFile {
     let mut out = String::new();
     out.push_str("//! Trait definitions (async traits).\n\n");
@@ -296,6 +297,11 @@ pub fn gen_traits(
             ));
         }
         out.push_str("}\n\n");
+        // Append inline template contributions for this trait (emit without emit_to/emit_file).
+        if let Some(inline) = crate::template::compose_inline(template_output, &t.name) {
+            out.push_str(&inline);
+            out.push_str("\n\n");
+        }
     }
 
     // Type aliases: `type WearTestRepo = EntityRepo<WearTest>`
