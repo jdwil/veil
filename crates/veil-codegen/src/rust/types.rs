@@ -326,20 +326,13 @@ pub fn gen_struct(
     let has_invariant = c.annotations.iter().any(|a| registry.is_invariant_annotation(&a.name));
 
     // ─── Phase 6: Constraint-driven emission ───────────────────────────
-    // Look up layer constraints for this construct (equality_by_value, immutable, no_identity).
+    // Look up layer constraints for this construct (equality_by_value, immutable).
     let constraints: Vec<String> = registry
         .spec_for_construct(c)
         .map(|spec| spec.constraints.clone())
         .unwrap_or_default();
     let has_equality_by_value = constraints.iter().any(|c| c == "equality_by_value");
-    let has_no_identity = constraints.iter().any(|c| c == "no_identity");
     let has_immutable = constraints.iter().any(|c| c == "immutable");
-    // Phase 6d: no_identity — construct should not have an `id` field auto-generated.
-    // Currently `id` is always a required user param (not auto-defaulted), so
-    // this constraint is primarily enforced by the validator. The flag is kept
-    // here for forward-compatibility: if identity_policy ever adds `id` to
-    // auto_fields, this guard prevents it from being auto-filled.
-    let _ = has_no_identity;
 
     // Fields: direct plus struct-shaped named blocks (e.g. root).
     let mut fields: Vec<&Field> = c.fields.iter().collect();
@@ -1150,3 +1143,110 @@ pub fn gen_child_types(contents: &ModuleContents, crate_name: &str) -> Generated
     }
 }
 
+
+// ─── Construct lowers_to template interpolation ──────────────────────────────
+
+/// Interpolate a construct's `lowers_to` template with construct data.
+///
+/// Supported variables:
+/// - `{{name}}` → construct name (PascalCase)
+/// - `{{subkind}}` → layer subkind
+/// - `{{for field in fields}}...{{end}}` → iterate fields
+///   - `{{field.name}}` → field name (snake_case)
+///   - `{{field.type}}` → Rust type (via type_to_rust)
+/// - `{{for method in methods}}...{{end}}` → iterate methods
+///   - `{{method.name}}` → method name (snake_case)
+///   - `{{method.params}}` → parameter list (`name: Type, ...`)
+///   - `{{method.return_type}}` → return type or empty string
+pub fn interpolate_construct_template(
+    template: &str,
+    c: &Construct,
+    registry: &LayerRegistry,
+) -> String {
+    let mut output = template.to_string();
+
+    // Simple substitutions
+    output = output.replace("{{name}}", &c.name);
+    output = output.replace("{{subkind}}", &c.subkind);
+
+    // {{for field in fields}}...{{end}} loop
+    if let Some(start) = output.find("{{for field in fields}}") {
+        if let Some(end_offset) = output[start..].find("{{end}}") {
+            let end = start + end_offset + "{{end}}".len();
+            let body = &output[start + "{{for field in fields}}".len()..start + end_offset];
+
+            // Collect fields: direct + struct-shaped named blocks (same as gen_struct)
+            let mut fields: Vec<&Field> = c.fields.iter().collect();
+            for block in &c.blocks {
+                if block.shape != Shape::Enum {
+                    fields.extend(block.fields.iter());
+                }
+            }
+
+            let mut expanded = String::new();
+            for field in &fields {
+                let mut line = body.to_string();
+                line = line.replace("{{field.name}}", &to_snake(&field.name));
+                line = line.replace("{{field.type}}", &type_to_rust(&field.type_expr));
+                expanded.push_str(&line);
+            }
+
+            output = format!("{}{}{}", &output[..start], expanded, &output[end..]);
+        }
+    }
+
+    // {{for method in methods}}...{{end}} loop
+    if let Some(start) = output.find("{{for method in methods}}") {
+        if let Some(end_offset) = output[start..].find("{{end}}") {
+            let end = start + end_offset + "{{end}}".len();
+            let body = &output[start + "{{for method in methods}}".len()..start + end_offset];
+
+            let mut expanded = String::new();
+            for method in &c.methods {
+                let mut line = body.to_string();
+                line = line.replace("{{method.name}}", &to_snake(&method.name));
+                let params = method
+                    .params
+                    .iter()
+                    .map(|p| format!("{}: {}", to_snake(&p.name), type_to_rust(&p.type_expr)))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                line = line.replace("{{method.params}}", &params);
+                let ret = match &method.return_type {
+                    Some(t) => type_to_rust(t),
+                    None => String::new(),
+                };
+                line = line.replace("{{method.return_type}}", &ret);
+                expanded.push_str(&line);
+            }
+
+            output = format!("{}{}{}", &output[..start], expanded, &output[end..]);
+        }
+    }
+
+    // Dedent: find minimum indentation of non-empty lines and strip it.
+    let lines: Vec<&str> = output.lines().collect();
+    let min_indent = lines
+        .iter()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| l.len() - l.trim_start().len())
+        .min()
+        .unwrap_or(0);
+    if min_indent > 0 {
+        output = lines
+            .iter()
+            .map(|l| {
+                if l.len() >= min_indent {
+                    &l[min_indent..]
+                } else {
+                    l.trim()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+    }
+
+    // Trim leading/trailing blank lines
+    let _ = registry; // used for future expansions (e.g. type resolution)
+    output.trim().to_string()
+}
