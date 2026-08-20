@@ -2177,7 +2177,21 @@ fn lower_call_builder_chain(call: &veil_ir::ast::CallExpr, ctx: &GenCtx) -> Opti
     }
 
     // Parse suffix into structural flags
-    let (is_async, is_fallible, needs_map_err, owns_str) = parse_suffix(&suffix);
+    let (is_async, is_fallible, needs_map_err, owns_str) = if suffix.contains(".await") && suffix.contains("map_err") {
+        (true, true, true, false)
+    } else if suffix == ".await?" {
+        (true, true, false, false)
+    } else if suffix == ".await" {
+        (true, false, false, false)
+    } else if suffix.contains("map(|s| s.to_string())") {
+        (false, true, true, true)
+    } else if suffix.contains("map_err") {
+        (false, true, true, false)
+    } else if suffix.ends_with('?') {
+        (false, true, false, false)
+    } else {
+        (false, false, false, false)
+    };
 
     // Build the receiver chain recursively
     let receiver_ir = lower_chain_receiver(recv, ctx);
@@ -2222,28 +2236,6 @@ fn lower_call_builder_chain(call: &veil_ir::ast::CallExpr, ctx: &GenCtx) -> Opti
     }
 
     Some(method_call)
-}
-
-/// Parse a receiver_call_suffix string into (is_async, is_fallible, needs_map_err, owns_str).
-fn parse_suffix(suffix: &str) -> (bool, bool, bool, bool) {
-    if suffix.contains(".await") && suffix.contains("map_err") {
-        // .await.map_err(|e| ...)? → async, fallible via MapErr
-        (true, true, true, false)
-    } else if suffix == ".await?" {
-        (true, true, false, false)
-    } else if suffix == ".await" {
-        (true, false, false, false)
-    } else if suffix.contains("map(|s| s.to_string())") {
-        // .map(|s| s.to_string()).map_err(...)? → sync, owns string, needs special handling
-        (false, true, true, true)
-    } else if suffix.contains("map_err") {
-        // .map_err(|e| ...)? → sync fallible via MapErr
-        (false, true, true, false)
-    } else if suffix.ends_with('?') {
-        (false, true, false, false)
-    } else {
-        (false, false, false, false)
-    }
 }
 
 /// Recursively lower a chain receiver (Call → nested MethodCalls).
@@ -2517,9 +2509,19 @@ pub fn apply_ownership(expr: RustExpr, ctx: &GenCtx) -> RustExpr {
             if super::types::rust_already_owned(text) {
                 return expr;
             }
-            // Call results are owned — anything ending with ) or )? or .await? or .await
-            // that contains a `(` is a function/method call producing an owned value.
-            if raw_is_call_result(text) {
+            // Call results are owned — block expressions and function/method calls
+            let t = text.trim();
+            if (t.starts_with('{') && t.ends_with('}'))
+                || (t.contains('(') && (t.ends_with(')')
+                    || t.ends_with(")?")
+                    || t.ends_with(".await?")
+                    || t.ends_with(".await")
+                    || t.ends_with(".unwrap()")))
+            {
+                return expr;
+            }
+            // Qualified paths (e.g. DomainError::NotFound) are values, not borrowable
+            if t.contains("::") {
                 return expr;
             }
             // Statements don't produce values — never clone them.
@@ -2586,24 +2588,6 @@ fn is_already_owned(expr: &RustExpr) -> bool {
 /// - `}` — block expression producing a value (e.g. Process.run)
 ///
 /// Also catches format!(...), serde_json::from_str(...), etc.
-fn raw_is_call_result(text: &str) -> bool {
-    let t = text.trim();
-    // Block expressions `{ ... }` are owned values
-    if t.starts_with('{') && t.ends_with('}') {
-        return true;
-    }
-    // Must contain a `(` to be a call
-    if !t.contains('(') {
-        return false;
-    }
-    // Call patterns
-    t.ends_with(')')
-        || t.ends_with(")?")
-        || t.ends_with(".await?")
-        || t.ends_with(".await")
-        || t.ends_with(".unwrap()")
-}
-
 /// Whether a raw text expression is a statement (doesn't produce a value).
 /// Statements must not be cloned — they're used for side effects.
 fn raw_is_statement(text: &str) -> bool {
@@ -2684,8 +2668,15 @@ fn should_clone_ident_ir(name: &str, ctx: &GenCtx) -> bool {
     if super::calls::is_ref_local(name, ctx) {
         return false;
     }
-    // Unknown count → clone (safe). Count of 1 → last/only use → move.
-    ctx.ident_uses.get(name).copied().unwrap_or(2) > 1
+    // Only clone if usage count is definitively > 1.
+    // Default to 1 (no clone) for variables without tracking — avoids cloning
+    // error variables, pattern bindings, and closure params that don't impl Clone.
+    // Short names (1-2 chars) are typically lambda/match params — move-only semantics.
+    if name.len() <= 2 {
+        return ctx.ident_uses.get(name).copied().unwrap_or(1) > 1
+            && ctx.local_types.get(name).is_some_and(|t| !t.contains("Error"));
+    }
+    ctx.ident_uses.get(name).copied().unwrap_or(1) > 1
 }
 
 // ─── Closure try-suppression ─────────────────────────────────────────────────
