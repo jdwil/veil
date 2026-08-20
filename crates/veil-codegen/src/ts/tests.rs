@@ -2345,3 +2345,517 @@ fn lower_free_function_call() {
     let output = emit_ts(&ts);
     assert_eq!(output, "processData(input)");
 }
+
+// ─── Svelte Integration Tests (Session 8) ────────────────────────────────────
+
+#[test]
+fn svelte_component_default_path() {
+    use super::components::{gen_svelte_component, SvelteFile};
+    use veil_ir::ast::{Construct, Field, NamedBlock};
+    use veil_ir::Span;
+    use veil_ir::layer::{LayerRegistry, ReactivityPolicy, Shape};
+
+    let mut registry = LayerRegistry::default();
+    registry.reactivity_policy = ReactivityPolicy {
+        props_call: "$props()".to_string(),
+        state_line: "let {name} = $state<{type}>({default})".to_string(),
+        ..Default::default()
+    };
+
+    let mut comp = Construct::new("component", "Component", Shape::Struct, "UserCard".to_string(), Span::default());
+    comp.blocks.push(NamedBlock {
+        keyword: "props".to_string(),
+        shape: Shape::Struct,
+        name: None,
+        fields: vec![Field {
+            name: "name".to_string(),
+            type_expr: veil_ir::TypeExpr::Named("Str".to_string()),
+            default_expr: None,
+            annotations: vec![],
+            span: Span::default(),
+        }],
+        variants: vec![],
+        transitions: vec![],
+        span: Span::default(),
+    });
+    comp.raw_blocks.push(("template".to_string(), "<h1>{name}</h1>".to_string()));
+
+    let result = gen_svelte_component(&comp, &registry);
+    assert_eq!(result.path, "src/lib/components/UserCard.svelte");
+    assert!(result.content.contains("<script lang=\"ts\">"));
+    assert!(result.content.contains("name: string;"));
+    assert!(result.content.contains("$props()"));
+    assert!(result.content.contains("<h1>{name}</h1>"));
+}
+
+#[test]
+fn sveltekit_page_route_path() {
+    use super::components::sveltekit_output_path;
+    use veil_ir::ast::{Annotation, Construct};
+    use veil_ir::Span;
+    use veil_ir::layer::{LayerRegistry, Shape};
+
+    let registry = LayerRegistry::default();
+
+    // Page with no explicit route → derives from name
+    let mut page = Construct::new("page", "Page", Shape::Struct, "Dashboard".to_string(), Span::default());
+    page.subkind = "Page".to_string();
+    let path = sveltekit_output_path(&page, &registry);
+    assert_eq!(path, "src/routes/dashboard/+page.svelte");
+}
+
+#[test]
+fn sveltekit_page_with_route_annotation() {
+    use super::components::sveltekit_output_path;
+    use veil_ir::ast::{Annotation, Construct};
+    use veil_ir::Span;
+    use veil_ir::layer::{AnnotationSpec, ConstructSpec, LayerRegistry, Shape, Visual};
+
+    let mut registry = LayerRegistry::default();
+    // Register @route as ui_route role via a ConstructSpec (annotation_has_role walks constructs)
+    let mut spec = ConstructSpec {
+        keyword: "page".to_string(),
+        name: "Page".to_string(),
+        maps_to: "struct".to_string(),
+        shape: Shape::Struct,
+        layer: "svelte5".to_string(),
+        desc: String::new(),
+        contains: Vec::new(),
+        blocks: Vec::new(),
+        raw_block_keywords: Vec::new(),
+        constraints: Vec::new(),
+        allowed_in: "any".to_string(),
+        group: String::new(),
+        visual: Visual { icon: String::new(), color: String::new(), label: String::new() },
+        au: false,
+        is_step: false,
+        step_fields: Vec::new(),
+        annotations: vec![AnnotationSpec {
+            name: "route".to_string(),
+            roles: vec!["ui_route".to_string()],
+            desc: String::new(),
+            params: vec![],
+        }],
+        runtime: None,
+        tgt: String::new(),
+        dg: String::new(),
+        presentation: Default::default(),
+        roles: Vec::new(),
+        config_keys: Vec::new(),
+        required_fields: Vec::new(),
+        lowers_to: std::collections::HashMap::new(),
+    };
+    registry.constructs.push(spec);
+
+    let mut page = Construct::new("page", "Page", Shape::Struct, "PullRequests".to_string(), Span::default());
+    page.subkind = "Page".to_string();
+    page.annotations.push(Annotation {
+        name: "route".to_string(),
+        args: vec!["\"/pulls\"".to_string()],
+        span: Span::default(),
+    });
+
+    let path = sveltekit_output_path(&page, &registry);
+    assert_eq!(path, "src/routes/pulls/+page.svelte");
+}
+
+#[test]
+fn sveltekit_layout_path() {
+    use super::components::sveltekit_output_path;
+    use veil_ir::ast::Construct;
+    use veil_ir::Span;
+    use veil_ir::layer::{LayerRegistry, Shape};
+
+    let registry = LayerRegistry::default();
+
+    let mut layout = Construct::new("layout", "Layout", Shape::Struct, "RootLayout".to_string(), Span::default());
+    layout.subkind = "Layout".to_string();
+    let path = sveltekit_output_path(&layout, &registry);
+    assert_eq!(path, "src/routes/+layout.svelte");
+}
+
+#[test]
+fn sveltekit_store_path() {
+    use super::components::sveltekit_output_path;
+    use veil_ir::ast::Construct;
+    use veil_ir::Span;
+    use veil_ir::layer::{LayerRegistry, Shape};
+
+    let registry = LayerRegistry::default();
+
+    let mut store = Construct::new("store", "Store", Shape::Struct, "AuthStore".to_string(), Span::default());
+    store.subkind = "Store".to_string();
+    let path = sveltekit_output_path(&store, &registry);
+    assert_eq!(path, "src/lib/stores/auth_store.svelte.ts");
+}
+
+#[test]
+fn svelte_store_generates_state_runes() {
+    use super::components::gen_svelte_store;
+    use veil_ir::ast::{Construct, Field, NamedBlock};
+    use veil_ir::Span;
+    use veil_ir::layer::{LayerRegistry, Shape};
+
+    let registry = LayerRegistry::default();
+
+    let mut store = Construct::new("store", "Store", Shape::Struct, "AuthStore".to_string(), Span::default());
+    store.subkind = "Store".to_string();
+    store.blocks.push(NamedBlock {
+        keyword: "state".to_string(),
+        shape: Shape::Struct,
+        name: None,
+        fields: vec![
+            Field {
+                name: "token".to_string(),
+                type_expr: veil_ir::TypeExpr::Optional(Box::new(veil_ir::TypeExpr::Named("Str".to_string()))),
+                default_expr: None,
+                annotations: vec![],
+                span: Span::default(),
+            },
+            Field {
+                name: "is_authenticated".to_string(),
+                type_expr: veil_ir::TypeExpr::Named("Bool".to_string()),
+                default_expr: None,
+                annotations: vec![],
+                span: Span::default(),
+            },
+        ],
+        variants: vec![],
+        transitions: vec![],
+        span: Span::default(),
+    });
+
+    let result = gen_svelte_store(&store, &registry);
+    assert_eq!(result.path, "src/lib/stores/auth_store.svelte.ts");
+    assert!(result.content.contains("export let token = $state<string | null>(null);"));
+    assert!(result.content.contains("export let is_authenticated = $state<boolean>(false);"));
+}
+
+#[test]
+fn svelte_component_at_custom_path() {
+    use super::components::gen_svelte_component_at;
+    use veil_ir::ast::Construct;
+    use veil_ir::Span;
+    use veil_ir::layer::{LayerRegistry, ReactivityPolicy, Shape};
+
+    let mut registry = LayerRegistry::default();
+    registry.reactivity_policy = ReactivityPolicy {
+        props_call: "$props()".to_string(),
+        state_line: "let {name} = $state<{type}>({default})".to_string(),
+        ..Default::default()
+    };
+
+    let mut comp = Construct::new("page", "Page", Shape::Struct, "Dashboard".to_string(), Span::default());
+    comp.raw_blocks.push(("template".to_string(), "<h1>Dashboard</h1>".to_string()));
+
+    let result = gen_svelte_component_at(&comp, &registry, "src/routes/+page.svelte");
+    assert_eq!(result.path, "src/routes/+page.svelte");
+    assert!(result.content.contains("<h1>Dashboard</h1>"));
+}
+
+#[test]
+fn svelte_page_with_props_state_template_style() {
+    use super::components::gen_svelte_component_at;
+    use veil_ir::ast::{Construct, Expr, Field, NamedBlock};
+    use veil_ir::Span;
+    use veil_ir::layer::{LayerRegistry, ReactivityPolicy, Shape};
+
+    let mut registry = LayerRegistry::default();
+    registry.reactivity_policy = ReactivityPolicy {
+        props_call: "$props()".to_string(),
+        state_line: "let {name} = $state<{type}>({default})".to_string(),
+        derived_line: "let {name} = $derived({expr})".to_string(),
+        effect_sync: "$effect(() => {{ // {name}\n{body}\n  }})".to_string(),
+        effect_async: String::new(),
+        bindable: String::new(),
+        bindable_default: String::new(),
+    };
+
+    let mut page = Construct::new("page", "Page", Shape::Struct, "UserProfile".to_string(), Span::default());
+    page.subkind = "Page".to_string();
+
+    // Props
+    page.blocks.push(NamedBlock {
+        keyword: "props".to_string(),
+        shape: Shape::Struct,
+        name: None,
+        fields: vec![Field {
+            name: "user_id".to_string(),
+            type_expr: veil_ir::TypeExpr::Named("Str".to_string()),
+            default_expr: None,
+            annotations: vec![],
+            span: Span::default(),
+        }],
+        variants: vec![],
+        transitions: vec![],
+        span: Span::default(),
+    });
+
+    // State
+    page.blocks.push(NamedBlock {
+        keyword: "state".to_string(),
+        shape: Shape::Struct,
+        name: None,
+        fields: vec![Field {
+            name: "loading".to_string(),
+            type_expr: veil_ir::TypeExpr::Named("Bool".to_string()),
+            default_expr: Some(Expr::BoolLit(true)),
+            annotations: vec![],
+            span: Span::default(),
+        }],
+        variants: vec![],
+        transitions: vec![],
+        span: Span::default(),
+    });
+
+    page.raw_blocks.push(("template".to_string(), "<div class=\"profile\">\n  <p>{user_id}</p>\n</div>".to_string()));
+    page.raw_blocks.push(("style".to_string(), ".profile { padding: 1rem; }".to_string()));
+
+    let result = gen_svelte_component_at(&page, &registry, "src/routes/profile/+page.svelte");
+    assert_eq!(result.path, "src/routes/profile/+page.svelte");
+    assert!(result.content.contains("<script lang=\"ts\">"));
+    assert!(result.content.contains("user_id: string;"));
+    assert!(result.content.contains("$props()"));
+    assert!(result.content.contains("let loading = $state<boolean>(true);"));
+    assert!(result.content.contains("<div class=\"profile\">"));
+    assert!(result.content.contains("<style>"));
+    assert!(result.content.contains(".profile"));
+    assert!(result.content.contains("padding: 1rem"));
+}
+
+#[test]
+fn generate_ts_ir_includes_svelte_page() {
+    use super::generate::generate_ts_ir;
+    use veil_ir::ast::{Annotation, Construct, Solution, TopLevelItem, NamedBlock, Field};
+    use veil_ir::Span;
+    use veil_ir::layer::{AnnotationSpec, ConstructSpec, LayerRegistry, ReactivityPolicy, Shape, Visual};
+
+    let mut registry = LayerRegistry::default();
+    registry.reactivity_policy = ReactivityPolicy {
+        props_call: "$props()".to_string(),
+        state_line: "let {name} = $state<{type}>({default})".to_string(),
+        ..Default::default()
+    };
+    // Register @route annotation with ui_route role
+    registry.constructs.push(ConstructSpec {
+        keyword: "page".to_string(),
+        name: "Page".to_string(),
+        maps_to: "struct".to_string(),
+        shape: Shape::Struct,
+        layer: "svelte5".to_string(),
+        desc: String::new(),
+        contains: Vec::new(),
+        blocks: Vec::new(),
+        raw_block_keywords: Vec::new(),
+        constraints: Vec::new(),
+        allowed_in: "any".to_string(),
+        group: String::new(),
+        visual: Visual { icon: String::new(), color: String::new(), label: String::new() },
+        au: false,
+        is_step: false,
+        step_fields: Vec::new(),
+        annotations: vec![AnnotationSpec {
+            name: "route".to_string(),
+            roles: vec!["ui_route".to_string()],
+            desc: String::new(),
+            params: vec![],
+        }],
+        runtime: None,
+        tgt: String::new(),
+        dg: String::new(),
+        presentation: Default::default(),
+        roles: Vec::new(),
+        config_keys: Vec::new(),
+        required_fields: Vec::new(),
+        lowers_to: std::collections::HashMap::new(),
+    });
+
+    // Create a solution with a module containing a page construct
+    let mut page = Construct::new("page", "Page", Shape::Struct, "Home".to_string(), Span::default());
+    page.subkind = "Page".to_string();
+    page.annotations.push(Annotation {
+        name: "route".to_string(),
+        args: vec!["\"/\"".to_string()],
+        span: Span::default(),
+    });
+    page.raw_blocks.push(("template".to_string(), "<h1>Home</h1>".to_string()));
+
+    let mut module = Construct::new("mod", "", Shape::Mod, "ui".to_string(), Span::default());
+    module.children.push(page);
+
+    let solution = Solution {
+        name: "test_app".to_string(),
+        span: Span::default(),
+        items: vec![TopLevelItem::Construct(module)],
+        uses: vec![],
+        links: vec![],
+        expose: None,
+        guidance: vec![],
+    };
+
+    let project = generate_ts_ir(&solution, &registry);
+
+    // Should have a page file at the SvelteKit route path
+    let page_file = project.files.iter().find(|f| f.path.contains("+page.svelte"));
+    assert!(page_file.is_some(), "Expected a +page.svelte file, got paths: {:?}",
+        project.files.iter().map(|f| &f.path).collect::<Vec<_>>());
+    let pf = page_file.unwrap();
+    assert_eq!(pf.path, "src/routes/+page.svelte");
+    assert!(pf.content.contains("<h1>Home</h1>"));
+}
+
+#[test]
+fn generate_ts_ir_includes_svelte_store() {
+    use super::generate::generate_ts_ir;
+    use veil_ir::ast::{Construct, Solution, TopLevelItem, NamedBlock, Field};
+    use veil_ir::Span;
+    use veil_ir::layer::{LayerRegistry, Shape};
+
+    let registry = LayerRegistry::default();
+
+    let mut store = Construct::new("store", "Store", Shape::Struct, "CartStore".to_string(), Span::default());
+    store.subkind = "Store".to_string();
+    store.blocks.push(NamedBlock {
+        keyword: "state".to_string(),
+        shape: Shape::Struct,
+        name: None,
+        fields: vec![Field {
+            name: "items".to_string(),
+            type_expr: veil_ir::TypeExpr::List(Box::new(veil_ir::TypeExpr::Named("Str".to_string()))),
+            default_expr: None,
+            annotations: vec![],
+            span: Span::default(),
+        }],
+        variants: vec![],
+        transitions: vec![],
+        span: Span::default(),
+    });
+
+    let mut module = Construct::new("mod", "", Shape::Mod, "stores".to_string(), Span::default());
+    module.children.push(store);
+
+    let solution = Solution {
+        name: "test_app".to_string(),
+        span: Span::default(),
+        items: vec![TopLevelItem::Construct(module)],
+        uses: vec![],
+        links: vec![],
+        expose: None,
+        guidance: vec![],
+    };
+
+    let project = generate_ts_ir(&solution, &registry);
+
+    let store_file = project.files.iter().find(|f| f.path.contains(".svelte.ts"));
+    assert!(store_file.is_some(), "Expected a .svelte.ts store file, got paths: {:?}",
+        project.files.iter().map(|f| &f.path).collect::<Vec<_>>());
+    let sf = store_file.unwrap();
+    assert_eq!(sf.path, "src/lib/stores/cart_store.svelte.ts");
+    assert!(sf.content.contains("$state<string[]>([])")); 
+}
+
+#[test]
+fn sveltekit_page_root_route() {
+    use super::components::sveltekit_output_path;
+    use veil_ir::ast::{Annotation, Construct};
+    use veil_ir::Span;
+    use veil_ir::layer::{AnnotationSpec, ConstructSpec, LayerRegistry, Shape, Visual};
+
+    let mut registry = LayerRegistry::default();
+    registry.constructs.push(ConstructSpec {
+        keyword: "page".to_string(),
+        name: "Page".to_string(),
+        maps_to: "struct".to_string(),
+        shape: Shape::Struct,
+        layer: "svelte5".to_string(),
+        desc: String::new(),
+        contains: Vec::new(),
+        blocks: Vec::new(),
+        raw_block_keywords: Vec::new(),
+        constraints: Vec::new(),
+        allowed_in: "any".to_string(),
+        group: String::new(),
+        visual: Visual { icon: String::new(), color: String::new(), label: String::new() },
+        au: false,
+        is_step: false,
+        step_fields: Vec::new(),
+        annotations: vec![AnnotationSpec {
+            name: "route".to_string(),
+            roles: vec!["ui_route".to_string()],
+            desc: String::new(),
+            params: vec![],
+        }],
+        runtime: None,
+        tgt: String::new(),
+        dg: String::new(),
+        presentation: Default::default(),
+        roles: Vec::new(),
+        config_keys: Vec::new(),
+        required_fields: Vec::new(),
+        lowers_to: std::collections::HashMap::new(),
+    });
+
+    let mut page = Construct::new("page", "Page", Shape::Struct, "Home".to_string(), Span::default());
+    page.subkind = "Page".to_string();
+    page.annotations.push(Annotation {
+        name: "route".to_string(),
+        args: vec!["\"/\"".to_string()],
+        span: Span::default(),
+    });
+
+    let path = sveltekit_output_path(&page, &registry);
+    assert_eq!(path, "src/routes/+page.svelte");
+}
+
+#[test]
+fn sveltekit_page_nested_route() {
+    use super::components::sveltekit_output_path;
+    use veil_ir::ast::{Annotation, Construct};
+    use veil_ir::Span;
+    use veil_ir::layer::{AnnotationSpec, ConstructSpec, LayerRegistry, Shape, Visual};
+
+    let mut registry = LayerRegistry::default();
+    registry.constructs.push(ConstructSpec {
+        keyword: "page".to_string(),
+        name: "Page".to_string(),
+        maps_to: "struct".to_string(),
+        shape: Shape::Struct,
+        layer: "svelte5".to_string(),
+        desc: String::new(),
+        contains: Vec::new(),
+        blocks: Vec::new(),
+        raw_block_keywords: Vec::new(),
+        constraints: Vec::new(),
+        allowed_in: "any".to_string(),
+        group: String::new(),
+        visual: Visual { icon: String::new(), color: String::new(), label: String::new() },
+        au: false,
+        is_step: false,
+        step_fields: Vec::new(),
+        annotations: vec![AnnotationSpec {
+            name: "route".to_string(),
+            roles: vec!["ui_route".to_string()],
+            desc: String::new(),
+            params: vec![],
+        }],
+        runtime: None,
+        tgt: String::new(),
+        dg: String::new(),
+        presentation: Default::default(),
+        roles: Vec::new(),
+        config_keys: Vec::new(),
+        required_fields: Vec::new(),
+        lowers_to: std::collections::HashMap::new(),
+    });
+
+    let mut page = Construct::new("page", "Page", Shape::Struct, "PullDetail".to_string(), Span::default());
+    page.subkind = "Page".to_string();
+    page.annotations.push(Annotation {
+        name: "route".to_string(),
+        args: vec!["\"/pulls/[id]\"".to_string()],
+        span: Span::default(),
+    });
+
+    let path = sveltekit_output_path(&page, &registry);
+    assert_eq!(path, "src/routes/pulls/[id]/+page.svelte");
+}

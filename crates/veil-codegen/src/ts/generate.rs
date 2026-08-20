@@ -29,6 +29,7 @@ use crate::typescript::{type_to_ts, TsFile, TsProject};
 use super::emit::emit_ts;
 use super::lower::to_camel_case;
 use super::transforms::detect_async;
+use super::components::{gen_svelte_component_at, gen_svelte_store_at, sveltekit_output_path};
 
 // ─── Public Entry Point ──────────────────────────────────────────────────────
 
@@ -79,6 +80,9 @@ pub fn generate_ts_ir(solution: &Solution, registry: &LayerRegistry) -> TsProjec
             content: tf.content,
         });
     }
+
+    // Svelte UI constructs — route through gen_svelte_component with SvelteKit paths
+    files.extend(gen_svelte_ui_files(&modules, solution, registry));
 
     TsProject { files }
 }
@@ -483,6 +487,102 @@ fn gen_tsconfig_ir() -> TsFile {
         path: "tsconfig.json".to_string(),
         content,
     }
+}
+
+// ─── Svelte UI Generation ────────────────────────────────────────────────────
+
+/// Detect Svelte UI constructs (Page, Layout, Component, Store) and generate
+/// `.svelte` / `.svelte.ts` files via the structured IR pipeline.
+///
+/// SvelteKit path conventions:
+/// - Page → `src/routes/{route}/+page.svelte`
+/// - Layout → `src/routes/{route}/+layout.svelte`
+/// - Component → `src/lib/components/{Name}.svelte`
+/// - Store → `src/lib/stores/{name}.svelte.ts`
+fn gen_svelte_ui_files(
+    modules: &[&Construct],
+    solution: &Solution,
+    registry: &LayerRegistry,
+) -> Vec<TsFile> {
+    let mut files = Vec::new();
+    let mut seen_paths: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    // Walk module trees for UI constructs
+    for module in modules {
+        collect_svelte_files(module, registry, &mut files, &mut seen_paths);
+    }
+
+    // Also check top-level constructs (not nested in modules)
+    for item in &solution.items {
+        if let TopLevelItem::Construct(c) = item {
+            if c.shape != Shape::Mod {
+                collect_svelte_files(c, registry, &mut files, &mut seen_paths);
+            }
+        }
+    }
+
+    files
+}
+
+/// Recursively walk construct tree, generating Svelte files for UI constructs.
+fn collect_svelte_files(
+    c: &Construct,
+    registry: &LayerRegistry,
+    files: &mut Vec<TsFile>,
+    seen: &mut std::collections::HashSet<String>,
+) {
+    if is_svelte_ui_construct_ir(c, registry) {
+        let path = sveltekit_output_path(c, registry);
+
+        // Don't emit if the template engine already produced this file
+        // (layer templates take priority over structural generation).
+        if !seen.contains(&path) {
+            seen.insert(path.clone());
+
+            let svelte_file = if c.subkind.eq_ignore_ascii_case("store") {
+                gen_svelte_store_at(c, registry, &path)
+            } else {
+                gen_svelte_component_at(c, registry, &path)
+            };
+
+            files.push(TsFile {
+                path: svelte_file.path,
+                content: svelte_file.content,
+            });
+        }
+    }
+
+    // Recurse into children and groups
+    for child in &c.children {
+        collect_svelte_files(child, registry, files, seen);
+    }
+}
+
+/// True if this construct is a Svelte UI emit target per layer identity.
+/// Checks subkind and keyword against known UI construct types.
+fn is_svelte_ui_construct_ir(c: &Construct, registry: &LayerRegistry) -> bool {
+    if c.shape != Shape::Struct {
+        return false;
+    }
+    let kw = c.keyword.as_str();
+    let sk = c.subkind.as_str();
+
+    // Direct subkind match (case-insensitive)
+    let ui_kinds = ["Component", "Page", "Layout", "Store"];
+    for kind in &ui_kinds {
+        if sk.eq_ignore_ascii_case(kind) || kw.eq_ignore_ascii_case(kind) {
+            return true;
+        }
+    }
+
+    // Layer ancestry via is_a
+    for ancestor in ["Component", "Page", "Layout"] {
+        if registry.is_a(kw, ancestor) || registry.is_a(sk, ancestor) {
+            return true;
+        }
+    }
+
+    false
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────

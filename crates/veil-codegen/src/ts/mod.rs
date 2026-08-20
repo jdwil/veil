@@ -33,3 +33,4 @@ pub use generate::generate_ts_ir;
 pub use lower::{lower_to_ts, lower_block, to_camel_case, veil_type_to_ts};
 pub use transforms::{track_imports, detect_async, import_statement};
 pub use components::gen_svelte_component;
+pub use components::{gen_svelte_component_at, gen_svelte_store, sveltekit_output_path, SvelteFile};
