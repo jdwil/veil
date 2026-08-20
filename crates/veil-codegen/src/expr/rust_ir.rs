@@ -171,11 +171,11 @@ pub enum RustExpr {
         value: Option<Box<RustExpr>>,
     },
 
-    /// If expression
+    /// If expression / if-else block
     If {
         condition: Box<RustExpr>,
-        then_body: Box<RustExpr>,
-        else_body: Option<Box<RustExpr>>,
+        then_body: Vec<RustExpr>,
+        else_body: Option<Vec<RustExpr>>,
     },
 
     /// Match expression
@@ -356,10 +356,22 @@ pub fn emit(expr: &RustExpr) -> String {
             else_body,
         } => {
             let cond = emit(condition);
-            let then_str = emit(then_body);
+            // Single-expression ternary: `if cond { expr } else { expr }`
+            if then_body.len() == 1 && else_body.as_ref().is_some_and(|b| b.len() == 1) {
+                let then_str = emit(&then_body[0]);
+                let else_str = emit(&else_body.as_ref().unwrap()[0]);
+                if !then_str.contains('\n') && !else_str.contains('\n') {
+                    return format!("if {} {{ {} }} else {{ {} }}", cond, then_str, else_str);
+                }
+            }
+            // Multi-line block format
+            let then_str = emit_block(then_body, "    ");
             match else_body {
-                Some(eb) => format!("if {} {{ {} }} else {{ {} }}", cond, then_str, emit(eb)),
-                None => format!("if {} {{ {} }}", cond, then_str),
+                Some(eb) => {
+                    let else_str = emit_block(eb, "    ");
+                    format!("if {} {{\n{}\n}} else {{\n{}\n}}", cond, then_str, else_str)
+                }
+                None => format!("if {} {{\n{}\n}}", cond, then_str),
             }
         }
         RustExpr::Match { scrutinee, arms } => {
@@ -447,6 +459,43 @@ pub fn emit(expr: &RustExpr) -> String {
             format!("loop {{\n{}\n}}", body_str)
         }
     }
+}
+
+/// Render a block of statements with indentation and semicolons.
+/// Used by If/Match/For/While emit to produce multi-line bodies.
+fn emit_block(stmts: &[RustExpr], indent: &str) -> String {
+    stmts
+        .iter()
+        .enumerate()
+        .map(|(i, e)| {
+            let rendered = emit(e);
+            let is_last = i + 1 == stmts.len();
+            let needs_semi = !is_last || is_block_like(e);
+            let line = if needs_semi && !rendered.ends_with('}') && !rendered.ends_with(';') {
+                format!("{};", rendered)
+            } else {
+                rendered
+            };
+            // Indent each line of the rendered statement
+            line.lines()
+                .map(|l| if l.is_empty() { String::new() } else { format!("{}{}", indent, l) })
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Whether a RustExpr is a block-like statement that doesn't need a trailing semicolon.
+fn is_block_like(expr: &RustExpr) -> bool {
+    matches!(
+        expr,
+        RustExpr::If { .. }
+            | RustExpr::Match { .. }
+            | RustExpr::For { .. }
+            | RustExpr::While { .. }
+            | RustExpr::Loop { .. }
+    )
 }
 
 // ─── lower_to_rust (bridge) ──────────────────────────────────────────────────
@@ -798,54 +847,50 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
 
         // ── Migrated: if expression ──────────────────────────────────────
         Expr::IfExpr(ie) => {
-            let text = {
-                let mut cond_ctx = ctx.clone_for_inference();
-                cond_ctx.option_value_wrap = false;
-                let cond = expr_to_rust(&ie.condition, &cond_ctx);
-                let cond = if let Expr::Ident(name) = ie.condition.as_ref() {
-                    if ctx.local_type(name) == Some("serde_json::Value") {
-                        format!("{}.as_bool().unwrap_or(false)", name)
-                    } else { cond }
-                } else { cond };
-                let then_is_stmt = matches!(
-                    ie.then_body.first(),
-                    Some(Expr::Assign(_, _, _) | Expr::MutAssign(_, _, _))
-                );
-                let else_is_stmt = ie.else_body.as_ref().is_some_and(|b| {
-                    matches!(b.first(), Some(Expr::Assign(_, _, _) | Expr::MutAssign(_, _, _)))
-                });
-                if ie.then_body.len() == 1
-                    && ie.else_body.as_ref().is_some_and(|b| b.len() == 1)
-                    && !then_is_stmt
-                    && !else_is_stmt
-                {
-                    let then_expr = expr_to_rust_value(&ie.then_body[0], ctx);
-                    let else_expr = expr_to_rust_value(&ie.else_body.as_ref().unwrap()[0], ctx);
-                    format!("if {} {{ {} }} else {{ {} }}", cond, then_expr, else_expr)
-                } else if ctx.option_value_wrap {
-                    let then_body = emit_value_block(&ie.then_body, ctx, "    ");
-                    if let Some(else_body) = &ie.else_body {
-                        let else_stmts = emit_value_block(else_body, ctx, "    ");
-                        format!(
-                            "if {} {{\n{}\n}} else {{\n{}\n}}",
-                            cond, then_body, else_stmts
-                        )
-                    } else {
-                        format!("if {} {{\n{}\n}} else {{\n    None\n}}", cond, then_body)
-                    }
+            let mut cond_ctx = ctx.clone_for_inference();
+            cond_ctx.option_value_wrap = false;
+            let cond_str = expr_to_rust(&ie.condition, &cond_ctx);
+            let cond_str = if let Expr::Ident(name) = ie.condition.as_ref() {
+                if ctx.local_type(name) == Some("serde_json::Value") {
+                    format!("{}.as_bool().unwrap_or(false)", name)
+                } else { cond_str }
+            } else { cond_str };
+
+            let condition = Box::new(RustExpr::Raw { text: cond_str, ty: Some(RustType::Named("bool".to_string())) });
+
+            let then_is_stmt = matches!(
+                ie.then_body.first(),
+                Some(Expr::Assign(_, _, _) | Expr::MutAssign(_, _, _))
+            );
+            let else_is_stmt = ie.else_body.as_ref().is_some_and(|b| {
+                matches!(b.first(), Some(Expr::Assign(_, _, _) | Expr::MutAssign(_, _, _)))
+            });
+
+            // Simple ternary: single value expressions in then/else
+            if ie.then_body.len() == 1
+                && ie.else_body.as_ref().is_some_and(|b| b.len() == 1)
+                && !then_is_stmt
+                && !else_is_stmt
+            {
+                let then_body = lower_value_block(&ie.then_body, ctx);
+                let else_body = lower_value_block(ie.else_body.as_ref().unwrap(), ctx);
+                return RustExpr::If { condition, then_body, else_body: Some(else_body) };
+            }
+
+            // Multi-line: option-value-wrap or tracked block
+            if ctx.option_value_wrap {
+                let then_body = lower_value_block(&ie.then_body, ctx);
+                let else_body = if let Some(eb) = &ie.else_body {
+                    Some(lower_value_block(eb, ctx))
                 } else {
-                    let then_body = emit_tracked_block(&ie.then_body, ctx, "    ");
-                    if let Some(else_body) = &ie.else_body {
-                        let else_stmts = emit_tracked_block(else_body, ctx, "    ");
-                        format!("if {} {{\n{}\n}} else {{\n{}\n}}", cond, then_body, else_stmts)
-                    } else {
-                        format!("if {} {{\n{}\n}}", cond, then_body)
-                    }
-                }
-            };
-            RustExpr::Raw {
-                text,
-                ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
+                    // No else → add explicit None
+                    Some(vec![RustExpr::Ident { name: "None".to_string(), ty: None }])
+                };
+                RustExpr::If { condition, then_body, else_body }
+            } else {
+                let then_body = lower_block(&ie.then_body, ctx);
+                let else_body = ie.else_body.as_ref().map(|eb| lower_block(eb, ctx));
+                RustExpr::If { condition, then_body, else_body }
             }
         }
 
@@ -1414,6 +1459,63 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
 
 /// Lower `Expr::Ident` to structured `RustExpr`.
 ///
+/// Lower a body (Vec<Expr>) to a Vec<RustExpr> with context tracking.
+/// Each expression is lowered with a context that includes locals declared
+/// by previous expressions in the body. This replicates the tracking that
+/// `emit_block_lines` did at the string level.
+fn lower_block(body: &[Expr], ctx: &GenCtx) -> Vec<RustExpr> {
+    use super::analysis::analyze_mut_locals;
+    use super::inference::infer_expr_type;
+
+    let mut body_ctx = ctx.clone_for_inference();
+    body_ctx.option_value_wrap = false;
+    body_ctx.mut_locals.extend(analyze_mut_locals(body));
+    let mut result = Vec::new();
+    for e in body {
+        let node = lower_to_rust(e, &body_ctx);
+        // Track new local declarations for subsequent expressions
+        if let Expr::Assign(name, rhs, _) | Expr::MutAssign(name, rhs, _) = e {
+            if !name.contains('.') {
+                body_ctx.locals.insert(name.clone());
+                if let Some(t) = infer_expr_type(rhs, &body_ctx) {
+                    body_ctx.local_types.insert(name.clone(), t);
+                }
+            }
+        }
+        result.push(node);
+    }
+    result
+}
+
+/// Like lower_block but the last expression is rendered as a value
+/// (for option_value_wrap contexts and match arm bodies).
+fn lower_value_block(body: &[Expr], ctx: &GenCtx) -> Vec<RustExpr> {
+    use super::analysis::analyze_mut_locals;
+    use super::inference::infer_expr_type;
+
+    let mut body_ctx = ctx.clone_for_inference();
+    body_ctx.option_value_wrap = false;
+    body_ctx.mut_locals.extend(analyze_mut_locals(body));
+    let mut result = Vec::new();
+    for (i, e) in body.iter().enumerate() {
+        let is_last = i + 1 == body.len();
+        if is_last {
+            body_ctx.option_value_wrap = ctx.option_value_wrap;
+        }
+        let node = lower_to_rust(e, &body_ctx);
+        if let Expr::Assign(name, rhs, _) | Expr::MutAssign(name, rhs, _) = e {
+            if !name.contains('.') {
+                body_ctx.locals.insert(name.clone());
+                if let Some(t) = infer_expr_type(rhs, &body_ctx) {
+                    body_ctx.local_types.insert(name.clone(), t);
+                }
+            }
+        }
+        result.push(node);
+    }
+    result
+}
+
 /// Handles: null→None, noop→{}, state locals, self field resolution,
 /// enum variant qualification. Edge cases (inline ternary fstrings,
 /// unwrap_or rewrites) fall through to Raw since they're not proper idents.
@@ -2641,8 +2743,8 @@ pub fn suppress_try_in_closure(expr: RustExpr) -> RustExpr {
             else_body,
         } => RustExpr::If {
             condition: Box::new(suppress_try_in_closure(*condition)),
-            then_body: Box::new(suppress_try_in_closure(*then_body)),
-            else_body: else_body.map(|e| Box::new(suppress_try_in_closure(*e))),
+            then_body: then_body.into_iter().map(suppress_try_in_closure).collect(),
+            else_body: else_body.map(|b| b.into_iter().map(suppress_try_in_closure).collect()),
         },
         RustExpr::Format { template, args } => RustExpr::Format {
             template,
