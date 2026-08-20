@@ -26,7 +26,6 @@ stub example-sdk 1.0.0
 cargo_deps helper-crate=1
 types_module types
 root_types Client
-async_methods send
 
 harness_field Client """
 {
@@ -41,7 +40,7 @@ harness_field Client """
   struct PutItemFluentBuilder
     fn table_name(input: Str) -> Self
     fn item(k: Str, v: AttributeValue) -> Self
-    fn send() -> Res!<PutItemOutput>
+    fn send() -> BoxFuture<Res!<PutItemOutput>>
 
   struct PutItemOutput
 
@@ -425,7 +424,7 @@ harness_field Client """
   struct PublishFluentBuilder
     fn topic_arn(input: Str) -> Self
     fn message(input: Str) -> Self
-    fn send() -> Res!
+    fn send() -> BoxFuture<Res!<()>>
 "#;
 
 const DDB_STUB: &str = r#"
@@ -440,7 +439,7 @@ harness_field Client """
 
   struct PutItemFluentBuilder
     fn table_name(input: Str) -> Self
-    fn send() -> Res!
+    fn send() -> BoxFuture<Res!<()>>
 "#;
 
 #[test]
@@ -801,7 +800,7 @@ root_types Client
     fn publish() -> PublishFluentBuilder
 
   struct PublishFluentBuilder
-    fn send() -> Res!<PublishOutput>
+    fn send() -> BoxFuture<Res!<PublishOutput>>
 
   struct PublishOutput
 "#;
@@ -848,7 +847,7 @@ fn blob_new_uses_stub_type_path_not_vec_u8() {
 stub example-sdk 1.0.0
 types_module types
 root_types Client
-async_methods send
+
 
   struct Blob
     path primitives
@@ -859,7 +858,7 @@ async_methods send
 
   struct InvokeFluentBuilder
     fn payload(input: Blob) -> Self
-    fn send() -> Res!<InvokeOutput>
+    fn send() -> BoxFuture<Res!<InvokeOutput>>
 
   struct InvokeOutput
     fn payload() -> Opt<Blob>
@@ -902,7 +901,7 @@ fn blob_to_str_and_ret_unit_as_none() {
 stub example-sdk 1.0.0
 types_module types
 root_types Client
-async_methods send
+
 
   struct Blob
     path primitives
@@ -913,7 +912,7 @@ async_methods send
 
   struct InvokeFluentBuilder
     fn payload(input: Blob) -> Self
-    fn send() -> Res!<InvokeOutput>
+    fn send() -> BoxFuture<Res!<InvokeOutput>>
 
   struct InvokeOutput
     fn payload() -> Opt<Blob>
@@ -973,7 +972,7 @@ fn crate_qualified_blob_new_is_type_new_not_module_fn() {
 stub example-sdk 1.0.0
 types_module types
 root_types Client
-async_methods send
+
 
   struct Blob
     path primitives
@@ -984,7 +983,7 @@ async_methods send
 
   struct InvokeFluentBuilder
     fn payload(input: Blob) -> Self
-    fn send() -> Res!<InvokeOutput>
+    fn send() -> BoxFuture<Res!<InvokeOutput>>
 
   struct InvokeOutput
     fn payload() -> Opt<Blob>
@@ -1026,10 +1025,10 @@ fn opt_match_last_expr_wraps_some_and_none_value() {
 stub example-sdk 1.0.0
 types_module types
 root_types Client
-async_methods send
+
 
   struct Client
-    fn send() -> Res!
+    fn send() -> BoxFuture<Res!<()>>
 "#;
     let app = r#"
 pkg FnApp
@@ -1088,13 +1087,13 @@ fn check_flags_stub_getter_returned_as_domain() {
 stub example-sdk 1.0.0
 types_module types
 root_types Client
-async_methods send
+
 
   struct Client
     fn get_item() -> GetItemFluentBuilder
 
   struct GetItemFluentBuilder
-    fn send() -> Res!<GetItemOutput>
+    fn send() -> BoxFuture<Res!<GetItemOutput>>
 
   struct GetItemOutput
     fn item() -> Opt<HashMap<Str, AttributeValue>>
@@ -1146,13 +1145,13 @@ const AV_STUB: &str = r#"
 stub example-sdk 1.0.0
 types_module types
 root_types Client
-async_methods send
+
 
   struct Client
     fn get_item() -> GetItemFluentBuilder
 
   struct GetItemFluentBuilder
-    fn send() -> Res!<GetItemOutput>
+    fn send() -> BoxFuture<Res!<GetItemOutput>>
 
   struct GetItemOutput
     fn item() -> Opt<HashMap<Str, AttributeValue>>
@@ -1397,7 +1396,7 @@ fn blob_as_ref_in_str_position_decodes_utf8() {
 stub example-sdk 1.0.0
 types_module types
 root_types Client
-async_methods send
+
 
   struct Blob
     path primitives
@@ -1409,7 +1408,7 @@ async_methods send
 
   struct InvokeFluentBuilder
     fn payload(input: Blob) -> Self
-    fn send() -> Res!<InvokeOutput>
+    fn send() -> BoxFuture<Res!<InvokeOutput>>
 
   struct InvokeOutput
     fn payload() -> Opt<Blob>
@@ -1497,7 +1496,7 @@ stub example-http 1.0.0
     fn post(url: U) -> RequestBuilder
   struct RequestBuilder
     fn body(body: T) -> Self
-    fn send() -> Res!<Response>
+    fn send() -> BoxFuture<Res!<Response>>
   struct Response
     fn text() -> Res!<Str>
 "#;
@@ -1562,5 +1561,57 @@ pkg SdkApp
     assert!(
         !out.contains("unstubbed external"),
         "must not treat Int.now_unix as an external stub:\n{out}"
+    );
+}
+
+#[test]
+fn stub_lowers_to_template_produces_correct_output() {
+    // This stub uses explicit lowers_to blocks — the engine should use the template
+    // directly instead of heuristic suffix detection.
+    let stub = r#"
+stub example-http 1.0.0
+  struct Client
+    fn post(url: U) -> RequestBuilder
+      lowers_to
+        rust: "{{self}}.post({{url}})"
+  struct RequestBuilder
+    fn body(body: T) -> Self
+      lowers_to
+        rust: "{{self}}.body({{body}})"
+    fn send() -> BoxFuture<Res!<Response>>
+      lowers_to
+        rust: "{{self}}.send().await.map_err(|e| {{error_model.external}}(format!(\"{e:?}\")))?"""
+  struct Response
+    fn text() -> BoxFuture<Res!<Str>>
+      lowers_to
+        rust: "{{self}}.text().await.map_err(|e| {{error_model.external}}(format!(\"{e:?}\")))?"""
+"#;
+    let app = r#"
+pkg SdkApp
+  use ddd
+  use example_http
+
+  ctx Store
+    group domain
+      port Http
+        post!(url: Str, body: Str) -> Str
+    group infrastructure
+      adapter Req for Http
+        @field(http: example_http.Client)
+        impl post(url, body)
+          resp = self.http.post(url).body(body).send!()
+          ret resp.text!()
+"#;
+    let out = generate_with_stub(stub, app);
+    // Template-based lowering: send() uses the template directly
+    assert!(
+        out.contains(".send().await.map_err"),
+        "send() should use template with .await.map_err:\n{}",
+        out.lines().filter(|l| l.contains("send") || l.contains("text")).collect::<Vec<_>>().join("\n")
+    );
+    assert!(
+        out.contains(".text().await.map_err"),
+        "text() should use template with .await.map_err:\n{}",
+        out.lines().filter(|l| l.contains("text")).collect::<Vec<_>>().join("\n")
     );
 }
