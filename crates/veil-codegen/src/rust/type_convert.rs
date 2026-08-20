@@ -697,7 +697,7 @@ pub fn generate_multi_package_harness(
                 registry.field_is_dependency(i)
             }) || svc.steps.iter().any(|st| {
                 if let FlowStep::Step(s) = st {
-                    s.body.iter().any(expr_mentions_port_call)
+                    s.body.iter().any(expr_mentions_trait_dep)
                 } else {
                     false
                 }

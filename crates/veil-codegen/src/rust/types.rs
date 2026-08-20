@@ -178,7 +178,7 @@ pub fn gen_types(
     }
 
     // Enums first (unit enums derive Default for fill-in). Nested VOs that are
-    // all-defaultable join `defaultable_structs` so later aggregates can omit
+    // all-defaultable join `defaultable_structs` so later structs can omit
     // them from smart-ctor params (`retry_settings: RetrySettings::default()`).
     // Domain enums stay as required ctor params (AuthType is intentional input).
     let mut defaultable_structs: std::collections::HashSet<String> =
@@ -591,7 +591,7 @@ pub fn gen_struct(
 
     // Generate impl block with business logic fns (if any exist).
     if !c.fns.is_empty() {
-        out.push_str(&gen_aggregate_impl(c, &fields, registry, has_immutable));
+        out.push_str(&gen_struct_impl(c, &fields, registry, has_immutable));
     }
 
     // Types with zero-arg smart ctors (all fields defaultable) are reusable as
@@ -684,8 +684,8 @@ pub fn string_field_default(field_name: &str) -> Option<&'static str> {
     }
 }
 
-/// Generate `impl Name { ... }` block for aggregate business logic fns.
-pub fn gen_aggregate_impl(c: &Construct, fields: &[&Field], registry: &LayerRegistry, is_immutable: bool) -> String {
+/// Generate `impl Name { ... }` block for struct business logic fns.
+pub fn gen_struct_impl(c: &Construct, fields: &[&Field], registry: &LayerRegistry, is_immutable: bool) -> String {
     use crate::expr::{GenCtx, expr_to_rust};
     use std::collections::HashMap;
 

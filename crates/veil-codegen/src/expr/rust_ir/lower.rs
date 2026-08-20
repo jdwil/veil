@@ -1810,7 +1810,7 @@ fn infer_call_type_from_ctx(call: &veil_ir::ast::CallExpr, ctx: &GenCtx) -> Opti
 /// target that is NOT a routing trait (routing is handled by lower_call_bus_routing).
 /// These produce: `deps.<field>.method(args).await?` or `.await` depending on
 /// the method's return type.
-fn lower_call_port(call: &veil_ir::ast::CallExpr, ctx: &GenCtx) -> Option<RustExpr> {
+fn lower_call_trait_dep(call: &veil_ir::ast::CallExpr, ctx: &GenCtx) -> Option<RustExpr> {
     use super::super::calls::param_types_for;
 
     // Only handle trait-shaped targets that are NOT routing traits
@@ -1917,7 +1917,7 @@ pub(super) fn lower_call(call: &veil_ir::ast::CallExpr, ctx: &GenCtx) -> RustExp
     }
 
     // Try structured port/trait calls (non-routing, non-sugar)
-    if let Some(expr) = lower_call_port(call, ctx) {
+    if let Some(expr) = lower_call_trait_dep(call, ctx) {
         return expr;
     }
 

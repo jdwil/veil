@@ -1,7 +1,7 @@
 //! Expression translator — converts VEIL AST Expr to Rust source code.
 //!
 //! Fully shape-driven: the translator uses `GenCtx.name_to_shape` to decide
-//! how to emit a Call (port call → deps.x.method().await?, struct call →
+//! how to emit a Call (trait dep call → deps.x.method().await?, struct call →
 //! Type::new(args), local → target.method(args)).
 
 use std::collections::{HashMap, HashSet};
@@ -229,10 +229,10 @@ pub struct GenCtx {
     /// INV-002 / collection / nested defaults) and thus implement `Default`.
     /// `Type.new(a, b)` on these lowers to a positional struct update + `..Default`.
     pub defaultable_types: HashSet<String>,
-    /// Trait (or port) name → `Deps` field name. Preference: dependency-role
+    /// Trait name → `Deps` field name. Preference: dependency-role
     /// input name (`@dep provider_repo: ApiProviderRepo` → `provider_repo`),
     /// else `to_snake(Trait)`. Shared by application emission, harness wiring,
-    /// and port-call lowering so all three agree.
+    /// and trait-dep lowering so all three agree.
     pub dep_fields: HashMap<String, String>,
     /// Domain type names defined in the crate currently being generated
     /// (structs/enums in this context). Used so typed bus decode never emits
@@ -284,7 +284,7 @@ impl GenCtx {
         }
     }
 
-    /// `Deps` field for a trait/port call target (PascalCase trait or already-snake field).
+    /// `Deps` field for a trait dependency call target (PascalCase trait or already-snake field).
     pub fn deps_field_for(&self, target: &str) -> String {
         if let Some(f) = self.dep_fields.get(target) {
             return f.clone();
@@ -310,7 +310,7 @@ impl GenCtx {
             .unwrap_or_default()
     }
 
-    /// Is this name a known trait-shaped construct (port/repo/integration)?
+    /// Is this name a known trait-shaped construct (repo/integration)?
     pub fn is_trait_target(&self, name: &str) -> bool {
         matches!(self.name_to_shape.get(name), Some(Shape::Trait))
     }
@@ -442,7 +442,7 @@ pub fn build_ctx_from_solution(solution: &Solution, name_to_shape: HashMap<Strin
                 ctx.types.method_returns
                     .insert((to_snake(&c.name), bare_method.clone()), ret_type.clone());
                 // Record parameter types for each method so call-site arg coercion
-                // can check whether a port expects Option<T> vs T.
+                // can check whether a trait dep expects Option<T> vs T.
                 let param_types: Vec<String> = method.params.iter()
                     .map(|p| type_name_simple(&p.type_expr))
                     .collect();
@@ -548,7 +548,7 @@ pub fn build_ctx_from_solution(solution: &Solution, name_to_shape: HashMap<Strin
         }
     }
 
-    // Type aliases like `type WearTestRepo = EntityRepo<WearTest>` are ports
+    // Type aliases like `type WearTestRepo = EntityRepo<WearTest>` are trait deps
     // for call resolution (deps.wear_test_repo) and share method return types
     // with the generic base trait (find → Option after monomorphize).
     for item in &solution.items {
@@ -785,7 +785,7 @@ pub fn build_ctx_from_solution(solution: &Solution, name_to_shape: HashMap<Strin
     }
 
     // Populate routing traits from the layer registry so call generation can
-    // identify message-routing ports without hardcoding trait names.
+    // identify message-routing traits without hardcoding trait names.
     ctx.routing.routing_traits = registry.routing_traits().into_iter().collect();
     ctx.routing.routing_ref = ctx.default_routing_ref_as_dep();
 

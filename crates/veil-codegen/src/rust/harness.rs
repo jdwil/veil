@@ -2,9 +2,9 @@ use veil_ir::ast::*;
 use veil_ir::layer::{Shape, LayerRegistry};
 use super::*;
 
-/// True if expr tree contains a port method call that requires a Deps parameter.
-/// Matches `PortName.method!(…)` / dep-local calls; ignores `Type.new(...)` constructors.
-pub fn expr_mentions_port_call(expr: &Expr) -> bool {
+/// True if expr tree contains a trait dependency call that requires a Deps parameter.
+/// Matches `TraitName.method!(…)` / dep-local calls; ignores `Type.new(...)` constructors.
+pub fn expr_mentions_trait_dep(expr: &Expr) -> bool {
     match expr {
         Expr::Call(call) => {
             let method = call.method.trim_end_matches(['!', '?']);
@@ -12,48 +12,48 @@ pub fn expr_mentions_port_call(expr: &Expr) -> bool {
             let is_ctor = method.is_empty() || method == "new";
             if !is_ctor && !call.method.is_empty() {
                 let t = call.target.as_str();
-                // Language primitives are not port calls
+                // Language primitives are not trait dep calls
                 let is_lang = matches!(t, "Dt" | "Uuid" | "Map" | "List" | "Opt" | "Json" | "Env" | "Str" | "Id" | "UUID" | "Int" | "Float" | "Bool");
-                // Port/trait calls: PascalCase target, or snake_case @dep local ending in _repo/_port/_svc
+                // Trait dep calls: PascalCase target, or snake_case @dep local ending in _repo/_port/_svc
                 let pascal = t.chars().next().map(|c| c.is_uppercase()).unwrap_or(false);
                 let dep_local = t.ends_with("_repo")
                     || t.ends_with("_port")
                     || t.ends_with("_svc")
                     || t.ends_with("_client");
-                // Bang-suffix methods (method!) are always port/repo calls
+                // Bang-suffix methods (method!) are always trait dep calls
                 let is_bang = call.method.ends_with('!');
                 if !is_lang && (pascal || dep_local || (is_bang && !t.is_empty())) {
                     return true;
                 }
             }
             if let Some(recv) = &call.receiver
-                && expr_mentions_port_call(recv) {
+                && expr_mentions_trait_dep(recv) {
                     return true;
                 }
-            call.args.iter().any(expr_mentions_port_call)
+            call.args.iter().any(expr_mentions_trait_dep)
         }
-        Expr::Assign(_, rhs, _) | Expr::MutAssign(_, rhs, _) => expr_mentions_port_call(rhs),
+        Expr::Assign(_, rhs, _) | Expr::MutAssign(_, rhs, _) => expr_mentions_trait_dep(rhs),
         Expr::Return(inner) | Expr::Try(inner) | Expr::Require(inner) | Expr::Await(inner) | Expr::UnaryOp(UnaryOpExpr { expr: inner, .. }) => {
-            expr_mentions_port_call(inner)
+            expr_mentions_trait_dep(inner)
         }
         Expr::BinaryOp(b) => {
-            expr_mentions_port_call(&b.left) || expr_mentions_port_call(&b.right)
+            expr_mentions_trait_dep(&b.left) || expr_mentions_trait_dep(&b.right)
         }
         Expr::IfExpr(i) => {
-            expr_mentions_port_call(&i.condition)
-                || i.then_body.iter().any(expr_mentions_port_call)
+            expr_mentions_trait_dep(&i.condition)
+                || i.then_body.iter().any(expr_mentions_trait_dep)
                 || i.else_body
                     .as_ref()
-                    .map(|b| b.iter().any(expr_mentions_port_call))
+                    .map(|b| b.iter().any(expr_mentions_trait_dep))
                     .unwrap_or(false)
         }
-        Expr::ArrayLit(items) => items.iter().any(expr_mentions_port_call),
+        Expr::ArrayLit(items) => items.iter().any(expr_mentions_trait_dep),
         Expr::Match(scrutinee, arms) => {
-            expr_mentions_port_call(scrutinee)
-                || arms.iter().any(|a| a.body.iter().any(expr_mentions_port_call))
+            expr_mentions_trait_dep(scrutinee)
+                || arms.iter().any(|a| a.body.iter().any(expr_mentions_trait_dep))
         }
         Expr::ForLoop { iterable, body, .. } | Expr::WhileLoop { condition: iterable, body } => {
-            expr_mentions_port_call(iterable) || body.iter().any(expr_mentions_port_call)
+            expr_mentions_trait_dep(iterable) || body.iter().any(expr_mentions_trait_dep)
         }
         Expr::Action(_) => true, // invoke/request layer actions always need Bus dep
         _ => false,
@@ -1081,12 +1081,12 @@ pub fn gen_local_harness_main(
             ));
 
             // Only pass &deps when the application fn actually takes deps
-            // (dependency-role inputs or body references ports).
+            // (dependency-role inputs or body references trait deps).
             let svc_has_deps = !deps_set_h.is_empty() && (svc.inputs.iter().any(|i| registry.field_is_dependency(i))
                 || {
                     svc.steps.iter().any(|st| {
                         if let FlowStep::Step(s) = st {
-                            s.body.iter().any(expr_mentions_port_call)
+                            s.body.iter().any(expr_mentions_trait_dep)
                         } else {
                             false
                         }
@@ -1529,7 +1529,7 @@ pub fn gen_bus_handler_registration(
 ) -> String {
     let app_fn = to_snake(&svc.name);
     // Only pass &deps when *this* service takes dependency-role inputs (or
-    // uses ports in its body). Module-level Deps may exist for other svcs.
+    // uses trait deps in its body). Module-level Deps may exist for other svcs.
     let svc_takes_deps = module_has_deps
         && (svc
             .inputs
@@ -1537,7 +1537,7 @@ pub fn gen_bus_handler_registration(
             .any(|i| registry.field_is_dependency(i))
             || svc.steps.iter().any(|st| {
                 if let FlowStep::Step(s) = st {
-                    s.body.iter().any(expr_mentions_port_call)
+                    s.body.iter().any(expr_mentions_trait_dep)
                 } else {
                     false
                 }

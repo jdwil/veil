@@ -546,7 +546,7 @@ pub fn bus_return_type_in_scope(ctx: &GenCtx, ret: &str) -> bool {
 }
 
 /// Collect all trait-shaped construct names referenced in flow step bodies.
-/// Returns the set of port names that need to be in the Deps struct.
+/// Returns the set of trait names that need to be in the Deps struct.
 pub fn collect_deps(steps: &[FlowStep], ctx: &GenCtx) -> HashSet<String> {
     let mut deps = HashSet::new();
     for step in steps {
@@ -565,7 +565,7 @@ pub fn collect_deps_from_expr(expr: &Expr, ctx: &GenCtx, deps: &mut HashSet<Stri
             if ctx.is_trait_target(&call.target) {
                 deps.insert(call.target.clone());
             } else if call.method.ends_with('!') && !call.target.is_empty() {
-                // VEIL convention: method! marks port/repo calls. Find matching trait.
+                // VEIL convention: method! marks trait dep calls. Find matching trait.
                 for (name, shape) in &ctx.name_to_shape {
                     if *shape == Shape::Trait {
                         let trait_snake = to_snake(name);
@@ -603,7 +603,7 @@ pub fn collect_deps_from_expr(expr: &Expr, ctx: &GenCtx, deps: &mut HashSet<Stri
             for e in &a.body {
                 collect_deps_from_expr(e, ctx, deps);
             }
-            // requires_dep / port targets count as deps
+            // requires_dep / trait dep targets count as deps
             if let Some(spec) = ctx.statement_specs.get(&a.keyword) {
                 if let Some(dep) = &spec.requires_dep {
                     deps.insert(dep.clone());
@@ -660,7 +660,7 @@ pub fn gen_deps_struct(dep_names: &HashSet<String>) -> String {
     if dep_names.is_empty() {
         return String::new();
     }
-    let mut out = String::from("/// Injected dependencies (ports).\npub struct Deps {\n");
+    let mut out = String::from("/// Injected trait dependencies.\npub struct Deps {\n");
     let mut sorted: Vec<&String> = dep_names.iter().collect();
     sorted.sort();
     for name in sorted {

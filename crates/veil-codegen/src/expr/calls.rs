@@ -8,7 +8,7 @@ use super::*;
 /// - Fluent `.send()` / `.send_with()` are async + Result → `.await?`
 /// - Stub methods marked async+fallible (BoxFuture / executor param) → `.await.map_err…?`
 /// - Other stub methods marked `Res!` are sync Result → `map_err…?`
-/// - Trait methods (ports) are async_trait + Result → `.await?`
+/// - Trait methods (trait deps) are async_trait + Result → `.await?`
 ///
 /// **Receiver shape wins over bare method name.** The same identifier can name a
 /// *receiver's* Shape (Struct vs Trait) when known, not a global method-name scan.
@@ -137,7 +137,7 @@ pub fn receiver_call_suffix(recv: &Expr, method: &str, ctx: &GenCtx) -> String {
             return ".await".to_string();
         }
     }
-    // Untyped receiver: method name appears on a port trait → async_trait.
+    // Untyped receiver: method name appears on a trait dep → async_trait.
     // If a stub/struct also has the same method name (e.g. `delete`), do not
     // force await — that would break reqwest Client.delete. List elements of
     // trait objects are handled via Index + peel above (SagaStep.action).
@@ -784,7 +784,7 @@ pub(super) fn arg_to_rust(arg: &Expr, param_ty: Option<&str>, ctx: &GenCtx) -> S
     rust
 }
 
-/// Receiver name used to look up port/stub param types.
+/// Receiver name used to look up trait-dep/stub param types.
 /// Ident and `self.field` / `deps.field` last segments all count.
 fn call_recv_lookup_name(call: &CallExpr) -> Option<String> {
     if !call.target.is_empty() {
@@ -1055,7 +1055,7 @@ pub fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
                 return format!("{}.limit(({}) as i32){}", recv_str, arg, suffix);
             }
         }
-        // Look up param types by receiver *name* (port/dep field), not the
+        // Look up param types by receiver *name* (trait-dep/dep field), not the
         // inferred Rust local type. `local_type("sns_client")` is None; the
         // port is registered as `(sns_client, publish)`. Falling back to
         // "any method named publish" collides with stub fluent `publish()`.
@@ -2013,7 +2013,7 @@ pub fn translate_call(call: &CallExpr, ctx: &GenCtx) -> String {
                     );
                 }
             }
-            // Known concrete method (e.g. aggregate fn) — call with ?
+            // Known concrete method (e.g. struct impl fn) — call with ?
             if ctx.types.method_returns.contains_key(&(type_name.to_string(), call.method.clone()))
                 || ctx.types.method_returns.contains_key(&(
                     type_name.to_string(),
