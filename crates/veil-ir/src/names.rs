@@ -1440,6 +1440,8 @@ mod tests {
             presentation: Default::default(),
             roles: Vec::new(),
             config_keys: Vec::new(),
+            lowers_to: std::collections::HashMap::new(),
+            required_fields: Vec::new(),
         }
     }
 
