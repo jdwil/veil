@@ -26,4 +26,4 @@ mod tests;
 // Public API
 pub use emit::emit_ts;
 pub use expr::{TsBinOp, TsExpr, TsPattern, TsTemplatePart, TsType, TsUnaryOp};
-pub use lower::{lower_to_ts, to_camel_case, veil_type_to_ts};
+pub use lower::{lower_to_ts, lower_block, to_camel_case, veil_type_to_ts};

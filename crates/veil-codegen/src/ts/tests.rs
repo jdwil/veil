@@ -866,10 +866,11 @@ for (const item of items) {
 // lower_to_ts tests — VEIL Expr → TsExpr → emit_ts round-trip
 // ═══════════════════════════════════════════════════════════════════════════════
 
-use super::lower::{lower_to_ts, to_camel_case, veil_type_to_ts};
+use super::lower::{lower_to_ts, lower_block, to_camel_case, veil_type_to_ts};
+use super::expr::TsExpr;
 use crate::expr::GenCtx;
 use std::collections::HashMap;
-use veil_ir::ast::{BinOp, BinaryOpExpr, Expr, Pattern, StringPart, TypeExpr, UnaryOp, UnaryOpExpr};
+use veil_ir::ast::{BinOp, BinaryOpExpr, Expr, IfExprData, MatchArm, Pattern, StringPart, TypeExpr, UnaryOp, UnaryOpExpr};
 
 /// Helper: create a minimal GenCtx for tests.
 fn test_ctx() -> GenCtx {
@@ -1313,9 +1314,429 @@ fn camel_case_passthrough() {
 
 #[test]
 fn lower_unhandled_falls_to_raw() {
-    // ArrayLit is not explicitly handled by lower_to_ts → falls to Raw
-    let expr = Expr::ArrayLit(vec![Expr::IntLit(1), Expr::IntLit(2)]);
+    // Range has no native TS equivalent — uses Raw fallback
+    let expr = Expr::Range {
+        start: Some(Box::new(Expr::IntLit(0))),
+        end: Some(Box::new(Expr::IntLit(10))),
+        inclusive: false,
+    };
     let ts = lower_to_ts(&expr, &test_ctx());
-    // The Raw path uses expr_to_ts which renders array literals
-    assert_eq!(emit_ts(&ts), "[1, 2]");
+    // The Raw path uses expr_to_ts which renders range expressions
+    match &ts {
+        TsExpr::Raw(_) => {} // correct
+        other => panic!("Expected Raw, got {:?}", other),
+    }
+}
+
+// ─── Batch 6: Control Flow Lowering Tests ────────────────────────────────────
+
+use veil_ir::Span;
+
+#[test]
+fn lower_if_expr_no_else() {
+    let expr = Expr::IfExpr(IfExprData {
+        condition: Box::new(Expr::Ident("is_active".to_string())),
+        then_body: vec![Expr::Return(Box::new(Expr::IntLit(1)))],
+        else_body: None,
+    });
+    let ts = lower_to_ts(&expr, &test_ctx());
+    let output = emit_ts(&ts);
+    assert_eq!(output, "if (isActive) {\n  return 1;\n}");
+}
+
+#[test]
+fn lower_if_expr_with_else() {
+    let expr = Expr::IfExpr(IfExprData {
+        condition: Box::new(Expr::BinaryOp(BinaryOpExpr {
+            left: Box::new(Expr::Ident("count".to_string())),
+            op: BinOp::Gt,
+            right: Box::new(Expr::IntLit(0)),
+        })),
+        then_body: vec![Expr::Return(Box::new(Expr::StringLit("yes".to_string())))],
+        else_body: Some(vec![Expr::Return(Box::new(Expr::StringLit("no".to_string())))]),
+    });
+    let ts = lower_to_ts(&expr, &test_ctx());
+    let output = emit_ts(&ts);
+    assert!(output.contains("if (count > 0)"), "output: {}", output);
+    assert!(output.contains("return \"yes\""), "output: {}", output);
+    assert!(output.contains("} else {"), "output: {}", output);
+    assert!(output.contains("return \"no\""), "output: {}", output);
+}
+
+#[test]
+fn lower_match_to_switch() {
+    let expr = Expr::Match(
+        Box::new(Expr::Ident("status".to_string())),
+        vec![
+            MatchArm {
+                pattern: "active".to_string(),
+                rich_pattern: None,
+                guard: None,
+                span: Span::new(0, 0),
+                body: vec![Expr::Return(Box::new(Expr::IntLit(1)))],
+            },
+            MatchArm {
+                pattern: "inactive".to_string(),
+                rich_pattern: None,
+                guard: None,
+                span: Span::new(0, 0),
+                body: vec![Expr::Return(Box::new(Expr::IntLit(0)))],
+            },
+            MatchArm {
+                pattern: "_".to_string(),
+                rich_pattern: None,
+                guard: None,
+                span: Span::new(0, 0),
+                body: vec![Expr::Return(Box::new(Expr::IntLit(-1)))],
+            },
+        ],
+    );
+    let ts = lower_to_ts(&expr, &test_ctx());
+    let output = emit_ts(&ts);
+    assert!(output.contains("switch (status)"), "output: {}", output);
+    assert!(output.contains("case \"active\":"), "output: {}", output);
+    assert!(output.contains("case \"inactive\":"), "output: {}", output);
+    assert!(output.contains("default:"), "output: {}", output);
+    assert!(output.contains("return -1"), "output: {}", output);
+}
+
+#[test]
+fn lower_match_wildcard_rich_pattern() {
+    let expr = Expr::Match(
+        Box::new(Expr::Ident("val".to_string())),
+        vec![
+            MatchArm {
+                pattern: "some_val".to_string(),
+                rich_pattern: None,
+                guard: None,
+                span: Span::new(0, 0),
+                body: vec![Expr::IntLit(1)],
+            },
+            MatchArm {
+                pattern: "wild".to_string(),
+                rich_pattern: Some(Pattern::Wildcard),
+                guard: None,
+                span: Span::new(0, 0),
+                body: vec![Expr::IntLit(0)],
+            },
+        ],
+    );
+    let ts = lower_to_ts(&expr, &test_ctx());
+    let output = emit_ts(&ts);
+    // Rich pattern Wildcard should be the default arm
+    assert!(output.contains("default:"), "output: {}", output);
+    assert!(output.contains("case \"some_val\":"), "output: {}", output);
+}
+
+#[test]
+fn lower_for_loop_simple() {
+    let expr = Expr::ForLoop {
+        binding: "item".to_string(),
+        index: None,
+        iterable: Box::new(Expr::Ident("items".to_string())),
+        body: vec![Expr::Return(Box::new(Expr::Ident("item".to_string())))],
+    };
+    let ts = lower_to_ts(&expr, &test_ctx());
+    let output = emit_ts(&ts);
+    assert!(output.contains("for (const item of items)"), "output: {}", output);
+    assert!(output.contains("return item"), "output: {}", output);
+}
+
+#[test]
+fn lower_for_loop_with_index() {
+    let expr = Expr::ForLoop {
+        binding: "user_item".to_string(),
+        index: Some("idx".to_string()),
+        iterable: Box::new(Expr::Ident("user_list".to_string())),
+        body: vec![Expr::Break],
+    };
+    let ts = lower_to_ts(&expr, &test_ctx());
+    let output = emit_ts(&ts);
+    assert!(output.contains("for (let idx = 0; idx < userList.length; idx++)"), "output: {}", output);
+    assert!(output.contains("const userItem = userList[idx]"), "output: {}", output);
+    assert!(output.contains("break"), "output: {}", output);
+}
+
+#[test]
+fn lower_while_loop() {
+    let expr = Expr::WhileLoop {
+        condition: Box::new(Expr::BoolLit(true)),
+        body: vec![Expr::Continue],
+    };
+    let ts = lower_to_ts(&expr, &test_ctx());
+    let output = emit_ts(&ts);
+    assert_eq!(output, "while (true) {\n  continue;\n}");
+}
+
+#[test]
+fn lower_infinite_loop() {
+    let expr = Expr::Loop(vec![
+        Expr::Break,
+    ]);
+    let ts = lower_to_ts(&expr, &test_ctx());
+    let output = emit_ts(&ts);
+    assert_eq!(output, "while (true) {\n  break;\n}");
+}
+
+#[test]
+fn lower_do_block_iife() {
+    let expr = Expr::DoBlock(vec![
+        Expr::Assign("x".to_string(), Box::new(Expr::IntLit(1)), None),
+        Expr::Return(Box::new(Expr::Ident("x".to_string()))),
+    ]);
+    let ts = lower_to_ts(&expr, &test_ctx());
+    let output = emit_ts(&ts);
+    // DoBlock → IIFE wrapping an arrow fn
+    assert!(output.contains("() =>"), "output: {}", output);
+    assert!(output.contains("const x = 1"), "output: {}", output);
+    assert!(output.contains("return x"), "output: {}", output);
+}
+
+// ─── Batch 7: Collections Lowering Tests ─────────────────────────────────────
+
+#[test]
+fn lower_array_lit() {
+    let expr = Expr::ArrayLit(vec![Expr::IntLit(1), Expr::IntLit(2), Expr::IntLit(3)]);
+    let ts = lower_to_ts(&expr, &test_ctx());
+    assert_eq!(emit_ts(&ts), "[1, 2, 3]");
+}
+
+#[test]
+fn lower_array_lit_empty() {
+    let expr = Expr::ArrayLit(vec![]);
+    let ts = lower_to_ts(&expr, &test_ctx());
+    assert_eq!(emit_ts(&ts), "[]");
+}
+
+#[test]
+fn lower_tuple_as_array() {
+    let expr = Expr::Tuple(vec![
+        Expr::StringLit("hello".to_string()),
+        Expr::IntLit(42),
+    ]);
+    let ts = lower_to_ts(&expr, &test_ctx());
+    assert_eq!(emit_ts(&ts), "[\"hello\", 42]");
+}
+
+#[test]
+fn lower_struct_lit_to_object() {
+    let expr = Expr::StructLit(
+        "User".to_string(),
+        vec![
+            ("first_name".to_string(), Expr::StringLit("Alice".to_string())),
+            ("is_active".to_string(), Expr::BoolLit(true)),
+        ],
+    );
+    let ts = lower_to_ts(&expr, &test_ctx());
+    let output = emit_ts(&ts);
+    // Fields should be camelCase
+    assert!(output.contains("firstName: \"Alice\""), "output: {}", output);
+    assert!(output.contains("isActive: true"), "output: {}", output);
+}
+
+#[test]
+fn lower_struct_lit_shorthand() {
+    // When field value is an Ident matching the camelCase field name, emit shorthand
+    let expr = Expr::StructLit(
+        "Config".to_string(),
+        vec![
+            ("name".to_string(), Expr::Ident("name".to_string())),
+        ],
+    );
+    let ts = lower_to_ts(&expr, &test_ctx());
+    let output = emit_ts(&ts);
+    // ObjectLit emit detects key == ident name → shorthand
+    assert_eq!(output, "{ name }");
+}
+
+#[test]
+fn lower_struct_update_spread() {
+    let expr = Expr::StructUpdate {
+        name: "Config".to_string(),
+        fields: vec![
+            ("port".to_string(), Expr::IntLit(8080)),
+        ],
+        base: Box::new(Expr::Ident("default_config".to_string())),
+    };
+    let ts = lower_to_ts(&expr, &test_ctx());
+    let output = emit_ts(&ts);
+    assert!(output.contains("...defaultConfig"), "output: {}", output);
+    assert!(output.contains("port: 8080"), "output: {}", output);
+}
+
+#[test]
+fn lower_index_access() {
+    let expr = Expr::Index(
+        Box::new(Expr::Ident("items".to_string())),
+        Box::new(Expr::IntLit(0)),
+    );
+    let ts = lower_to_ts(&expr, &test_ctx());
+    assert_eq!(emit_ts(&ts), "items[0]");
+}
+
+#[test]
+fn lower_index_access_expr() {
+    let expr = Expr::Index(
+        Box::new(Expr::Ident("matrix".to_string())),
+        Box::new(Expr::Ident("row_idx".to_string())),
+    );
+    let ts = lower_to_ts(&expr, &test_ctx());
+    assert_eq!(emit_ts(&ts), "matrix[rowIdx]");
+}
+
+// ─── Batch 8: Additional Wrappers Lowering Tests ─────────────────────────────
+
+#[test]
+fn lower_cast_type_assertion() {
+    let expr = Expr::Cast(
+        Box::new(Expr::Ident("value".to_string())),
+        "Str".to_string(),
+    );
+    let ts = lower_to_ts(&expr, &test_ctx());
+    assert_eq!(emit_ts(&ts), "value as string");
+}
+
+#[test]
+fn lower_cast_custom_type() {
+    let expr = Expr::Cast(
+        Box::new(Expr::Ident("obj".to_string())),
+        "UserProfile".to_string(),
+    );
+    let ts = lower_to_ts(&expr, &test_ctx());
+    assert_eq!(emit_ts(&ts), "obj as UserProfile");
+}
+
+#[test]
+fn lower_closure_sync() {
+    let expr = Expr::Closure {
+        params: vec!["user_item".to_string(), "idx".to_string()],
+        body: vec![Expr::Return(Box::new(Expr::Ident("user_item".to_string())))],
+    };
+    let ts = lower_to_ts(&expr, &test_ctx());
+    let output = emit_ts(&ts);
+    assert!(output.contains("(userItem, idx) =>"), "output: {}", output);
+    assert!(output.contains("return userItem"), "output: {}", output);
+    // Should NOT be async
+    assert!(!output.contains("async"), "output: {}", output);
+}
+
+#[test]
+fn lower_closure_async_detected() {
+    // Closure body contains Await → async arrow fn
+    let expr = Expr::Closure {
+        params: vec!["id".to_string()],
+        body: vec![Expr::Await(Box::new(Expr::Ident("fetch_user".to_string())))],
+    };
+    let ts = lower_to_ts(&expr, &test_ctx());
+    let output = emit_ts(&ts);
+    assert!(output.contains("async"), "Should be async: {}", output);
+    assert!(output.contains("(id) =>"), "output: {}", output);
+    assert!(output.contains("await fetchUser"), "output: {}", output);
+}
+
+#[test]
+fn lower_closure_async_try_detected() {
+    // Closure body contains Try (which lowers to Await) → async
+    let expr = Expr::Closure {
+        params: vec!["x".to_string()],
+        body: vec![Expr::Try(Box::new(Expr::Ident("api_call".to_string())))],
+    };
+    let ts = lower_to_ts(&expr, &test_ctx());
+    let output = emit_ts(&ts);
+    assert!(output.contains("async"), "Try should trigger async: {}", output);
+}
+
+#[test]
+fn lower_closure_single_expr_shorthand() {
+    // Single expression body → shorthand arrow syntax
+    let expr = Expr::Closure {
+        params: vec!["x".to_string()],
+        body: vec![Expr::BinaryOp(BinaryOpExpr {
+            left: Box::new(Expr::Ident("x".to_string())),
+            op: BinOp::Mul,
+            right: Box::new(Expr::IntLit(2)),
+        })],
+    };
+    let ts = lower_to_ts(&expr, &test_ctx());
+    let output = emit_ts(&ts);
+    assert_eq!(output, "(x) => x * 2");
+}
+
+#[test]
+fn lower_range_raw_fallback() {
+    // Range has no native TS equivalent → Raw escape hatch
+    let expr = Expr::Range {
+        start: Some(Box::new(Expr::IntLit(0))),
+        end: Some(Box::new(Expr::IntLit(10))),
+        inclusive: false,
+    };
+    let ts = lower_to_ts(&expr, &test_ctx());
+    match &ts {
+        TsExpr::Raw(_) => {} // correct
+        other => panic!("Expected Raw for Range, got {:?}", other),
+    }
+}
+
+#[test]
+fn lower_if_let_null_check() {
+    let expr = Expr::IfLet {
+        pattern: "user".to_string(),
+        expr: Box::new(Expr::Ident("maybe_user".to_string())),
+        then_body: vec![Expr::Return(Box::new(Expr::Ident("maybe_user".to_string())))],
+        else_body: None,
+    };
+    let ts = lower_to_ts(&expr, &test_ctx());
+    let output = emit_ts(&ts);
+    // Should emit null check: if (maybeUser !== null)
+    assert!(output.contains("maybeUser !== null"), "output: {}", output);
+    assert!(output.contains("return maybeUser"), "output: {}", output);
+}
+
+#[test]
+fn lower_if_let_with_else() {
+    let expr = Expr::IfLet {
+        pattern: "val".to_string(),
+        expr: Box::new(Expr::Ident("opt_val".to_string())),
+        then_body: vec![Expr::Return(Box::new(Expr::Ident("opt_val".to_string())))],
+        else_body: Some(vec![Expr::Return(Box::new(Expr::Ident("null".to_string())))]),
+    };
+    let ts = lower_to_ts(&expr, &test_ctx());
+    let output = emit_ts(&ts);
+    assert!(output.contains("optVal !== null"), "output: {}", output);
+    assert!(output.contains("} else {"), "output: {}", output);
+    assert!(output.contains("return null"), "output: {}", output);
+}
+
+#[test]
+fn lower_while_let_null_check() {
+    let expr = Expr::WhileLet {
+        pattern: "item".to_string(),
+        expr: Box::new(Expr::Ident("next_item".to_string())),
+        body: vec![Expr::Continue],
+    };
+    let ts = lower_to_ts(&expr, &test_ctx());
+    let output = emit_ts(&ts);
+    // Should emit: while (nextItem !== null) { continue; }
+    assert!(output.contains("nextItem !== null"), "output: {}", output);
+    assert!(output.contains("continue"), "output: {}", output);
+}
+
+// ─── lower_block Helper Test ─────────────────────────────────────────────────
+
+#[test]
+fn lower_block_multiple_stmts() {
+    let body = vec![
+        Expr::Assign("x".to_string(), Box::new(Expr::IntLit(1)), None),
+        Expr::Assign("y".to_string(), Box::new(Expr::IntLit(2)), None),
+        Expr::Return(Box::new(Expr::BinaryOp(BinaryOpExpr {
+            left: Box::new(Expr::Ident("x".to_string())),
+            op: BinOp::Add,
+            right: Box::new(Expr::Ident("y".to_string())),
+        }))),
+    ];
+    let result = lower_block(&body, &test_ctx());
+    assert_eq!(result.len(), 3);
+    assert_eq!(emit_ts(&result[0]), "const x = 1");
+    assert_eq!(emit_ts(&result[1]), "const y = 2");
+    assert_eq!(emit_ts(&result[2]), "return x + y");
 }

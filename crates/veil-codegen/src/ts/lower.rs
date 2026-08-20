@@ -4,7 +4,7 @@
 //! Unhandled expressions fall back to `TsExpr::Raw(expr_to_ts(...))` wrapping
 //! the existing string-based codegen path during migration.
 
-use veil_ir::ast::{BinOp, Expr, Pattern, StringPart, TypeExpr, UnaryOp};
+use veil_ir::ast::{BinOp, Expr, IfExprData, MatchArm, Pattern, StringPart, TypeExpr, UnaryOp};
 use crate::expr::GenCtx;
 use crate::typescript::expr_to_ts;
 use super::expr::{TsBinOp, TsExpr, TsPattern, TsTemplatePart, TsType, TsUnaryOp};
@@ -78,6 +78,56 @@ pub fn lower_to_ts(expr: &Expr, ctx: &GenCtx) -> TsExpr {
         Expr::Require(inner) => lower_require(inner, ctx),
         Expr::Break => TsExpr::Break,
         Expr::Continue => TsExpr::Continue,
+
+        // ── Batch 6: Control Flow ────────────────────────────────────────
+        Expr::IfExpr(data) => lower_if_expr(data, ctx),
+        Expr::Match(scrutinee, arms) => lower_match(scrutinee, arms, ctx),
+        Expr::ForLoop { binding, index, iterable, body } => {
+            lower_for_loop(binding, index.as_deref(), iterable, body, ctx)
+        }
+        Expr::WhileLoop { condition, body } => TsExpr::While {
+            condition: Box::new(lower_to_ts(condition, ctx)),
+            body: lower_block(body, ctx),
+        },
+        Expr::Loop(body) => TsExpr::Loop {
+            body: lower_block(body, ctx),
+        },
+        Expr::DoBlock(body) => lower_do_block(body, ctx),
+
+        // ── Batch 7: Collections ─────────────────────────────────────────
+        Expr::ArrayLit(items) => TsExpr::ArrayLit {
+            items: items.iter().map(|e| lower_to_ts(e, ctx)).collect(),
+            ty: None,
+        },
+        Expr::Tuple(items) => TsExpr::ArrayLit {
+            items: items.iter().map(|e| lower_to_ts(e, ctx)).collect(),
+            ty: None, // TS tuples are typed arrays
+        },
+        Expr::StructLit(name, fields) => lower_struct_lit(name, fields, ctx),
+        Expr::StructUpdate { name, fields, base } => {
+            lower_struct_update(name, fields, base, ctx)
+        }
+        Expr::Index(base_expr, idx) => TsExpr::Index {
+            base: Box::new(lower_to_ts(base_expr, ctx)),
+            index: Box::new(lower_to_ts(idx, ctx)),
+        },
+
+        // ── Batch 8: Additional Wrappers ─────────────────────────────────
+        Expr::Cast(inner, ty_name) => TsExpr::TypeAssertion {
+            expr: Box::new(lower_to_ts(inner, ctx)),
+            ty: map_cast_type(ty_name),
+        },
+        Expr::Closure { params, body } => lower_closure(params, body, ctx),
+        // Range has no native TS equivalent — leave as escape hatch.
+        // TS lacks a built-in range type; emitting Array.from or a helper
+        // would require runtime assumptions. Raw fallback preserves intent.
+        Expr::Range { .. } => TsExpr::Raw(expr_to_ts(expr, 0)),
+        Expr::IfLet { pattern: _, expr: inner, then_body, else_body } => {
+            lower_if_let(inner, then_body, else_body.as_deref(), ctx)
+        }
+        Expr::WhileLet { pattern: _, expr: inner, body } => {
+            lower_while_let(inner, body, ctx)
+        }
 
         // ── Fallback: delegate to old string-based codegen ───────────────
         _ => TsExpr::Raw(expr_to_ts(expr, 0)),
@@ -229,6 +279,210 @@ fn lower_require(inner: &Expr, _ctx: &GenCtx) -> TsExpr {
     // Use the raw pattern matching the old codegen for compatibility:
     let raw = expr_to_ts(&Expr::Require(Box::new(inner.clone())), 0);
     TsExpr::Raw(raw)
+}
+
+// ─── Block Helper ────────────────────────────────────────────────────────────
+
+/// Lower a sequence of VEIL expressions (a body/block) to a Vec<TsExpr>.
+pub fn lower_block(body: &[Expr], ctx: &GenCtx) -> Vec<TsExpr> {
+    body.iter().map(|e| lower_to_ts(e, ctx)).collect()
+}
+
+// ─── Batch 6: Control Flow ──────────────────────────────────────────────────
+
+fn lower_if_expr(data: &IfExprData, ctx: &GenCtx) -> TsExpr {
+    TsExpr::If {
+        condition: Box::new(lower_to_ts(&data.condition, ctx)),
+        then_body: lower_block(&data.then_body, ctx),
+        else_body: data.else_body.as_ref().map(|eb| lower_block(eb, ctx)),
+    }
+}
+
+fn lower_match(scrutinee: &Expr, arms: &[MatchArm], ctx: &GenCtx) -> TsExpr {
+    let scrut = lower_to_ts(scrutinee, ctx);
+    let mut cases: Vec<(String, Vec<TsExpr>)> = Vec::new();
+    let mut default: Option<Vec<TsExpr>> = None;
+
+    for arm in arms {
+        let body = lower_block(&arm.body, ctx);
+        // Wildcard or `_` pattern → default arm
+        if arm.pattern == "_" || matches!(&arm.rich_pattern, Some(Pattern::Wildcard)) {
+            default = Some(body);
+        } else {
+            cases.push((arm.pattern.clone(), body));
+        }
+    }
+
+    TsExpr::Switch {
+        scrutinee: Box::new(scrut),
+        cases,
+        default,
+    }
+}
+
+fn lower_for_loop(
+    binding: &str,
+    index: Option<&str>,
+    iterable: &Expr,
+    body: &[Expr],
+    ctx: &GenCtx,
+) -> TsExpr {
+    let iter_expr = lower_to_ts(iterable, ctx);
+    let lowered_body = lower_block(body, ctx);
+
+    match index {
+        Some(idx) => TsExpr::ForIndex {
+            index: to_camel_case(idx),
+            binding: to_camel_case(binding),
+            iterable: Box::new(iter_expr),
+            body: lowered_body,
+        },
+        None => TsExpr::For {
+            binding: to_camel_case(binding),
+            iterable: Box::new(iter_expr),
+            body: lowered_body,
+        },
+    }
+}
+
+fn lower_do_block(body: &[Expr], ctx: &GenCtx) -> TsExpr {
+    // DoBlock → IIFE: (() => { ... })()
+    let lowered_body = lower_block(body, ctx);
+    TsExpr::FnCall {
+        name: String::new(),
+        args: vec![TsExpr::ArrowFn {
+            params: vec![],
+            body: lowered_body,
+            is_async: false,
+        }],
+        ty: None,
+    }
+}
+
+// ─── Batch 7: Collections ───────────────────────────────────────────────────
+
+fn lower_struct_lit(_name: &str, fields: &[(String, Expr)], ctx: &GenCtx) -> TsExpr {
+    let ts_fields: Vec<(String, TsExpr)> = fields
+        .iter()
+        .map(|(k, v)| (to_camel_case(k), lower_to_ts(v, ctx)))
+        .collect();
+    TsExpr::ObjectLit {
+        fields: ts_fields,
+        ty: None,
+    }
+}
+
+fn lower_struct_update(
+    _name: &str,
+    fields: &[(String, Expr)],
+    base: &Expr,
+    ctx: &GenCtx,
+) -> TsExpr {
+    // Emit: { ...base, field1: val1, field2: val2 }
+    let mut ts_fields: Vec<(String, TsExpr)> = Vec::with_capacity(fields.len() + 1);
+
+    // Spread base first
+    let spread_key = "...".to_string();
+    ts_fields.push((spread_key, TsExpr::Spread(Box::new(lower_to_ts(base, ctx)))));
+
+    // Then field overrides
+    for (k, v) in fields {
+        ts_fields.push((to_camel_case(k), lower_to_ts(v, ctx)));
+    }
+
+    TsExpr::ObjectLit {
+        fields: ts_fields,
+        ty: None,
+    }
+}
+
+// ─── Batch 8: Additional Wrappers ───────────────────────────────────────────
+
+/// Map a VEIL cast type name to a TS type annotation string.
+fn map_cast_type(ty_name: &str) -> String {
+    match ty_name {
+        "Str" | "String" => "string".to_string(),
+        "Int" | "i64" | "i32" | "u64" | "u32" | "F64" | "f64" => "number".to_string(),
+        "Bool" | "bool" => "boolean".to_string(),
+        other => to_camel_case(other),
+    }
+}
+
+fn lower_closure(params: &[String], body: &[Expr], ctx: &GenCtx) -> TsExpr {
+    let lowered_body = lower_block(body, ctx);
+    let is_async = body_contains_await(body);
+    TsExpr::ArrowFn {
+        params: params.iter().map(|p| to_camel_case(p)).collect(),
+        body: lowered_body,
+        is_async,
+    }
+}
+
+/// Check if a body (recursively) contains any Await or Try expression.
+fn body_contains_await(body: &[Expr]) -> bool {
+    body.iter().any(|e| expr_contains_await(e))
+}
+
+fn expr_contains_await(expr: &Expr) -> bool {
+    match expr {
+        Expr::Await(_) | Expr::Try(_) => true,
+        Expr::BinaryOp(op) => {
+            expr_contains_await(&op.left) || expr_contains_await(&op.right)
+        }
+        Expr::UnaryOp(op) => expr_contains_await(&op.expr),
+        Expr::Return(inner) => expr_contains_await(inner),
+        Expr::FieldAccess(base, _) => expr_contains_await(base),
+        Expr::IfExpr(data) => {
+            expr_contains_await(&data.condition)
+                || body_contains_await(&data.then_body)
+                || data.else_body.as_ref().map_or(false, |eb| body_contains_await(eb))
+        }
+        Expr::ForLoop { iterable, body, .. } => {
+            expr_contains_await(iterable) || body_contains_await(body)
+        }
+        Expr::WhileLoop { condition, body } => {
+            expr_contains_await(condition) || body_contains_await(body)
+        }
+        Expr::Loop(body) => body_contains_await(body),
+        Expr::DoBlock(body) => body_contains_await(body),
+        Expr::Closure { body, .. } => body_contains_await(body),
+        Expr::Assign(_, rhs, _) | Expr::MutAssign(_, rhs, _) => expr_contains_await(rhs),
+        _ => false,
+    }
+}
+
+fn lower_if_let(
+    inner: &Expr,
+    then_body: &[Expr],
+    else_body: Option<&[Expr]>,
+    ctx: &GenCtx,
+) -> TsExpr {
+    // `if let x = expr { ... }` → `if (expr != null) { ... }`
+    let condition = TsExpr::BinOp {
+        left: Box::new(lower_to_ts(inner, ctx)),
+        op: TsBinOp::NotEq,
+        right: Box::new(TsExpr::NullLit),
+        ty: None,
+    };
+    TsExpr::If {
+        condition: Box::new(condition),
+        then_body: lower_block(then_body, ctx),
+        else_body: else_body.map(|eb| lower_block(eb, ctx)),
+    }
+}
+
+fn lower_while_let(inner: &Expr, body: &[Expr], ctx: &GenCtx) -> TsExpr {
+    // `while let x = expr { ... }` → `while (expr != null) { ... }`
+    let condition = TsExpr::BinOp {
+        left: Box::new(lower_to_ts(inner, ctx)),
+        op: TsBinOp::NotEq,
+        right: Box::new(TsExpr::NullLit),
+        ty: None,
+    };
+    TsExpr::While {
+        condition: Box::new(condition),
+        body: lower_block(body, ctx),
+    }
 }
 
 // ─── Type Mapping ────────────────────────────────────────────────────────────
