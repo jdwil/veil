@@ -593,12 +593,17 @@ pub fn build_ctx_from_solution(solution: &Solution, name_to_shape: HashMap<Strin
             ctx.stubs.stub_free_fns
                 .insert((rust_crate.clone(), bare.clone()), fallible);
             // Register return type for type inference (crate name acts as "type"):
-            let inner = if ret.starts_with("Res!<") {
-                ret.strip_prefix("Res!<").unwrap_or(ret).strip_suffix('>').unwrap_or(ret)
-            } else if ret == "Res!" {
-                "()"
+            let unwrapped = if ret.starts_with("BoxFuture<") && ret.ends_with('>') {
+                &ret["BoxFuture<".len()..ret.len()-1]
             } else {
                 ret
+            };
+            let inner = if unwrapped.starts_with("Res!<") {
+                unwrapped.strip_prefix("Res!<").unwrap_or(unwrapped).strip_suffix('>').unwrap_or(unwrapped)
+            } else if unwrapped == "Res!" {
+                "()"
+            } else {
+                unwrapped
             };
             ctx.types.method_returns.insert(
                 (stub.name.clone(), bare),
@@ -622,8 +627,7 @@ pub fn build_ctx_from_solution(solution: &Solution, name_to_shape: HashMap<Strin
                     || (fallible && method.params.iter().any(|p| {
                         // Methods taking an executor param (e.g. `executor: E`) are async
                         p.0 == "executor" || p.0 == "pool"
-                    }))
-                    || (fallible && stub.async_methods.contains(&method.name));
+                    }));
                 if fallible {
                     ctx.stubs.fallible_methods.insert(method.name.clone());
                     ctx.stubs.type_fallible_methods.insert((type_name.clone(), method.name.clone()));
@@ -636,12 +640,18 @@ pub fn build_ctx_from_solution(solution: &Solution, name_to_shape: HashMap<Strin
                         .type_async_fallible_methods
                         .insert((type_name.clone(), method.name.clone()));
                 }
-                let inner = if ret.starts_with("Res!<") {
-                    ret.strip_prefix("Res!<").unwrap_or(ret).strip_suffix('>').unwrap_or(ret)
-                } else if ret == "Res!" {
-                    "()"
+                // Unwrap BoxFuture and Res! layers to get the actual value type.
+                let unwrapped = if ret.starts_with("BoxFuture<") && ret.ends_with('>') {
+                    &ret["BoxFuture<".len()..ret.len()-1]
                 } else {
                     ret
+                };
+                let inner = if unwrapped.starts_with("Res!<") {
+                    unwrapped.strip_prefix("Res!<").unwrap_or(unwrapped).strip_suffix('>').unwrap_or(unwrapped)
+                } else if unwrapped == "Res!" {
+                    "()"
+                } else {
+                    unwrapped
                 };
                 ctx.types.method_returns.insert(
                     (type_name.clone(), method.name.clone()),
@@ -732,12 +742,18 @@ pub fn build_ctx_from_solution(solution: &Solution, name_to_shape: HashMap<Strin
                 } else {
                     ctx.stubs.non_fallible_methods.insert(method.name.clone());
                 }
-                let inner = if ret.starts_with("Res!<") {
-                    ret.strip_prefix("Res!<").unwrap_or(ret).strip_suffix('>').unwrap_or(ret)
-                } else if ret == "Res!" {
-                    "()"
+                // Unwrap BoxFuture and Res! layers to get the actual value type.
+                let unwrapped = if ret.starts_with("BoxFuture<") && ret.ends_with('>') {
+                    &ret["BoxFuture<".len()..ret.len()-1]
                 } else {
                     ret
+                };
+                let inner = if unwrapped.starts_with("Res!<") {
+                    unwrapped.strip_prefix("Res!<").unwrap_or(unwrapped).strip_suffix('>').unwrap_or(unwrapped)
+                } else if unwrapped == "Res!" {
+                    "()"
+                } else {
+                    unwrapped
                 };
                 ctx.types.method_returns.insert(
                     (i.target.clone(), method.name.clone()),

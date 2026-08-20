@@ -2098,10 +2098,6 @@ pub struct StubCrate {
     #[serde(default)]
     pub free_fns: Vec<StubMethod>,
     /// Method names that are always async on this crate's types (e.g. `send`, `send_with`).
-    /// Line form: `async_methods send, send_with`.
-    /// When a method is both fallible and in this set, it gets `.await.map_err(…)?`.
-    #[serde(default)]
-    pub async_methods: Vec<String>,
     /// Field names that require borrow (`&self.field`) instead of clone.
     /// Line form: `borrow_fields pool`.
     /// Used when the type requires `&T` for trait impls (e.g. sqlx Executor for &Pool).
@@ -2505,15 +2501,9 @@ pub fn parse_stub_file(content: &str) -> Option<StubCrate> {
             continue;
         }
 
-        // async_methods send, send_with — method names that are always async on this crate's types
+        // async_methods send, send_with — DEPRECATED: templates carry this info now.
+        // Kept as no-op parser for backward compatibility with old stub files.
         if trimmed.starts_with("async_methods ") {
-            stub.async_methods = trimmed
-                .strip_prefix("async_methods ")
-                .unwrap_or("")
-                .split(',')
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .collect();
             continue;
         }
 
