@@ -1,6 +1,5 @@
 ---
 source: crates/veil-codegen/tests/snapshot_tests.rs
-assertion_line: 66
 expression: out
 ---
 // ===== Cargo.toml =====
@@ -44,44 +43,11 @@ chrono.workspace = true
 tokio = { workspace = true }
 futures = "0.3"
 
-// ===== crates/veil_shared/src/register_handlers.rs =====
-//! CAP-003: generated Bus handler registry.
-//! Host calls `register_all` once to wire names → dispatch.
-
-/// All Bus message types exported by this workspace.
-pub const HANDLER_NAMES: &[&str] = &[
-    "CreateCustomerService",
-    "Onboard",
-    "run_saga",
-    "unwind",
-];
-
-/// Register every generated handler name with a host-supplied registrar.
-///
-/// The host provides the actual dispatch (ports / platform). This module
-/// only owns the name list so trampoline code never hardcodes it.
-pub fn register_all<F>(mut register: F)
-where
-F: FnMut(&'static str),
-{
-for name in HANDLER_NAMES {
-register(name);
-}
-}
-
-/// Number of handlers in this workspace.
-pub fn handler_count() -> usize {
-HANDLER_NAMES.len()
-}
-
 // ===== crates/veil_shared/src/lib.rs =====
 //! Shared types across all context crates — common errors and
 //! layer-provided infrastructure traits (routing ports, etc.).
 
 #![allow(unused_imports)]
-
-pub mod register_handlers;
-pub use register_handlers::{handler_count, register_all, HANDLER_NAMES};
 
 use async_trait::async_trait;
 use uuid::Uuid;
@@ -506,11 +472,12 @@ pub struct SmsTwilio {
 
 #[async_trait]
 impl Notifier for SmsTwilio {
-    async fn send_sms(&self, phone: Phone, msg: String) -> Result<(), __VEIL_NO_ERROR_MODEL__> {
-        Ok(compile_error!("unstubbed external `http.post` — install a .stub and call its types (@field + stub methods)"))
+    async fn send_sms(&self, phone: Phone, msg: String) -> Result<(), DomainError> {
+        compile_error!("unstubbed external `http.post` — install a .stub and call its types (@field + stub methods)");
+        Ok(())
     }
 
-    async fn send_email(&self, email: Email, subj: String, body: String) -> Result<(), __VEIL_NO_ERROR_MODEL__> {
+    async fn send_email(&self, email: Email, subj: String, body: String) -> Result<(), DomainError> {
         Ok(()) // TODO: implement
     }
 
@@ -803,11 +770,11 @@ pub struct StripeAdapter {
 
 #[async_trait]
 impl PaymentGateway for StripeAdapter {
-    async fn create_customer(&self, email: String) -> Result<ExtId, __VEIL_NO_ERROR_MODEL__> {
+    async fn create_customer(&self, email: String) -> Result<ExtId, DomainError> {
         Ok(compile_error!("unstubbed external `http.post` — install a .stub and call its types (@field + stub methods)"))
     }
 
-    async fn cancel_subscription(&self, sub_id: Uuid) -> Result<(), __VEIL_NO_ERROR_MODEL__> {
+    async fn cancel_subscription(&self, sub_id: Uuid) -> Result<(), DomainError> {
         Ok(()) // TODO: implement
     }
 

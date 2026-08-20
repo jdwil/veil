@@ -1812,14 +1812,20 @@ fn extract_method_sig_with_info(item: &serde_json::Value) -> Option<MethodSigInf
             Some(t)
         }
     });
-    // Determine fallibility from the raw return type (before BoxFuture wrapping)
+    // Detect async: either from `async fn` header OR from return type being
+    // `impl Future` / `BoxFuture` (which rustdoc_type_to_veil maps to BoxFuture<...>).
+    let is_async = is_async || raw_ret.as_ref().map(|t| t.starts_with("BoxFuture<") || t == "BoxFuture").unwrap_or(false);
+    // Determine fallibility from the raw return type (before BoxFuture wrapping).
+    // For BoxFuture<Res!<T>>, the inner type is Res!, so it IS fallible.
     let is_fallible = raw_ret.as_ref().map(|t| {
         t.starts_with("Res!") || t.starts_with("Res!<") || t.contains("Res!")
     }).unwrap_or(false);
 
     let mut ret = raw_ret;
     // `async fn` → BoxFuture so codegen applies `.await.map_err…?`
-    if is_async {
+    // But don't double-wrap: if the return type already IS BoxFuture (from impl Future),
+    // leave it alone.
+    if is_async && !ret.as_ref().map(|t| t.starts_with("BoxFuture")).unwrap_or(false) {
         ret = Some(match ret {
             Some(inner) => format!("BoxFuture<{inner}>"),
             None => "BoxFuture<()>".into(),

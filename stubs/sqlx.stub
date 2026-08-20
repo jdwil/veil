@@ -1,7 +1,13 @@
 stub sqlx 0.9.0
+  # @generated veil-stub-gen 1
+  # source crates.io
+  # surface full
+  # cargo_name sqlx
+  # generated_at 2026-08-20T19:49:24Z
+  # rustdoc_fingerprint d9736b326e79fd0f
+  # features postgres
   # Auto-inferred codegen policy from rustdoc (do not hand-edit; re-run veil stub-gen)
   cargo_features postgres
-  borrow_fields pool
   row_type_derives sqlx::FromRow
   wrapper_type_derives sqlx::Type
   wrapper_type_attrs sqlx(transparent)
@@ -15,406 +21,1085 @@ stub sqlx 0.9.0
     sqlx::PgPool::connect_lazy(&url).expect("pool")
 }
 """
+  fn available() -> Bool
+    lowers_to
+      rust: "sqlx::available({{args}})"
+  fn begin_ansi_transaction_sql(depth: Int) -> SqlStr
+    lowers_to
+      rust: "sqlx::begin_ansi_transaction_sql({{depth}})"
+  fn commit_ansi_transaction_sql(depth: Int) -> SqlStr
+    lowers_to
+      rust: "sqlx::commit_ansi_transaction_sql({{depth}})"
+  fn connect_tcp(host: Str, port: Int, with_socket: Ws) -> BoxFuture<Res!<Ws::Output>>
+    lowers_to
+      rust: "sqlx::connect_tcp({{host}}, {{port}}, {{with_socket}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+  fn connect_uds(path: P, with_socket: Ws) -> BoxFuture<Res!<Ws::Output>>
+    lowers_to
+      rust: "sqlx::connect_uds({{path}}, {{with_socket}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+  fn create_dir_all(path: P) -> BoxFuture<Res!<()>>
+    lowers_to
+      rust: "sqlx::create_dir_all({{path}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+  fn debug_row(row: R, f: Formatter) -> Res
+    lowers_to
+      rust: "sqlx::debug_row({{row}}, {{f}})"
+  fn error_if_unavailable() -> Res!<()>
+    lowers_to
+      rust: "sqlx::error_if_unavailable({{args}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+  fn handshake(socket: S, config: TlsConfig, with_socket: Ws) -> BoxFuture<Res!<Ws::Output>>
+    lowers_to
+      rust: "sqlx::handshake({{socket}}, {{config}}, {{with_socket}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+  fn install_drivers(drivers: List<AnyDriver>) -> Res!<()>
+    lowers_to
+      rust: "sqlx::install_drivers({{drivers}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+  fn mismatched_types(ty: DB::TypeInfo) -> BoxDynError
+    lowers_to
+      rust: "sqlx::mismatched_types({{ty}})"
+  fn missing_rt(_unused: T) -> never
+    lowers_to
+      rust: "sqlx::missing_rt({{_unused}})"
+  fn parse_query_summary(sql: Str) -> Str
+    lowers_to
+      rust: "sqlx::parse_query_summary({{sql}})"
+  fn query_as(sql: Unknown) -> QueryAs<DB, O, DB::Arguments>
+    lowers_to
+      rust: "sqlx::query_as({{sql}})"
+  fn query_as_with(sql: Unknown, arguments: A) -> QueryAs<DB, O, A>
+    lowers_to
+      rust: "sqlx::query_as_with({{sql}}, {{arguments}})"
+  fn query_as_with_result(sql: Unknown, arguments: Res!<A>) -> QueryAs<DB, O, A>
+    lowers_to
+      rust: "sqlx::query_as_with_result({{sql}}, {{arguments}})"
+  fn query_scalar(sql: Unknown) -> QueryScalar<DB, O, DB::Arguments>
+    lowers_to
+      rust: "sqlx::query_scalar({{sql}})"
+  fn query_scalar_with(sql: Unknown, arguments: A) -> QueryScalar<DB, O, A>
+    lowers_to
+      rust: "sqlx::query_scalar_with({{sql}}, {{arguments}})"
+  fn query_scalar_with_result(sql: Unknown, arguments: Res!<A>) -> QueryScalar<DB, O, A>
+    lowers_to
+      rust: "sqlx::query_scalar_with_result({{sql}}, {{arguments}})"
+  fn query_statement_as(statement: DB::Statement) -> QueryAs<DB, O, DB::Arguments>
+    lowers_to
+      rust: "sqlx::query_statement_as({{statement}})"
+  fn query_statement_as_with(statement: DB::Statement, arguments: A) -> QueryAs<DB, O, A>
+    lowers_to
+      rust: "sqlx::query_statement_as_with({{statement}}, {{arguments}})"
+  fn query_statement_scalar(statement: DB::Statement) -> QueryScalar<DB, O, DB::Arguments>
+    lowers_to
+      rust: "sqlx::query_statement_scalar({{statement}})"
+  fn query_statement_scalar_with(statement: DB::Statement, arguments: A) -> QueryScalar<DB, O, A>
+    lowers_to
+      rust: "sqlx::query_statement_scalar_with({{statement}}, {{arguments}})"
+  fn query_statement_with(statement: DB::Statement, arguments: A) -> Query<DB, A>
+    lowers_to
+      rust: "sqlx::query_statement_with({{statement}}, {{arguments}})"
+  fn query_with(sql: Unknown, arguments: A) -> Query<DB, A>
+    lowers_to
+      rust: "sqlx::query_with({{sql}}, {{arguments}})"
+  fn query_with_result(sql: Unknown, arguments: Res!<A>) -> Query<DB, A>
+    lowers_to
+      rust: "sqlx::query_with_result({{sql}}, {{arguments}})"
+  fn raw_sql(sql: Unknown) -> RawSql
+    lowers_to
+      rust: "sqlx::raw_sql({{sql}})"
+  fn read_dir(path: PathBuf) -> BoxFuture<Res!<ReadDir>>
+    lowers_to
+      rust: "sqlx::read_dir({{path}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+  fn read_to_string(path: P) -> BoxFuture<Res!<Str>>
+    lowers_to
+      rust: "sqlx::read_to_string({{path}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+  fn remove_dir(path: P) -> BoxFuture<Res!<()>>
+    lowers_to
+      rust: "sqlx::remove_dir({{path}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+  fn remove_dir_all(path: P) -> BoxFuture<Res!<()>>
+    lowers_to
+      rust: "sqlx::remove_dir_all({{path}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+  fn remove_file(path: P) -> BoxFuture<Res!<()>>
+    lowers_to
+      rust: "sqlx::remove_file({{path}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+  fn rollback_ansi_transaction_sql(depth: Int) -> SqlStr
+    lowers_to
+      rust: "sqlx::rollback_ansi_transaction_sql({{depth}})"
+  fn sleep(duration: Duration) -> BoxFuture<()>
+    lowers_to
+      rust: "sqlx::sleep({{duration}}).await"
+  fn spawn(fut: F) -> JoinHandle<F::Output>
+    lowers_to
+      rust: "sqlx::spawn({{fut}})"
+  fn spawn_blocking(f: F) -> JoinHandle<R>
+    lowers_to
+      rust: "sqlx::spawn_blocking({{f}})"
+  fn test_block_on(f: F) -> F::Output
+    lowers_to
+      rust: "sqlx::test_block_on({{f}})"
+  fn timeout(duration: Duration, f: F) -> BoxFuture<Res!<F::Output>>
+    lowers_to
+      rust: "sqlx::timeout({{duration}}, {{f}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+  fn yield_now() -> BoxFuture<()>
+    lowers_to
+      rust: "sqlx::yield_now({{args}}).await"
 
   struct Text
+    path sqlx_core::types::text
     fn into_inner() -> T
+      lowers_to
+        rust: "{{self}}.into_inner({{args}})"
 
   struct AnyTypeInfo
+    path sqlx_core::any::type_info
     fn kind() -> AnyTypeInfoKind
+      lowers_to
+        rust: "{{self}}.kind({{args}})"
 
   struct Map
-    fn map(g: G) -> Map<DB, Str, A>
-    fn try_map(g: G) -> Map<DB, Str, A>
+    path sqlx_core::query
+    fn map(g: G) -> Map<DB, Unknown, A>
+      lowers_to
+        rust: "{{self}}.map({{g}})"
+    fn try_map(g: G) -> Map<DB, Unknown, A>
+      lowers_to
+        rust: "{{self}}.try_map({{g}})"
     fn fetch(executor: E) -> BoxStream<Res!<O>>
-    fn fetch_many(executor: E) -> BoxStream<Res!<Either<Str, O>>>
-    fn fetch_all(executor: E) -> Res!<List<O>>
-    fn fetch_one(executor: E) -> Res!<O>
-    fn fetch_optional(executor: E) -> Res!<Opt<O>>
+      lowers_to
+        rust: "{{self}}.fetch({{executor}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn fetch_many(executor: E) -> BoxStream<Res!<Either<DB::QueryResult, O>>>
+      lowers_to
+        rust: "{{self}}.fetch_many({{executor}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn fetch_all(executor: E) -> BoxFuture<Res!<List<O>>>
+      lowers_to
+        rust: "{{self}}.fetch_all({{executor}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn fetch_one(executor: E) -> BoxFuture<Res!<O>>
+      lowers_to
+        rust: "{{self}}.fetch_one({{executor}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn fetch_optional(executor: E) -> BoxFuture<Res!<Opt<O>>>
+      lowers_to
+        rust: "{{self}}.fetch_optional({{executor}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
 
   struct TryAsyncStream
+    path sqlx_core::ext::async_stream
     fn new(f: F) -> Self
+      lowers_to
+        rust: "sqlx::TryAsyncStream::new({{f}})"
 
   struct Yielder
-    fn yield(val: T)
+    path sqlx_core::ext::async_stream
+    fn yield(val: T) -> BoxFuture<()>
+      lowers_to
+        rust: "{{self}}.yield({{val}}).await"
 
   struct AnyColumn
+    path sqlx_core::any::column
 
   struct TableColumn
+    path sqlx_core::column
 
   struct AnyRow
+    path sqlx_core::any::row
 
   struct AnyStatement
+    path sqlx_core::any::statement
 
   struct QueryAs
+    path sqlx_core::query_as
     fn bind(value: T) -> Self
+      lowers_to
+        rust: "{{self}}.bind({{value}})"
     fn persistent(value: Bool) -> Self
+      lowers_to
+        rust: "{{self}}.persistent({{value}})"
     fn fetch(executor: E) -> BoxStream<Res!<O>>
-    fn fetch_many(executor: E) -> BoxStream<Res!<Either<Str, O>>>
-    fn fetch_all(executor: E) -> Res!<List<O>>
-    fn fetch_one(executor: E) -> Res!<O>
-    fn fetch_optional(executor: E) -> Res!<Opt<O>>
+      lowers_to
+        rust: "{{self}}.fetch({{executor}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn fetch_many(executor: E) -> BoxStream<Res!<Either<DB::QueryResult, O>>>
+      lowers_to
+        rust: "{{self}}.fetch_many({{executor}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn fetch_all(executor: E) -> BoxFuture<Res!<List<O>>>
+      lowers_to
+        rust: "{{self}}.fetch_all({{executor}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn fetch_one(executor: E) -> BoxFuture<Res!<O>>
+      lowers_to
+        rust: "{{self}}.fetch_one({{executor}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn fetch_optional(executor: E) -> BoxFuture<Res!<Opt<O>>>
+      lowers_to
+        rust: "{{self}}.fetch_optional({{executor}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
 
   struct QueryScalar
+    path sqlx_core::query_scalar
     fn bind(value: T) -> Self
+      lowers_to
+        rust: "{{self}}.bind({{value}})"
     fn persistent(value: Bool) -> Self
+      lowers_to
+        rust: "{{self}}.persistent({{value}})"
     fn fetch(executor: E) -> BoxStream<Res!<O>>
-    fn fetch_many(executor: E) -> BoxStream<Res!<Either<Str, O>>>
-    fn fetch_all(executor: E) -> Res!<List<O>>
-    fn fetch_one(executor: E) -> Res!<O>
-    fn fetch_optional(executor: E) -> Res!<Opt<O>>
+      lowers_to
+        rust: "{{self}}.fetch({{executor}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn fetch_many(executor: E) -> BoxStream<Res!<Either<DB::QueryResult, O>>>
+      lowers_to
+        rust: "{{self}}.fetch_many({{executor}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn fetch_all(executor: E) -> BoxFuture<Res!<List<O>>>
+      lowers_to
+        rust: "{{self}}.fetch_all({{executor}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn fetch_one(executor: E) -> BoxFuture<Res!<O>>
+      lowers_to
+        rust: "{{self}}.fetch_one({{executor}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn fetch_optional(executor: E) -> BoxFuture<Res!<Opt<O>>>
+      lowers_to
+        rust: "{{self}}.fetch_optional({{executor}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
 
   struct StatementCache
-    fn new(capacity: usize) -> Self
+    path sqlx_core::common::statement_cache
+    fn new(capacity: Int) -> Self
+      lowers_to
+        rust: "sqlx::StatementCache::new({{capacity}})"
     fn get_mut(k: Str) -> Opt<T>
+      lowers_to
+        rust: "{{self}}.get_mut({{k}})"
     fn insert(k: Str, v: T) -> Opt<T>
-    fn len() -> usize
+      lowers_to
+        rust: "{{self}}.insert({{k}}, {{v}})"
+    fn len() -> Int
+      lowers_to
+        rust: "{{self}}.len({{args}})"
     fn is_empty() -> Bool
+      lowers_to
+        rust: "{{self}}.is_empty({{args}})"
     fn remove_lru() -> Opt<T>
+      lowers_to
+        rust: "{{self}}.remove_lru({{args}})"
     fn clear()
+      lowers_to
+        rust: "{{self}}.clear({{args}})"
     fn contains_key(k: Str) -> Bool
-    fn capacity() -> usize
+      lowers_to
+        rust: "{{self}}.contains_key({{k}})"
+    fn capacity() -> Int
+      lowers_to
+        rust: "{{self}}.capacity({{args}})"
     fn is_enabled() -> Bool
+      lowers_to
+        rust: "{{self}}.is_enabled({{args}})"
 
   struct DebugFn
+    path sqlx_core::common
 
   struct AnyQueryResult
+    path sqlx_core::any::query_result
     fn rows_affected() -> Int
+      lowers_to
+        rust: "{{self}}.rows_affected({{args}})"
     fn last_insert_id() -> Opt<Int>
+      lowers_to
+        rust: "{{self}}.last_insert_id({{args}})"
 
   struct AnyValue
+    path sqlx_core::any::value
 
   struct RawSql
-    fn execute(executor: E) -> Res!<Str>
-    fn execute_many(executor: E) -> BoxStream<Res!<Str>>
-    fn fetch(executor: E) -> BoxStream<Res!<Str>>
-    fn fetch_many(executor: E) -> BoxStream<Res!<Either<Str, Str>>>
-    fn fetch_all(executor: E) -> BoxFuture<Res!<List<Str>>>
-    fn fetch_one(executor: E) -> BoxFuture<Res!<Str>>
-    fn fetch_optional(executor: E) -> Res!<Opt<Str>>
+    path sqlx_core::raw_sql
+    fn execute(executor: E) -> BoxFuture<Res!<DB::QueryResult>>
+      lowers_to
+        rust: "{{self}}.execute({{executor}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn execute_many(executor: E) -> BoxStream<Res!<DB::QueryResult>>
+      lowers_to
+        rust: "{{self}}.execute_many({{executor}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn fetch(executor: E) -> BoxStream<Res!<DB::Row>>
+      lowers_to
+        rust: "{{self}}.fetch({{executor}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn fetch_many(executor: E) -> BoxStream<Res!<Either<DB::QueryResult, DB::Row>>>
+      lowers_to
+        rust: "{{self}}.fetch_many({{executor}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn fetch_all(executor: E) -> BoxFuture<Res!<List<DB::Row>>>
+      lowers_to
+        rust: "{{self}}.fetch_all({{executor}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn fetch_one(executor: E) -> BoxFuture<Res!<DB::Row>>
+      lowers_to
+        rust: "{{self}}.fetch_one({{executor}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn fetch_optional(executor: E) -> BoxFuture<Res!<Opt<DB::Row>>>
+      lowers_to
+        rust: "{{self}}.fetch_optional({{executor}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
 
   struct ReadDir
-    fn next() -> Res!<Opt<DirEntry>>
+    path sqlx_core::fs
+    fn next() -> BoxFuture<Res!<Opt<DirEntry>>>
+      lowers_to
+        rust: "{{self}}.next({{args}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
 
   struct DirEntry
+    path sqlx_core::fs
 
   struct QueryLogger
+    path sqlx_core::logger
     fn new(sql: SqlStr, settings: LogSettings) -> Self
+      lowers_to
+        rust: "sqlx::QueryLogger::new({{sql}}, {{settings}})"
     fn increment_rows_returned()
+      lowers_to
+        rust: "{{self}}.increment_rows_returned({{args}})"
     fn increase_rows_affected(n: Int)
+      lowers_to
+        rust: "{{self}}.increase_rows_affected({{n}})"
     fn sql() -> SqlStr
+      lowers_to
+        rust: "{{self}}.sql({{args}})"
     fn finish()
+      lowers_to
+        rust: "{{self}}.finish({{args}})"
 
   struct BufferedSocket
+    path sqlx_core::net::socket::buffered
     fn new(socket: S) -> Self
-    fn read_buffered(len: usize) -> Res!<BytesMut>
-    fn try_read(try_read: F) -> Res!<R>
+      lowers_to
+        rust: "sqlx::BufferedSocket::new({{socket}})"
+    fn read_buffered(len: Int) -> BoxFuture<Res!<BytesMut>>
+      lowers_to
+        rust: "{{self}}.read_buffered({{len}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn try_read(try_read: F) -> BoxFuture<Res!<R>>
+      lowers_to
+        rust: "{{self}}.try_read({{try_read}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
     fn write_buffer() -> WriteBuffer
+      lowers_to
+        rust: "{{self}}.write_buffer({{args}})"
     fn write_buffer_mut() -> WriteBuffer
-    fn read(byte_len: usize) -> Res!<T>
-    fn read_with(byte_len: usize, context: C) -> Res!<T>
-    fn write(value: T) -> Res!<Str>
-    fn write_with(value: T, context: C) -> Res!<Str>
-    fn flush() -> Res!<Str>
-    fn shutdown() -> Res!<Str>
+      lowers_to
+        rust: "{{self}}.write_buffer_mut({{args}})"
+    fn read(byte_len: Int) -> BoxFuture<Res!<T>>
+      lowers_to
+        rust: "{{self}}.read({{byte_len}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn read_with(byte_len: Int, context: C) -> BoxFuture<Res!<T>>
+      lowers_to
+        rust: "{{self}}.read_with({{byte_len}}, {{context}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn write(value: T) -> Res!<()>
+      lowers_to
+        rust: "{{self}}.write({{value}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn write_with(value: T, context: C) -> Res!<()>
+      lowers_to
+        rust: "{{self}}.write_with({{value}}, {{context}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn flush() -> BoxFuture<Res!<()>>
+      lowers_to
+        rust: "{{self}}.flush({{args}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn shutdown() -> BoxFuture<Res!<()>>
+      lowers_to
+        rust: "{{self}}.shutdown({{args}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
     fn shrink_buffers()
+      lowers_to
+        rust: "{{self}}.shrink_buffers({{args}})"
     fn into_inner() -> S
-    fn boxed() -> BufferedSocket<Box<Str>>
+      lowers_to
+        rust: "{{self}}.into_inner({{args}})"
+    fn boxed() -> BufferedSocket<Box<Unknown>>
+      lowers_to
+        rust: "{{self}}.boxed({{args}})"
 
   struct WriteBuffer
+    path sqlx_core::net::socket::buffered
     fn buf_mut() -> List<Int>
-    fn init_remaining_mut() -> Str
-    fn put_slice(slice: Str)
-    fn advance(amt: usize)
-    fn read_from(source: Str) -> Res!<usize>
+      lowers_to
+        rust: "{{self}}.buf_mut({{args}})"
+    fn init_remaining_mut() -> List<Int>
+      lowers_to
+        rust: "{{self}}.init_remaining_mut({{args}})"
+    fn put_slice(slice: List<Int>)
+      lowers_to
+        rust: "{{self}}.put_slice({{slice}})"
+    fn advance(amt: Int)
+      lowers_to
+        rust: "{{self}}.advance({{amt}})"
+    fn read_from(source: Unknown) -> BoxFuture<Res!<Int>>
+      lowers_to
+        rust: "{{self}}.read_from({{source}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
     fn is_empty() -> Bool
+      lowers_to
+        rust: "{{self}}.is_empty({{args}})"
     fn is_full() -> Bool
-    fn get() -> Str
-    fn get_mut() -> Str
+      lowers_to
+        rust: "{{self}}.is_full({{args}})"
+    fn get() -> List<Int>
+      lowers_to
+        rust: "{{self}}.get({{args}})"
+    fn get_mut() -> List<Int>
+      lowers_to
+        rust: "{{self}}.get_mut({{args}})"
     fn shrink()
+      lowers_to
+        rust: "{{self}}.shrink({{args}})"
 
   struct Read
+    path sqlx_core::net::socket
 
   struct Write
+    path sqlx_core::net::socket
 
   struct Flush
+    path sqlx_core::net::socket
 
   struct Shutdown
+    path sqlx_core::net::socket
 
   struct SocketIntoBox
+    path sqlx_core::net::socket
 
   struct TlsConfig
+    path sqlx_core::net::tls
 
   struct UnexpectedNullError
+    path sqlx_core::error
 
   struct QueryBuilder
+    path sqlx_core::query_builder
     fn new(init: Str) -> Self
+      lowers_to
+        rust: "sqlx::QueryBuilder::new({{init}})"
     fn with_arguments(init: Str, arguments: A) -> Self
-    fn push(sql: Str) -> Self
+      lowers_to
+        rust: "sqlx::QueryBuilder::with_arguments({{init}}, {{arguments}})"
+    fn push(sql: Unknown) -> Self
+      lowers_to
+        rust: "{{self}}.push({{sql}})"
     fn push_bind(value: T) -> Self
+      lowers_to
+        rust: "{{self}}.push_bind({{value}})"
     fn separated(separator: Sep) -> Separated<DB, Sep>
+      lowers_to
+        rust: "{{self}}.separated({{separator}})"
     fn push_values(tuples: I, push_tuple: F) -> Self
+      lowers_to
+        rust: "{{self}}.push_values({{tuples}}, {{push_tuple}})"
     fn push_tuples(tuples: I, push_tuple: F) -> Self
-    fn build() -> Query<DB, Str>
-    fn build_query_as() -> QueryAs<DB, T, Str>
-    fn build_query_scalar() -> QueryScalar<DB, T, Str>
+      lowers_to
+        rust: "{{self}}.push_tuples({{tuples}}, {{push_tuple}})"
+    fn build() -> Query<DB, DB::Arguments>
+      lowers_to
+        rust: "{{self}}.build({{args}})"
+    fn build_query_as() -> QueryAs<DB, T, DB::Arguments>
+      lowers_to
+        rust: "{{self}}.build_query_as({{args}})"
+    fn build_query_scalar() -> QueryScalar<DB, T, DB::Arguments>
+      lowers_to
+        rust: "{{self}}.build_query_scalar({{args}})"
     fn reset() -> Self
+      lowers_to
+        rust: "{{self}}.reset({{args}})"
     fn sql() -> SqlStr
+      lowers_to
+        rust: "{{self}}.sql({{args}})"
     fn into_string() -> Str
+      lowers_to
+        rust: "{{self}}.into_string({{args}})"
     fn into_sql() -> SqlStr
+      lowers_to
+        rust: "{{self}}.into_sql({{args}})"
 
   struct Separated
-    fn push(sql: Str) -> Self
-    fn push_unseparated(sql: Str) -> Self
+    path sqlx_core::query_builder
+    fn push(sql: Unknown) -> Self
+      lowers_to
+        rust: "{{self}}.push({{sql}})"
+    fn push_unseparated(sql: Unknown) -> Self
+      lowers_to
+        rust: "{{self}}.push_unseparated({{sql}})"
     fn push_bind(value: T) -> Self
+      lowers_to
+        rust: "{{self}}.push_bind({{value}})"
     fn push_bind_unseparated(value: T) -> Self
+      lowers_to
+        rust: "{{self}}.push_bind_unseparated({{value}})"
 
   struct AssertSqlSafe
+    path sqlx_core::sql_str
 
   struct TimeoutError
+    path sqlx_core::rt
 
   struct AsyncSemaphore
-    fn new(fair: Bool, permits: usize) -> Self
-    fn permits() -> usize
-    fn acquire(permits: Int) -> AsyncSemaphoreReleaser
+    path sqlx_core::sync
+    fn new(fair: Bool, permits: Int) -> Self
+      lowers_to
+        rust: "sqlx::AsyncSemaphore::new({{fair}}, {{permits}})"
+    fn permits() -> Int
+      lowers_to
+        rust: "{{self}}.permits({{args}})"
+    fn acquire(permits: Int) -> BoxFuture<AsyncSemaphoreReleaser>
+      lowers_to
+        rust: "{{self}}.acquire({{permits}}).await"
     fn try_acquire(permits: Int) -> Opt<AsyncSemaphoreReleaser>
-    fn release(permits: usize)
+      lowers_to
+        rust: "{{self}}.try_acquire({{permits}})"
+    fn release(permits: Int)
+      lowers_to
+        rust: "{{self}}.release({{permits}})"
 
   struct AsyncSemaphoreReleaser
+    path sqlx_core::sync
     fn disarm()
+      lowers_to
+        rust: "{{self}}.disarm({{args}})"
 
   struct PreferredCrates
+    path sqlx_core::config::macros
 
   struct FmtValue
-    fn debug(value: Str) -> Self
-    fn unknown(value: Str) -> Self
+    path sqlx_core::type_checking
+    fn debug(value: DB::Value) -> Self
+      lowers_to
+        rust: "sqlx::FmtValue::debug({{value}})"
+    fn unknown(value: DB::Value) -> Self
+      lowers_to
+        rust: "sqlx::FmtValue::unknown({{value}})"
 
   struct AppliedMigration
+    path sqlx_core::migrate::migration
 
   struct Migration
+    path sqlx_core::migrate::migration
     fn new(version: Int, description: Cow<Str>, migration_type: MigrationType, sql: SqlStr, no_tx: Bool) -> Self
+      lowers_to
+        rust: "sqlx::Migration::new({{version}}, {{description}}, {{migration_type}}, {{sql}}, {{no_tx}})"
 
   struct Migrator
-    fn new(source: S) -> Res!<Self>
+    path sqlx_core::migrate::migrator
+    fn new(source: S) -> BoxFuture<Res!<Self>>
+      lowers_to
+        rust: "sqlx::Migrator::new({{source}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
     fn with_migrations(migrations: List<Migration>) -> Self
-    fn dangerous_set_table_name(table_name: Str) -> Self
-    fn create_schema(schema_name: Str) -> Self
+      lowers_to
+        rust: "sqlx::Migrator::with_migrations({{migrations}})"
+    fn dangerous_set_table_name(table_name: Cow<Str>) -> Self
+      lowers_to
+        rust: "{{self}}.dangerous_set_table_name({{table_name}})"
+    fn create_schema(schema_name: Cow<Str>) -> Self
+      lowers_to
+        rust: "{{self}}.create_schema({{schema_name}})"
     fn set_ignore_missing(ignore_missing: Bool) -> Self
+      lowers_to
+        rust: "{{self}}.set_ignore_missing({{ignore_missing}})"
     fn set_locking(locking: Bool) -> Self
+      lowers_to
+        rust: "{{self}}.set_locking({{locking}})"
     fn iter() -> Iter<Migration>
+      lowers_to
+        rust: "{{self}}.iter({{args}})"
     fn version_exists(version: Int) -> Bool
-    fn run(migrator: A) -> Res!<Str>
-    fn run_to(target: Int, migrator: A) -> Res!<Str>
-    fn skip(migrator: A, target: Opt<Int>) -> Res!<Str>
-    fn undo(migrator: A, target: Int) -> Res!<Str>
+      lowers_to
+        rust: "{{self}}.version_exists({{version}})"
+    fn run(migrator: A) -> BoxFuture<Res!<()>>
+      lowers_to
+        rust: "{{self}}.run({{migrator}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn run_to(target: Int, migrator: A) -> BoxFuture<Res!<()>>
+      lowers_to
+        rust: "{{self}}.run_to({{target}}, {{migrator}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn skip(migrator: A, target: Opt<Int>) -> BoxFuture<Res!<()>>
+      lowers_to
+        rust: "{{self}}.skip({{migrator}}, {{target}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn undo(migrator: A, target: Int) -> BoxFuture<Res!<()>>
+      lowers_to
+        rust: "{{self}}.undo({{migrator}}, {{target}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
 
   struct ResolveWith
+    path sqlx_core::migrate::source
 
   struct ResolveConfig
+    path sqlx_core::migrate::source
     fn new() -> Self
+      lowers_to
+        rust: "sqlx::ResolveConfig::new({{args}})"
     fn ignore_char(c: char) -> Self
-    fn ignore_chars(chars: Str) -> Self
-    fn ignored_chars() -> Str
+      lowers_to
+        rust: "{{self}}.ignore_char({{c}})"
+    fn ignore_chars(chars: Unknown) -> Self
+      lowers_to
+        rust: "{{self}}.ignore_chars({{chars}})"
+    fn ignored_chars() -> Unknown
+      lowers_to
+        rust: "{{self}}.ignored_chars({{args}})"
 
   struct ResolveError
+    path sqlx_core::migrate::source
 
   struct AnyDriver
+    path sqlx_core::any::driver
     fn without_migrate() -> Self
+      lowers_to
+        rust: "sqlx::AnyDriver::without_migrate({{args}})"
     fn with_migrate() -> Self
+      lowers_to
+        rust: "sqlx::AnyDriver::with_migrate({{args}})"
     fn get_migrate_database() -> Res!<AnyMigrateDatabase>
+      lowers_to
+        rust: "{{self}}.get_migrate_database({{args}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
 
   struct AnyMigrateDatabase
-    fn create_database(url: Str) -> BoxFuture<Res!<Str>>
+    path sqlx_core::any::driver
+    fn create_database(url: Str) -> BoxFuture<Res!<()>>
+      lowers_to
+        rust: "{{self}}.create_database({{url}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
     fn database_exists(url: Str) -> BoxFuture<Res!<Bool>>
-    fn drop_database(url: Str) -> BoxFuture<Res!<Str>>
-    fn force_drop_database(url: Str) -> BoxFuture<Res!<Str>>
+      lowers_to
+        rust: "{{self}}.database_exists({{url}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn drop_database(url: Str) -> BoxFuture<Res!<()>>
+      lowers_to
+        rust: "{{self}}.drop_database({{url}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn force_drop_database(url: Str) -> BoxFuture<Res!<()>>
+      lowers_to
+        rust: "{{self}}.force_drop_database({{url}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
 
   struct FixtureSnapshot
+    path sqlx_core::testing::fixtures
     fn additive_fixture() -> Res!<Fixture<DB>>
+      lowers_to
+        rust: "{{self}}.additive_fixture({{args}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
 
   struct Fixture
+    path sqlx_core::testing::fixtures
 
   struct FixtureError
+    path sqlx_core::testing::fixtures
 
   struct TestArgs
+    path sqlx_core::testing
     fn new(test_path: Str) -> Self
+      lowers_to
+        rust: "sqlx::TestArgs::new({{test_path}})"
     fn migrator(migrator: Migrator)
-    fn fixtures(fixtures: Str)
+      lowers_to
+        rust: "{{self}}.migrator({{migrator}})"
+    fn fixtures(fixtures: List<TestFixture>)
+      lowers_to
+        rust: "{{self}}.fixtures({{fixtures}})"
 
   struct TestContext
+    path sqlx_core::testing
 
   struct TestFixture
+    path sqlx_core::testing
 
   struct Config
+    path sqlx_core::config
     fn database_url_var() -> Str
+      lowers_to
+        rust: "{{self}}.database_url_var({{args}})"
     fn type_override(type_name: Str) -> Opt<Str>
+      lowers_to
+        rust: "{{self}}.type_override({{type_name}})"
     fn column_override(table: Str, column: Str) -> Opt<Str>
+      lowers_to
+        rust: "{{self}}.column_override({{table}}, {{column}})"
     fn migrations_dir() -> Str
+      lowers_to
+        rust: "{{self}}.migrations_dir({{args}})"
     fn table_name() -> Str
+      lowers_to
+        rust: "{{self}}.table_name({{args}})"
     fn to_resolve_config() -> ResolveConfig
+      lowers_to
+        rust: "{{self}}.to_resolve_config({{args}})"
     fn try_from_crate_or_default() -> Res!<Self>
+      lowers_to
+        rust: "sqlx::Config::try_from_crate_or_default({{args}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
     fn try_from_path_or_default(path: PathBuf) -> Res!<Self>
+      lowers_to
+        rust: "sqlx::Config::try_from_path_or_default({{path}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
     fn try_from_path(path: PathBuf) -> Res!<Self>
+      lowers_to
+        rust: "sqlx::Config::try_from_path({{path}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
 
   struct MySqlConfig
+    path sqlx_core::config::drivers
 
   struct PgConfig
+    path sqlx_core::config::drivers
 
   struct SqliteConfig
+    path sqlx_core::config::drivers
 
   struct ExternalDriverConfig
+    path sqlx_core::config::drivers
     fn try_parse(_name: Str) -> Res!<Opt<T>>
+      lowers_to
+        rust: "{{self}}.try_parse({{_name}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
 
   struct Config
+    path sqlx_core::config
     fn database_url_var() -> Str
+      lowers_to
+        rust: "{{self}}.database_url_var({{args}})"
     fn type_override(type_name: Str) -> Opt<Str>
+      lowers_to
+        rust: "{{self}}.type_override({{type_name}})"
     fn column_override(table: Str, column: Str) -> Opt<Str>
+      lowers_to
+        rust: "{{self}}.column_override({{table}}, {{column}})"
     fn migrations_dir() -> Str
+      lowers_to
+        rust: "{{self}}.migrations_dir({{args}})"
     fn table_name() -> Str
+      lowers_to
+        rust: "{{self}}.table_name({{args}})"
     fn to_resolve_config() -> ResolveConfig
+      lowers_to
+        rust: "{{self}}.to_resolve_config({{args}})"
     fn try_from_crate_or_default() -> Res!<Self>
+      lowers_to
+        rust: "sqlx::Config::try_from_crate_or_default({{args}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
     fn try_from_path_or_default(path: PathBuf) -> Res!<Self>
+      lowers_to
+        rust: "sqlx::Config::try_from_path_or_default({{path}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
     fn try_from_path(path: PathBuf) -> Res!<Self>
+      lowers_to
+        rust: "sqlx::Config::try_from_path({{path}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
 
   struct Any
+    path sqlx_core::any::database
 
   struct AnyArguments
+    path sqlx_core::any::arguments
 
   struct Config
+    path sqlx_core::config
     fn database_url_var() -> Str
+      lowers_to
+        rust: "{{self}}.database_url_var({{args}})"
     fn type_override(type_name: Str) -> Opt<Str>
+      lowers_to
+        rust: "{{self}}.type_override({{type_name}})"
     fn column_override(table: Str, column: Str) -> Opt<Str>
+      lowers_to
+        rust: "{{self}}.column_override({{table}}, {{column}})"
     fn migrations_dir() -> Str
+      lowers_to
+        rust: "{{self}}.migrations_dir({{args}})"
     fn table_name() -> Str
+      lowers_to
+        rust: "{{self}}.table_name({{args}})"
     fn to_resolve_config() -> ResolveConfig
+      lowers_to
+        rust: "{{self}}.to_resolve_config({{args}})"
     fn try_from_crate_or_default() -> Res!<Self>
+      lowers_to
+        rust: "sqlx::Config::try_from_crate_or_default({{args}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
     fn try_from_path_or_default(path: PathBuf) -> Res!<Self>
+      lowers_to
+        rust: "sqlx::Config::try_from_path_or_default({{path}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
     fn try_from_path(path: PathBuf) -> Res!<Self>
+      lowers_to
+        rust: "sqlx::Config::try_from_path({{path}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
 
   struct ImmutableArguments
+    path sqlx_core::arguments
 
   struct MigrationDefaults
+    path sqlx_core::config::migrate
 
   struct Config
+    path sqlx_core::config
     fn database_url_var() -> Str
+      lowers_to
+        rust: "{{self}}.database_url_var({{args}})"
     fn type_override(type_name: Str) -> Opt<Str>
+      lowers_to
+        rust: "{{self}}.type_override({{type_name}})"
     fn column_override(table: Str, column: Str) -> Opt<Str>
+      lowers_to
+        rust: "{{self}}.column_override({{table}}, {{column}})"
     fn migrations_dir() -> Str
+      lowers_to
+        rust: "{{self}}.migrations_dir({{args}})"
     fn table_name() -> Str
+      lowers_to
+        rust: "{{self}}.table_name({{args}})"
     fn to_resolve_config() -> ResolveConfig
+      lowers_to
+        rust: "{{self}}.to_resolve_config({{args}})"
     fn try_from_crate_or_default() -> Res!<Self>
+      lowers_to
+        rust: "sqlx::Config::try_from_crate_or_default({{args}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
     fn try_from_path_or_default(path: PathBuf) -> Res!<Self>
+      lowers_to
+        rust: "sqlx::Config::try_from_path_or_default({{path}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
     fn try_from_path(path: PathBuf) -> Res!<Self>
+      lowers_to
+        rust: "sqlx::Config::try_from_path({{path}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
 
   struct Config
+    path sqlx_core::config
     fn database_url_var() -> Str
+      lowers_to
+        rust: "{{self}}.database_url_var({{args}})"
     fn type_override(type_name: Str) -> Opt<Str>
+      lowers_to
+        rust: "{{self}}.type_override({{type_name}})"
     fn column_override(table: Str, column: Str) -> Opt<Str>
+      lowers_to
+        rust: "{{self}}.column_override({{table}}, {{column}})"
     fn migrations_dir() -> Str
+      lowers_to
+        rust: "{{self}}.migrations_dir({{args}})"
     fn table_name() -> Str
+      lowers_to
+        rust: "{{self}}.table_name({{args}})"
     fn to_resolve_config() -> ResolveConfig
+      lowers_to
+        rust: "{{self}}.to_resolve_config({{args}})"
     fn try_from_crate_or_default() -> Res!<Self>
+      lowers_to
+        rust: "sqlx::Config::try_from_crate_or_default({{args}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
     fn try_from_path_or_default(path: PathBuf) -> Res!<Self>
+      lowers_to
+        rust: "sqlx::Config::try_from_path_or_default({{path}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
     fn try_from_path(path: PathBuf) -> Res!<Self>
+      lowers_to
+        rust: "sqlx::Config::try_from_path({{path}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
 
   struct PoolConnection
-    fn close() -> Res!<Str>
+    path sqlx_core::pool::connection
+    fn close() -> BoxFuture<Res!<()>>
+      lowers_to
+        rust: "{{self}}.close({{args}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
     fn close_on_drop()
-    fn detach() -> Str
-    fn leak() -> Str
+      lowers_to
+        rust: "{{self}}.close_on_drop({{args}})"
+    fn detach() -> DB::Connection
+      lowers_to
+        rust: "{{self}}.detach({{args}})"
+    fn leak() -> DB::Connection
+      lowers_to
+        rust: "{{self}}.leak({{args}})"
 
   struct Pool
-    fn connect(url: Str) -> Res!<Self>
-    fn connect_with(options: Str) -> Res!<Self>
+    path sqlx_core::pool
+    fn connect(url: Str) -> BoxFuture<Res!<Self>>
+      lowers_to
+        rust: "sqlx::Pool::connect({{url}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn connect_with(options: DB::Connection::Options) -> BoxFuture<Res!<Self>>
+      lowers_to
+        rust: "sqlx::Pool::connect_with({{options}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
     fn connect_lazy(url: Str) -> Res!<Self>
-    fn connect_lazy_with(options: Str) -> Self
-    fn acquire() -> Str
+      lowers_to
+        rust: "sqlx::Pool::connect_lazy({{url}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn connect_lazy_with(options: DB::Connection::Options) -> Self
+      lowers_to
+        rust: "sqlx::Pool::connect_lazy_with({{options}})"
+    fn acquire() -> BoxFuture<Res!<PoolConnection<DB>>>
+      lowers_to
+        rust: "{{self}}.acquire({{args}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
     fn try_acquire() -> Opt<PoolConnection<DB>>
-    fn begin() -> Res!<Transaction<DB>>
-    fn try_begin() -> Res!<Opt<Transaction<DB>>>
-    fn begin_with(statement: Str) -> Res!<Transaction<DB>>
-    fn try_begin_with(statement: Str) -> Res!<Opt<Transaction<DB>>>
-    fn close() -> Str
+      lowers_to
+        rust: "{{self}}.try_acquire({{args}})"
+    fn begin() -> BoxFuture<Res!<Transaction<DB>>>
+      lowers_to
+        rust: "{{self}}.begin({{args}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn try_begin() -> BoxFuture<Res!<Opt<Transaction<DB>>>>
+      lowers_to
+        rust: "{{self}}.try_begin({{args}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn begin_with(statement: Unknown) -> BoxFuture<Res!<Transaction<DB>>>
+      lowers_to
+        rust: "{{self}}.begin_with({{statement}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn try_begin_with(statement: Unknown) -> BoxFuture<Res!<Opt<Transaction<DB>>>>
+      lowers_to
+        rust: "{{self}}.try_begin_with({{statement}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn close() -> BoxFuture<()>
+      lowers_to
+        rust: "{{self}}.close({{args}}).await"
     fn is_closed() -> Bool
+      lowers_to
+        rust: "{{self}}.is_closed({{args}})"
     fn close_event() -> CloseEvent
+      lowers_to
+        rust: "{{self}}.close_event({{args}})"
     fn size() -> Int
-    fn num_idle() -> usize
-    fn connect_options() -> Arc<Str>
-    fn set_connect_options(connect_options: Str)
+      lowers_to
+        rust: "{{self}}.size({{args}})"
+    fn num_idle() -> Int
+      lowers_to
+        rust: "{{self}}.num_idle({{args}})"
+    fn connect_options() -> Arc<DB::Connection::Options>
+      lowers_to
+        rust: "{{self}}.connect_options({{args}})"
+    fn set_connect_options(connect_options: DB::Connection::Options)
+      lowers_to
+        rust: "{{self}}.set_connect_options({{connect_options}})"
     fn options() -> PoolOptions<DB>
+      lowers_to
+        rust: "{{self}}.options({{args}})"
 
   struct Transaction
-    fn commit() -> Res!<Str>
-    fn rollback() -> Res!<Str>
+    path sqlx_core::transaction
+    fn commit() -> BoxFuture<Res!<()>>
+      lowers_to
+        rust: "{{self}}.commit({{args}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn rollback() -> BoxFuture<Res!<()>>
+      lowers_to
+        rust: "{{self}}.rollback({{args}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
 
   struct PoolOptions
+    path sqlx_core::pool::options
     fn new() -> Self
+      lowers_to
+        rust: "sqlx::PoolOptions::new({{args}})"
     fn max_connections(max: Int) -> Self
+      lowers_to
+        rust: "{{self}}.max_connections({{max}})"
     fn get_max_connections() -> Int
+      lowers_to
+        rust: "{{self}}.get_max_connections({{args}})"
     fn min_connections(min: Int) -> Self
+      lowers_to
+        rust: "{{self}}.min_connections({{min}})"
     fn get_min_connections() -> Int
+      lowers_to
+        rust: "{{self}}.get_min_connections({{args}})"
     fn acquire_time_level(level: LevelFilter) -> Self
+      lowers_to
+        rust: "{{self}}.acquire_time_level({{level}})"
     fn acquire_slow_level(level: LevelFilter) -> Self
+      lowers_to
+        rust: "{{self}}.acquire_slow_level({{level}})"
     fn acquire_slow_threshold(threshold: Duration) -> Self
+      lowers_to
+        rust: "{{self}}.acquire_slow_threshold({{threshold}})"
     fn get_acquire_slow_threshold() -> Duration
+      lowers_to
+        rust: "{{self}}.get_acquire_slow_threshold({{args}})"
     fn acquire_timeout(timeout: Duration) -> Self
+      lowers_to
+        rust: "{{self}}.acquire_timeout({{timeout}})"
     fn get_acquire_timeout() -> Duration
-    fn max_lifetime(lifetime: Str) -> Self
+      lowers_to
+        rust: "{{self}}.get_acquire_timeout({{args}})"
+    fn max_lifetime(lifetime: Opt<Duration>) -> Self
+      lowers_to
+        rust: "{{self}}.max_lifetime({{lifetime}})"
     fn get_max_lifetime() -> Opt<Duration>
-    fn idle_timeout(timeout: Str) -> Self
+      lowers_to
+        rust: "{{self}}.get_max_lifetime({{args}})"
+    fn idle_timeout(timeout: Opt<Duration>) -> Self
+      lowers_to
+        rust: "{{self}}.idle_timeout({{timeout}})"
     fn get_idle_timeout() -> Opt<Duration>
+      lowers_to
+        rust: "{{self}}.get_idle_timeout({{args}})"
     fn test_before_acquire(test: Bool) -> Self
+      lowers_to
+        rust: "{{self}}.test_before_acquire({{test}})"
     fn get_test_before_acquire() -> Bool
+      lowers_to
+        rust: "{{self}}.get_test_before_acquire({{args}})"
     fn after_connect(callback: F) -> Self
+      lowers_to
+        rust: "{{self}}.after_connect({{callback}})"
     fn before_acquire(callback: F) -> Self
+      lowers_to
+        rust: "{{self}}.before_acquire({{callback}})"
     fn after_release(callback: F) -> Self
-    fn connect(url: Str) -> Res!<Pool<DB>>
-    fn connect_with(options: Str) -> Res!<Pool<DB>>
+      lowers_to
+        rust: "{{self}}.after_release({{callback}})"
+    fn connect(url: Str) -> BoxFuture<Res!<Pool<DB>>>
+      lowers_to
+        rust: "{{self}}.connect({{url}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn connect_with(options: DB::Connection::Options) -> BoxFuture<Res!<Pool<DB>>>
+      lowers_to
+        rust: "{{self}}.connect_with({{options}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
     fn connect_lazy(url: Str) -> Res!<Pool<DB>>
-    fn connect_lazy_with(options: Str) -> Pool<DB>
+      lowers_to
+        rust: "{{self}}.connect_lazy({{url}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn connect_lazy_with(options: DB::Connection::Options) -> Pool<DB>
+      lowers_to
+        rust: "{{self}}.connect_lazy_with({{options}})"
 
   struct PoolConnectionMetadata
+    path sqlx_core::pool::options
 
   struct Query
+    path sqlx_core::query
     typed_variant query_as
     typed_type_params _, return_type
-    fn new(sql: Str) -> Self
+    fn new(sql: Unknown) -> Self
+      lowers_to
+        rust: "sqlx::Query::new({{sql}})"
     fn bind(value: T) -> Self
-    fn try_bind(value: T) -> Res!<Str>
+      lowers_to
+        rust: "{{self}}.bind({{value}})"
+    fn try_bind(value: T) -> Res!<()>
+      lowers_to
+        rust: "{{self}}.try_bind({{value}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
     fn persistent(value: Bool) -> Self
-    fn map(f: F) -> Map<DB, Str, A>
+      lowers_to
+        rust: "{{self}}.persistent({{value}})"
+    fn map(f: F) -> Map<DB, Unknown, A>
+      lowers_to
+        rust: "{{self}}.map({{f}})"
     fn try_map(f: F) -> Map<DB, F, A>
-    fn execute(executor: E) -> Res!<Str>
-    fn execute_many(executor: E) -> BoxStream<Res!<Str>>
-    fn fetch(executor: E) -> BoxStream<Res!<Str>>
-    fn fetch_many(executor: E) -> BoxStream<Res!<Either<Str, Str>>>
-    fn fetch_all(executor: E) -> Res!<List<Str>>
-    fn fetch_one(executor: E) -> Res!<Str>
-    fn fetch_optional(executor: E) -> Res!<Opt<Str>>
+      lowers_to
+        rust: "{{self}}.try_map({{f}})"
+    fn execute(executor: E) -> BoxFuture<Res!<DB::QueryResult>>
+      lowers_to
+        rust: "{{self}}.execute({{executor}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn execute_many(executor: E) -> BoxFuture<BoxStream<Res!<DB::QueryResult>>>
+      lowers_to
+        rust: "{{self}}.execute_many({{executor}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn fetch(executor: E) -> BoxStream<Res!<DB::Row>>
+      lowers_to
+        rust: "{{self}}.fetch({{executor}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn fetch_many(executor: E) -> BoxStream<Res!<Either<DB::QueryResult, DB::Row>>>
+      lowers_to
+        rust: "{{self}}.fetch_many({{executor}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn fetch_all(executor: E) -> BoxFuture<Res!<List<DB::Row>>>
+      lowers_to
+        rust: "{{self}}.fetch_all({{executor}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn fetch_one(executor: E) -> BoxFuture<Res!<DB::Row>>
+      lowers_to
+        rust: "{{self}}.fetch_one({{executor}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn fetch_optional(executor: E) -> BoxFuture<Res!<Opt<DB::Row>>>
+      lowers_to
+        rust: "{{self}}.fetch_optional({{executor}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
 
   struct CloseEvent
-    fn do_until(fut: Fut) -> Res!<Str>
+    path sqlx_core::pool
+    fn do_until(fut: Fut) -> BoxFuture<Res!<Fut::Output>>
+      lowers_to
+        rust: "{{self}}.do_until({{fut}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
 
   struct SqlStr
+    path sqlx_core::sql_str
     fn as_str() -> Str
+      lowers_to
+        rust: "{{self}}.as_str({{args}})"
     fn from_static(sql: Str) -> Self
+      lowers_to
+        rust: "sqlx::SqlStr::from_static({{sql}})"
 
   struct AnyConnectOptions
+    path sqlx_core::any::options
 
   struct AnyConnection
+    path sqlx_core::any::connection
     fn backend_name() -> Str
+      lowers_to
+        rust: "{{self}}.backend_name({{args}})"
 
   struct LogSettings
+    path sqlx_core::connection
     fn log_statements(level: LevelFilter)
+      lowers_to
+        rust: "{{self}}.log_statements({{level}})"
     fn log_slow_statements(level: LevelFilter, duration: Duration)
+      lowers_to
+        rust: "{{self}}.log_slow_statements({{level}}, {{duration}})"
 
   struct AnyTransactionManager
+    path sqlx_core::any::transaction
 
   struct Json
+    path sqlx_core::types::json
     fn into_inner() -> T
+      lowers_to
+        rust: "{{self}}.into_inner({{args}})"
 
   struct AnyArgumentBuffer
+    path sqlx_core::any::arguments
 
   struct AnyValueRef
+    path sqlx_core::any::value
 
   enum ColumnOrigin
     Table(TableColumn)
@@ -422,11 +1107,13 @@ stub sqlx 0.9.0
     Unknown
 
     fn table_column() -> Opt<TableColumn>
+      lowers_to
+        rust: "{{self}}.table_column({{args}})"
 
   enum Error
     Configuration(BoxDynError)
     InvalidArgument(Str)
-    Database(Box<Str>)
+    Database(Box<Unknown>)
     Io(Error)
     Tls(BoxDynError)
     Protocol(Str)
@@ -445,15 +1132,19 @@ stub sqlx 0.9.0
     InvalidSavePointStatement
     BeginFailed
 
-    fn into_database_error() -> Opt<Box<Str>>
-    fn as_database_error() -> Opt<Str>
+    fn into_database_error() -> Opt<Box<Unknown>>
+      lowers_to
+        rust: "{{self}}.into_database_error({{args}})"
+    fn as_database_error() -> Opt<Unknown>
+      lowers_to
+        rust: "{{self}}.as_database_error({{args}})"
 
   enum CertificateInput
     Inline(List<Int>)
     File(PathBuf)
 
   enum JoinHandle
-    _Phantom(PhantomData<Str>)
+    _Phantom(PhantomData<Unknown>)
 
   enum ParamChecking
     Weak
@@ -466,8 +1157,12 @@ stub sqlx 0.9.0
     AmbiguousDateTimeType
     AmbiguousNumericType
 
-    fn into_database_error() -> Opt<Box<Str>>
-    fn as_database_error() -> Opt<Str>
+    fn into_database_error() -> Opt<Box<Unknown>>
+      lowers_to
+        rust: "{{self}}.into_database_error({{args}})"
+    fn as_database_error() -> Opt<Unknown>
+      lowers_to
+        rust: "{{self}}.as_database_error({{args}})"
 
   enum MigrationType
     Simple
@@ -475,13 +1170,29 @@ stub sqlx 0.9.0
     ReversibleDown
 
     fn from_filename(filename: Str) -> Self
+      lowers_to
+        rust: "sqlx::MigrationType::from_filename({{filename}})"
     fn is_reversible() -> Bool
+      lowers_to
+        rust: "{{self}}.is_reversible({{args}})"
     fn is_up_migration() -> Bool
+      lowers_to
+        rust: "{{self}}.is_up_migration({{args}})"
     fn is_down_migration() -> Bool
+      lowers_to
+        rust: "{{self}}.is_down_migration({{args}})"
     fn label() -> Str
+      lowers_to
+        rust: "{{self}}.label({{args}})"
     fn suffix() -> Str
+      lowers_to
+        rust: "{{self}}.suffix({{args}})"
     fn file_content() -> Str
+      lowers_to
+        rust: "{{self}}.file_content({{args}})"
     fn infer(migrator: Migrator, reversible: Bool) -> MigrationType
+      lowers_to
+        rust: "sqlx::MigrationType::infer({{migrator}}, {{reversible}})"
 
   enum MigrateError
     Execute(Error)
@@ -505,8 +1216,12 @@ stub sqlx 0.9.0
     Parse
     ParseDisabled
 
-    fn from_io(path: Str, error: Error) -> Self
+    fn from_io(path: PathBuf, error: Error) -> Self
+      lowers_to
+        rust: "sqlx::ConfigError::from_io({{path}}, {{error}})"
     fn not_found_path() -> Opt<Path>
+      lowers_to
+        rust: "{{self}}.not_found_path({{args}})"
 
   enum AnyTypeInfoKind
     Null
@@ -520,6 +1235,8 @@ stub sqlx 0.9.0
     Blob
 
     fn is_integer() -> Bool
+      lowers_to
+        rust: "{{self}}.is_integer({{args}})"
 
   enum ErrorKind
     UniqueViolation
@@ -551,7 +1268,11 @@ stub sqlx 0.9.0
     Time
 
     fn is_inferred() -> Bool
+      lowers_to
+        rust: "{{self}}.is_inferred({{args}})"
     fn crate_name() -> Opt<Str>
+      lowers_to
+        rust: "{{self}}.crate_name({{args}})"
 
   enum NumericCrate
     Inferred
@@ -559,7 +1280,11 @@ stub sqlx 0.9.0
     RustDecimal
 
     fn is_inferred() -> Bool
+      lowers_to
+        rust: "{{self}}.is_inferred({{args}})"
     fn crate_name() -> Opt<Str>
+      lowers_to
+        rust: "{{self}}.crate_name({{args}})"
 
   enum DefaultMigrationType
     Inferred
@@ -572,7 +1297,7 @@ stub sqlx 0.9.0
     Sequential
 
   enum MaybePoolConnection
-    Connection(Str)
+    Connection(DB::Connection)
     PoolConnection(PoolConnection<DB>)
 
   enum UStr
@@ -580,244 +1305,574 @@ stub sqlx 0.9.0
     Shared(Arc<Str>)
 
     fn new(s: Str) -> Self
+      lowers_to
+        rust: "sqlx::UStr::new({{s}})"
     fn strip_prefix(this: Self, prefix: Str) -> Opt<Self>
+      lowers_to
+        rust: "sqlx::UStr::strip_prefix({{this}}, {{prefix}})"
 
   enum IsNull
     Yes
     No
 
     fn is_null() -> Bool
+      lowers_to
+        rust: "{{self}}.is_null({{args}})"
 
   trait FromRow
     fn from_row(row: R) -> Res!<Self>
+      lowers_to
+        rust: "sqlx::FromRow::from_row({{row}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
 
   trait Column
-    fn ordinal() -> usize
+    fn ordinal() -> Int
+      lowers_to
+        rust: "{{self}}.ordinal({{args}})"
     fn name() -> Str
-    fn type_info() -> Str
+      lowers_to
+        rust: "{{self}}.name({{args}})"
+    fn type_info() -> Self::Database::TypeInfo
+      lowers_to
+        rust: "{{self}}.type_info({{args}})"
     fn origin() -> ColumnOrigin
+      lowers_to
+        rust: "{{self}}.origin({{args}})"
 
   trait Row
     fn is_empty() -> Bool
-    fn len() -> usize
-    fn column(index: I) -> Str
-    fn try_column(index: I) -> Res!<Str>
-    fn columns() -> Str
+      lowers_to
+        rust: "{{self}}.is_empty({{args}})"
+    fn len() -> Int
+      lowers_to
+        rust: "{{self}}.len({{args}})"
+    fn column(index: I) -> Self::Database::Column
+      lowers_to
+        rust: "{{self}}.column({{index}})"
+    fn try_column(index: I) -> Res!<Self::Database::Column>
+      lowers_to
+        rust: "{{self}}.try_column({{index}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn columns() -> List<Self::Database::Column>
+      lowers_to
+        rust: "{{self}}.columns({{args}})"
     fn get(index: I) -> T
+      lowers_to
+        rust: "{{self}}.get({{index}})"
     fn get_unchecked(index: I) -> T
+      lowers_to
+        rust: "{{self}}.get_unchecked({{index}})"
     fn try_get(index: I) -> Res!<T>
+      lowers_to
+        rust: "{{self}}.try_get({{index}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
     fn try_get_unchecked(index: I) -> Res!<T>
-    fn try_get_raw(index: I) -> Res!<Str>
+      lowers_to
+        rust: "{{self}}.try_get_unchecked({{index}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn try_get_raw(index: I) -> Res!<Self::Database::ValueRef>
+      lowers_to
+        rust: "{{self}}.try_get_raw({{index}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
 
   trait Statement
     fn into_sql() -> SqlStr
+      lowers_to
+        rust: "{{self}}.into_sql({{args}})"
     fn sql() -> SqlStr
-    fn parameters() -> Opt<Either<Str, usize>>
-    fn columns() -> Str
-    fn column(index: I) -> Str
-    fn try_column(index: I) -> Res!<Str>
-    fn query() -> Query<Str, Str>
-    fn query_with(arguments: A) -> Query<Str, A>
-    fn query_as() -> QueryAs<Str, O, Str>
-    fn query_as_with(arguments: A) -> QueryAs<Str, O, A>
-    fn query_scalar() -> QueryScalar<Str, O, Str>
-    fn query_scalar_with(arguments: A) -> QueryScalar<Str, O, A>
+      lowers_to
+        rust: "{{self}}.sql({{args}})"
+    fn parameters() -> Opt<Either<List<Self::Database::TypeInfo>, Int>>
+      lowers_to
+        rust: "{{self}}.parameters({{args}})"
+    fn columns() -> List<Self::Database::Column>
+      lowers_to
+        rust: "{{self}}.columns({{args}})"
+    fn column(index: I) -> Self::Database::Column
+      lowers_to
+        rust: "{{self}}.column({{index}})"
+    fn try_column(index: I) -> Res!<Self::Database::Column>
+      lowers_to
+        rust: "{{self}}.try_column({{index}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn query() -> Query<Self::Database, Self::Database::Arguments>
+      lowers_to
+        rust: "{{self}}.query({{args}})"
+    fn query_with(arguments: A) -> Query<Self::Database, A>
+      lowers_to
+        rust: "{{self}}.query_with({{arguments}})"
+    fn query_as() -> QueryAs<Self::Database, O, Self::Database::Arguments>
+      lowers_to
+        rust: "{{self}}.query_as({{args}})"
+    fn query_as_with(arguments: A) -> QueryAs<Self::Database, O, A>
+      lowers_to
+        rust: "{{self}}.query_as_with({{arguments}})"
+    fn query_scalar() -> QueryScalar<Self::Database, O, Self::Database::Arguments>
+      lowers_to
+        rust: "{{self}}.query_scalar({{args}})"
+    fn query_scalar_with(arguments: A) -> QueryScalar<Self::Database, O, A>
+      lowers_to
+        rust: "{{self}}.query_scalar_with({{arguments}})"
 
   trait ColumnIndex
-    fn index(container: T) -> Res!<usize>
+    fn index(container: T) -> Res!<Int>
+      lowers_to
+        rust: "{{self}}.index({{container}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
 
   trait TypeInfo
     fn is_null() -> Bool
+      lowers_to
+        rust: "{{self}}.is_null({{args}})"
     fn name() -> Str
+      lowers_to
+        rust: "{{self}}.name({{args}})"
     fn type_compatible(other: Self) -> Bool
+      lowers_to
+        rust: "{{self}}.type_compatible({{other}})"
 
   trait Value
-    fn as_ref() -> Str
-    fn type_info() -> Cow<Str>
+    fn as_ref() -> Self::Database::ValueRef
+      lowers_to
+        rust: "{{self}}.as_ref({{args}})"
+    fn type_info() -> Cow<Self::Database::TypeInfo>
+      lowers_to
+        rust: "{{self}}.type_info({{args}})"
     fn is_null() -> Bool
+      lowers_to
+        rust: "{{self}}.is_null({{args}})"
     fn decode() -> T
+      lowers_to
+        rust: "{{self}}.decode({{args}})"
     fn decode_unchecked() -> T
+      lowers_to
+        rust: "{{self}}.decode_unchecked({{args}})"
     fn try_decode() -> Res!<T>
+      lowers_to
+        rust: "{{self}}.try_decode({{args}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
     fn try_decode_unchecked() -> Res!<T>
+      lowers_to
+        rust: "{{self}}.try_decode_unchecked({{args}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
 
   trait ValueRef
-    fn to_owned() -> Str
-    fn type_info() -> Cow<Str>
+    fn to_owned() -> Self::Database::Value
+      lowers_to
+        rust: "{{self}}.to_owned({{args}})"
+    fn type_info() -> Cow<Self::Database::TypeInfo>
+      lowers_to
+        rust: "{{self}}.type_info({{args}})"
     fn is_null() -> Bool
+      lowers_to
+        rust: "{{self}}.is_null({{args}})"
 
   trait BufExt
     fn get_bytes_nul() -> Res!<Bytes>
-    fn get_bytes(len: usize) -> Bytes
+      lowers_to
+        rust: "{{self}}.get_bytes_nul({{args}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn get_bytes(len: Int) -> Bytes
+      lowers_to
+        rust: "{{self}}.get_bytes({{len}})"
     fn get_str_nul() -> Res!<Str>
-    fn get_str(len: usize) -> Res!<Str>
+      lowers_to
+        rust: "{{self}}.get_str_nul({{args}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn get_str(len: Int) -> Res!<Str>
+      lowers_to
+        rust: "{{self}}.get_str({{len}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
 
   trait BufMutExt
     fn put_str_nul(s: Str)
+      lowers_to
+        rust: "{{self}}.put_str_nul({{s}})"
 
   trait ProtocolDecode
     fn decode(buf: Bytes) -> Res!<Self>
+      lowers_to
+        rust: "sqlx::ProtocolDecode::decode({{buf}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
     fn decode_with(buf: Bytes, context: Context) -> Res!<Self>
+      lowers_to
+        rust: "sqlx::ProtocolDecode::decode_with({{buf}}, {{context}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
 
   trait ProtocolEncode
-    fn encode(buf: List<Int>) -> Res!<Str>
-    fn encode_with(buf: List<Int>, context: Context) -> Res!<Str>
+    fn encode(buf: List<Int>) -> Res!<()>
+      lowers_to
+        rust: "{{self}}.encode({{buf}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn encode_with(buf: List<Int>, context: Context) -> Res!<()>
+      lowers_to
+        rust: "{{self}}.encode_with({{buf}}, {{context}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
 
   trait ReadBuf
-    fn init_mut() -> Str
+    fn init_mut() -> List<Int>
+      lowers_to
+        rust: "{{self}}.init_mut({{args}})"
 
   trait Socket
-    fn try_read(buf: Str) -> Res!<usize>
-    fn try_write(buf: Str) -> Res!<usize>
-    fn poll_read_ready(cx: Context) -> Poll<Res!<Str>>
-    fn poll_write_ready(cx: Context) -> Poll<Res!<Str>>
-    fn poll_flush(_cx: Context) -> Poll<Res!<Str>>
-    fn poll_shutdown(cx: Context) -> Poll<Res!<Str>>
+    fn try_read(buf: Unknown) -> Res!<Int>
+      lowers_to
+        rust: "{{self}}.try_read({{buf}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn try_write(buf: List<Int>) -> Res!<Int>
+      lowers_to
+        rust: "{{self}}.try_write({{buf}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn poll_read_ready(cx: Context) -> Poll<Res!<()>>
+      lowers_to
+        rust: "{{self}}.poll_read_ready({{cx}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn poll_write_ready(cx: Context) -> Poll<Res!<()>>
+      lowers_to
+        rust: "{{self}}.poll_write_ready({{cx}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn poll_flush(_cx: Context) -> Poll<Res!<()>>
+      lowers_to
+        rust: "{{self}}.poll_flush({{_cx}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn poll_shutdown(cx: Context) -> Poll<Res!<()>>
+      lowers_to
+        rust: "{{self}}.poll_shutdown({{cx}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
     fn read(buf: B) -> Read<Self, B>
-    fn write(buf: Str) -> Write<Self>
+      lowers_to
+        rust: "{{self}}.read({{buf}})"
+    fn write(buf: List<Int>) -> Write<Self>
+      lowers_to
+        rust: "{{self}}.write({{buf}})"
     fn flush() -> Flush<Self>
+      lowers_to
+        rust: "{{self}}.flush({{args}})"
     fn shutdown() -> Shutdown<Self>
+      lowers_to
+        rust: "{{self}}.shutdown({{args}})"
 
   trait WithSocket
-    fn with_socket(socket: S) -> Str
+    fn with_socket(socket: S) -> BoxFuture<Self::Output>
+      lowers_to
+        rust: "{{self}}.with_socket({{socket}}).await"
 
   trait TypeChecking
-    fn param_type_for_id(id: Str, preferred_crates: PreferredCrates) -> Res!<Str>
-    fn return_type_for_id(id: Str, preferred_crates: PreferredCrates) -> Res!<Str>
-    fn get_feature_gate(info: Str) -> Opt<Str>
-    fn fmt_value_debug(value: Str) -> FmtValue<Self>
+    fn param_type_for_id(id: Self::TypeInfo, preferred_crates: PreferredCrates) -> Res!<Str>
+      lowers_to
+        rust: "sqlx::TypeChecking::param_type_for_id({{id}}, {{preferred_crates}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn return_type_for_id(id: Self::TypeInfo, preferred_crates: PreferredCrates) -> Res!<Str>
+      lowers_to
+        rust: "sqlx::TypeChecking::return_type_for_id({{id}}, {{preferred_crates}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn get_feature_gate(info: Self::TypeInfo) -> Opt<Str>
+      lowers_to
+        rust: "sqlx::TypeChecking::get_feature_gate({{info}})"
+    fn fmt_value_debug(value: Self::Value) -> FmtValue<Self>
+      lowers_to
+        rust: "sqlx::TypeChecking::fmt_value_debug({{value}})"
 
   trait DatabaseError
     fn message() -> Str
+      lowers_to
+        rust: "{{self}}.message({{args}})"
     fn code() -> Opt<Cow<Str>>
+      lowers_to
+        rust: "{{self}}.code({{args}})"
     fn constraint() -> Opt<Str>
+      lowers_to
+        rust: "{{self}}.constraint({{args}})"
     fn table() -> Opt<Str>
+      lowers_to
+        rust: "{{self}}.table({{args}})"
     fn kind() -> ErrorKind
+      lowers_to
+        rust: "{{self}}.kind({{args}})"
     fn is_unique_violation() -> Bool
+      lowers_to
+        rust: "{{self}}.is_unique_violation({{args}})"
     fn is_foreign_key_violation() -> Bool
+      lowers_to
+        rust: "{{self}}.is_foreign_key_violation({{args}})"
     fn is_check_violation() -> Bool
+      lowers_to
+        rust: "{{self}}.is_check_violation({{args}})"
 
   trait MigrateDatabase
-    fn create_database(url: Str) -> Str
-    fn database_exists(url: Str) -> Str
-    fn drop_database(url: Str) -> Str
-    fn force_drop_database(_url: Str) -> Str
+    fn create_database(url: Str) -> BoxFuture<Res!<()>>
+      lowers_to
+        rust: "sqlx::MigrateDatabase::create_database({{url}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn database_exists(url: Str) -> BoxFuture<Res!<Bool>>
+      lowers_to
+        rust: "sqlx::MigrateDatabase::database_exists({{url}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn drop_database(url: Str) -> BoxFuture<Res!<()>>
+      lowers_to
+        rust: "sqlx::MigrateDatabase::drop_database({{url}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn force_drop_database(_url: Str) -> BoxFuture<Res!<()>>
+      lowers_to
+        rust: "sqlx::MigrateDatabase::force_drop_database({{_url}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
 
   trait Migrate
-    fn create_schema_if_not_exists(schema_name: Str) -> BoxFuture<Res!<Str>>
-    fn ensure_migrations_table(table_name: Str) -> BoxFuture<Res!<Str>>
+    fn create_schema_if_not_exists(schema_name: Str) -> BoxFuture<Res!<()>>
+      lowers_to
+        rust: "{{self}}.create_schema_if_not_exists({{schema_name}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn ensure_migrations_table(table_name: Str) -> BoxFuture<Res!<()>>
+      lowers_to
+        rust: "{{self}}.ensure_migrations_table({{table_name}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
     fn dirty_version(table_name: Str) -> BoxFuture<Res!<Opt<Int>>>
+      lowers_to
+        rust: "{{self}}.dirty_version({{table_name}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
     fn list_applied_migrations(table_name: Str) -> BoxFuture<Res!<List<AppliedMigration>>>
-    fn lock() -> BoxFuture<Res!<Str>>
-    fn unlock() -> BoxFuture<Res!<Str>>
+      lowers_to
+        rust: "{{self}}.list_applied_migrations({{table_name}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn lock() -> BoxFuture<Res!<()>>
+      lowers_to
+        rust: "{{self}}.lock({{args}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn unlock() -> BoxFuture<Res!<()>>
+      lowers_to
+        rust: "{{self}}.unlock({{args}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
     fn apply(table_name: Str, migration: Migration) -> BoxFuture<Res!<Duration>>
+      lowers_to
+        rust: "{{self}}.apply({{table_name}}, {{migration}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
     fn revert(table_name: Str, migration: Migration) -> BoxFuture<Res!<Duration>>
-    fn skip(_table_name: Str, _migration: Migration) -> BoxFuture<Res!<Str>>
+      lowers_to
+        rust: "{{self}}.revert({{table_name}}, {{migration}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn skip(_table_name: Str, _migration: Migration) -> BoxFuture<Res!<()>>
+      lowers_to
+        rust: "{{self}}.skip({{_table_name}}, {{_migration}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
 
   trait MigrationSource
     fn resolve() -> BoxFuture<Res!<List<Migration>>>
+      lowers_to
+        rust: "{{self}}.resolve({{args}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
 
   trait AnyConnectionBackend
     fn name() -> Str
-    fn close() -> BoxFuture<Res!<Str>>
-    fn ping() -> BoxFuture<Res!<Str>>
-    fn begin(statement: Opt<SqlStr>) -> BoxFuture<Res!<Str>>
-    fn commit() -> BoxFuture<Res!<Str>>
-    fn rollback() -> BoxFuture<Res!<Str>>
+      lowers_to
+        rust: "{{self}}.name({{args}})"
+    fn close() -> BoxFuture<Res!<()>>
+      lowers_to
+        rust: "{{self}}.close({{args}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn ping() -> BoxFuture<Res!<()>>
+      lowers_to
+        rust: "{{self}}.ping({{args}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn begin(statement: Opt<SqlStr>) -> BoxFuture<Res!<()>>
+      lowers_to
+        rust: "{{self}}.begin({{statement}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn commit() -> BoxFuture<Res!<()>>
+      lowers_to
+        rust: "{{self}}.commit({{args}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn rollback() -> BoxFuture<Res!<()>>
+      lowers_to
+        rust: "{{self}}.rollback({{args}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
     fn start_rollback()
-    fn get_transaction_depth() -> usize
+      lowers_to
+        rust: "{{self}}.start_rollback({{args}})"
+    fn get_transaction_depth() -> Int
+      lowers_to
+        rust: "{{self}}.get_transaction_depth({{args}})"
     fn is_in_transaction() -> Bool
-    fn cached_statements_size() -> usize
-    fn clear_cached_statements() -> BoxFuture<Res!<Str>>
+      lowers_to
+        rust: "{{self}}.is_in_transaction({{args}})"
+    fn cached_statements_size() -> Int
+      lowers_to
+        rust: "{{self}}.cached_statements_size({{args}})"
+    fn clear_cached_statements() -> BoxFuture<Res!<()>>
+      lowers_to
+        rust: "{{self}}.clear_cached_statements({{args}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
     fn shrink_buffers()
-    fn as_migrate() -> Res!<Str>
+      lowers_to
+        rust: "{{self}}.shrink_buffers({{args}})"
+    fn as_migrate() -> Res!<Unknown>
+      lowers_to
+        rust: "{{self}}.as_migrate({{args}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
     fn fetch_many(query: SqlStr, persistent: Bool, arguments: Opt<AnyArguments>) -> BoxStream<Res!<Either<AnyQueryResult, AnyRow>>>
+      lowers_to
+        rust: "{{self}}.fetch_many({{query}}, {{persistent}}, {{arguments}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
     fn fetch_optional(query: SqlStr, persistent: Bool, arguments: Opt<AnyArguments>) -> BoxFuture<Res!<Opt<AnyRow>>>
-    fn prepare_with(sql: SqlStr, parameters: Str) -> BoxFuture<Res!<AnyStatement>>
+      lowers_to
+        rust: "{{self}}.fetch_optional({{query}}, {{persistent}}, {{arguments}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn prepare_with(sql: SqlStr, parameters: List<AnyTypeInfo>) -> BoxFuture<Res!<AnyStatement>>
+      lowers_to
+        rust: "{{self}}.prepare_with({{sql}}, {{parameters}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
     fn describe(sql: SqlStr) -> BoxFuture<Res!<Describe<Any>>>
+      lowers_to
+        rust: "{{self}}.describe({{sql}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
 
   trait Type
-    fn type_info() -> Str
-    fn compatible(ty: Str) -> Bool
+    fn type_info() -> DB::TypeInfo
+      lowers_to
+        rust: "sqlx::Type::type_info({{args}})"
+    fn compatible(ty: DB::TypeInfo) -> Bool
+      lowers_to
+        rust: "sqlx::Type::compatible({{ty}})"
 
   trait TestSupport
-    fn test_context(args: TestArgs) -> Str
-    fn cleanup_test(db_name: Str) -> Str
-    fn cleanup_test_dbs() -> Str
-    fn snapshot(conn: Str) -> Str
+    fn test_context(args: TestArgs) -> BoxFuture<Res!<TestContext<Self>>>
+      lowers_to
+        rust: "sqlx::TestSupport::test_context({{args}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn cleanup_test(db_name: Str) -> BoxFuture<Res!<()>>
+      lowers_to
+        rust: "sqlx::TestSupport::cleanup_test({{db_name}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn cleanup_test_dbs() -> BoxFuture<Res!<Opt<Int>>>
+      lowers_to
+        rust: "sqlx::TestSupport::cleanup_test_dbs({{args}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn snapshot(conn: Self::Connection) -> BoxFuture<Res!<FixtureSnapshot<Self>>>
+      lowers_to
+        rust: "sqlx::TestSupport::snapshot({{conn}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
     fn db_name(args: TestArgs) -> Str
+      lowers_to
+        rust: "sqlx::TestSupport::db_name({{args}})"
 
   trait TestFn
-    fn run_test(args: TestArgs) -> Str
+    fn run_test(args: TestArgs) -> Self::Output
+      lowers_to
+        rust: "{{self}}.run_test({{args}})"
 
   trait TestTermination
     fn is_success() -> Bool
+      lowers_to
+        rust: "{{self}}.is_success({{args}})"
 
   trait Encode
-    fn encode(buf: Str) -> Res!<IsNull>
-    fn encode_by_ref(buf: Str) -> Res!<IsNull>
-    fn produces() -> Opt<Str>
-    fn size_hint() -> usize
+    fn encode(buf: DB::ArgumentBuffer) -> Res!<IsNull>
+      lowers_to
+        rust: "{{self}}.encode({{buf}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn encode_by_ref(buf: DB::ArgumentBuffer) -> Res!<IsNull>
+      lowers_to
+        rust: "{{self}}.encode_by_ref({{buf}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn produces() -> Opt<DB::TypeInfo>
+      lowers_to
+        rust: "{{self}}.produces({{args}})"
+    fn size_hint() -> Int
+      lowers_to
+        rust: "{{self}}.size_hint({{args}})"
 
   trait Arguments
-    fn reserve(additional: usize, size: usize)
-    fn add(value: T) -> Res!<Str>
-    fn len() -> usize
+    fn reserve(additional: Int, size: Int)
+      lowers_to
+        rust: "{{self}}.reserve({{additional}}, {{size}})"
+    fn add(value: T) -> Res!<()>
+      lowers_to
+        rust: "{{self}}.add({{value}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn len() -> Int
+      lowers_to
+        rust: "{{self}}.len({{args}})"
     fn format_placeholder(writer: W) -> Res
+      lowers_to
+        rust: "{{self}}.format_placeholder({{writer}})"
 
   trait IntoArguments
-    fn into_arguments() -> Str
+    fn into_arguments() -> DB::Arguments
+      lowers_to
+        rust: "{{self}}.into_arguments({{args}})"
 
   trait Acquire
-    fn acquire() -> BoxFuture<Res!<Str>>
-    fn begin() -> BoxFuture<Res!<Transaction<Str>>>
+    fn acquire() -> BoxFuture<Res!<Self::Connection>>
+      lowers_to
+        rust: "{{self}}.acquire({{args}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn begin() -> BoxFuture<Res!<Transaction<Self::Database>>>
+      lowers_to
+        rust: "{{self}}.begin({{args}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
 
   trait Connection
-    fn close() -> Str
-    fn ping() -> Str
-    fn begin() -> Str
-    fn begin_with(statement: Str) -> Str
+    fn close() -> BoxFuture<Res!<()>>
+      lowers_to
+        rust: "{{self}}.close({{args}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn ping() -> BoxFuture<Res!<()>>
+      lowers_to
+        rust: "{{self}}.ping({{args}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn begin() -> BoxFuture<Res!<Transaction<Self::Database>>>
+      lowers_to
+        rust: "{{self}}.begin({{args}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn begin_with(statement: Unknown) -> BoxFuture<Res!<Transaction<Self::Database>>>
+      lowers_to
+        rust: "{{self}}.begin_with({{statement}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
     fn is_in_transaction() -> Bool
-    fn transaction(callback: F) -> Str
-    fn cached_statements_size() -> usize
-    fn clear_cached_statements() -> Str
+      lowers_to
+        rust: "{{self}}.is_in_transaction({{args}})"
+    fn transaction(callback: F) -> BoxFuture<Res!<R>>
+      lowers_to
+        rust: "{{self}}.transaction({{callback}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn cached_statements_size() -> Int
+      lowers_to
+        rust: "{{self}}.cached_statements_size({{args}})"
+    fn clear_cached_statements() -> BoxFuture<Res!<()>>
+      lowers_to
+        rust: "{{self}}.clear_cached_statements({{args}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
     fn shrink_buffers()
-    fn connect(url: Str) -> Str
-    fn connect_with(options: Str) -> Str
+      lowers_to
+        rust: "{{self}}.shrink_buffers({{args}})"
+    fn connect(url: Str) -> BoxFuture<Res!<Self>>
+      lowers_to
+        rust: "sqlx::Connection::connect({{url}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn connect_with(options: Self::Options) -> BoxFuture<Res!<Self>>
+      lowers_to
+        rust: "sqlx::Connection::connect_with({{options}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
 
   trait ConnectOptions
     fn from_url(url: Url) -> Res!<Self>
+      lowers_to
+        rust: "sqlx::ConnectOptions::from_url({{url}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
     fn to_url_lossy() -> Url
-    fn connect() -> Str
+      lowers_to
+        rust: "{{self}}.to_url_lossy({{args}})"
+    fn connect() -> BoxFuture<Res!<Self::Connection>>
+      lowers_to
+        rust: "{{self}}.connect({{args}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
     fn log_statements(level: LevelFilter) -> Self
+      lowers_to
+        rust: "{{self}}.log_statements({{level}})"
     fn log_slow_statements(level: LevelFilter, duration: Duration) -> Self
+      lowers_to
+        rust: "{{self}}.log_slow_statements({{level}}, {{duration}})"
     fn disable_statement_logging() -> Self
+      lowers_to
+        rust: "{{self}}.disable_statement_logging({{args}})"
 
   trait SqlSafeStr
     fn into_sql_str() -> SqlStr
+      lowers_to
+        rust: "{{self}}.into_sql_str({{args}})"
 
   trait Execute
     fn sql() -> SqlStr
-    fn statement() -> Opt<Str>
-    fn take_arguments() -> Res!<Opt<Str>>
+      lowers_to
+        rust: "{{self}}.sql({{args}})"
+    fn statement() -> Opt<DB::Statement>
+      lowers_to
+        rust: "{{self}}.statement({{args}})"
+    fn take_arguments() -> Res!<Opt<DB::Arguments>>
+      lowers_to
+        rust: "{{self}}.take_arguments({{args}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
     fn persistent() -> Bool
+      lowers_to
+        rust: "{{self}}.persistent({{args}})"
 
   trait Executor
-    fn execute(query: E) -> BoxFuture<Res!<Str>>
-    fn execute_many(query: E) -> BoxStream<Res!<Str>>
-    fn fetch(query: E) -> BoxStream<Res!<Str>>
-    fn fetch_many(query: E) -> BoxStream<Res!<Either<Str, Str>>>
-    fn fetch_all(query: E) -> BoxFuture<Res!<List<Str>>>
-    fn fetch_one(query: E) -> BoxFuture<Res!<Str>>
-    fn fetch_optional(query: E) -> BoxFuture<Res!<Opt<Str>>>
-    fn prepare(query: SqlStr) -> BoxFuture<Res!<Str>>
-    fn prepare_with(sql: SqlStr, parameters: Str) -> BoxFuture<Res!<Str>>
+    fn execute(query: E) -> BoxFuture<Res!<Self::Database::QueryResult>>
+      lowers_to
+        rust: "{{self}}.execute({{query}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn execute_many(query: E) -> BoxStream<Res!<Self::Database::QueryResult>>
+      lowers_to
+        rust: "{{self}}.execute_many({{query}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn fetch(query: E) -> BoxStream<Res!<Self::Database::Row>>
+      lowers_to
+        rust: "{{self}}.fetch({{query}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn fetch_many(query: E) -> BoxStream<Res!<Either<Self::Database::QueryResult, Self::Database::Row>>>
+      lowers_to
+        rust: "{{self}}.fetch_many({{query}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn fetch_all(query: E) -> BoxFuture<Res!<List<Self::Database::Row>>>
+      lowers_to
+        rust: "{{self}}.fetch_all({{query}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn fetch_one(query: E) -> BoxFuture<Res!<Self::Database::Row>>
+      lowers_to
+        rust: "{{self}}.fetch_one({{query}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn fetch_optional(query: E) -> BoxFuture<Res!<Opt<Self::Database::Row>>>
+      lowers_to
+        rust: "{{self}}.fetch_optional({{query}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn prepare(query: SqlStr) -> BoxFuture<Res!<Self::Database::Statement>>
+      lowers_to
+        rust: "{{self}}.prepare({{query}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn prepare_with(sql: SqlStr, parameters: List<Self::Database::TypeInfo>) -> BoxFuture<Res!<Self::Database::Statement>>
+      lowers_to
+        rust: "{{self}}.prepare_with({{sql}}, {{parameters}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
 
   trait TransactionManager
-    fn begin(conn: Str, statement: Opt<SqlStr>) -> Str
-    fn commit(conn: Str) -> Str
-    fn rollback(conn: Str) -> Str
-    fn start_rollback(conn: Str)
-    fn get_transaction_depth(conn: Str) -> usize
+    fn begin(conn: Self::Database::Connection, statement: Opt<SqlStr>) -> BoxFuture<Res!<()>>
+      lowers_to
+        rust: "sqlx::TransactionManager::begin({{conn}}, {{statement}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn commit(conn: Self::Database::Connection) -> BoxFuture<Res!<()>>
+      lowers_to
+        rust: "sqlx::TransactionManager::commit({{conn}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn rollback(conn: Self::Database::Connection) -> BoxFuture<Res!<()>>
+      lowers_to
+        rust: "sqlx::TransactionManager::rollback({{conn}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+    fn start_rollback(conn: Self::Database::Connection)
+      lowers_to
+        rust: "sqlx::TransactionManager::start_rollback({{conn}})"
+    fn get_transaction_depth(conn: Self::Database::Connection) -> Int
+      lowers_to
+        rust: "sqlx::TransactionManager::get_transaction_depth({{conn}})"
 
   trait Decode
-    fn decode(value: Str) -> Res!<Self>
+    fn decode(value: DB::ValueRef) -> Res!<Self>
+      lowers_to
+        rust: "sqlx::Decode::decode({{value}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"

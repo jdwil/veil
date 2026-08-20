@@ -42,45 +42,11 @@ chrono.workspace = true
 tokio = { workspace = true }
 futures = "0.3"
 
-// ===== crates/veil_shared/src/register_handlers.rs =====
-//! CAP-003: generated Bus handler registry.
-//! Host calls `register_all` once to wire names → dispatch.
-
-/// All Bus message types exported by this workspace.
-pub const HANDLER_NAMES: &[&str] = &[
-    "CreateWidget",
-    "GetWidget",
-    "ListWidgets",
-    "run_saga",
-    "unwind",
-];
-
-/// Register every generated handler name with a host-supplied registrar.
-///
-/// The host provides the actual dispatch (ports / platform). This module
-/// only owns the name list so trampoline code never hardcodes it.
-pub fn register_all<F>(mut register: F)
-where
-F: FnMut(&'static str),
-{
-for name in HANDLER_NAMES {
-register(name);
-}
-}
-
-/// Number of handlers in this workspace.
-pub fn handler_count() -> usize {
-HANDLER_NAMES.len()
-}
-
 // ===== crates/veil_shared/src/lib.rs =====
 //! Shared types across all context crates — common errors and
 //! layer-provided infrastructure traits (routing ports, etc.).
 
 #![allow(unused_imports)]
-
-pub mod register_handlers;
-pub use register_handlers::{handler_count, register_all, HANDLER_NAMES};
 
 use async_trait::async_trait;
 use uuid::Uuid;
@@ -313,15 +279,15 @@ pub struct MemWidgetRepo {
 
 #[async_trait]
 impl WidgetRepo for MemWidgetRepo {
-    async fn find(&self, id: Uuid) -> Result<Option<Widget>, __VEIL_NO_ERROR_MODEL__> {
+    async fn find(&self, id: Uuid) -> Result<Option<Widget>, DomainError> {
         return Ok(None)
     }
 
-    async fn list_all(&self) -> Result<Vec<Widget>, __VEIL_NO_ERROR_MODEL__> {
+    async fn list_all(&self) -> Result<Vec<Widget>, DomainError> {
         return Ok(vec![])
     }
 
-    async fn save(&self, widget: Widget) -> Result<(), __VEIL_NO_ERROR_MODEL__> {
+    async fn save(&self, widget: Widget) -> Result<(), DomainError> {
         return Ok(())
     }
 

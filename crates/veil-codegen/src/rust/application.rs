@@ -1065,16 +1065,28 @@ pub fn emit_runtime_delegated(
     // the step methods reference). Used for boxing decisions (&dyn Trait).
     let mut trait_names: std::collections::HashSet<String> = std::collections::HashSet::new();
     trait_names.insert(step_trait.clone());
-    // Layer-declared types are traits (they live in veil_shared as async_trait).
-    for name in registry.declared_type_names() {
-        trait_names.insert(name);
+    // Layer-declared trait names (only actual traits, not structs/enums).
+    for decl in &registry.declarations {
+        for line in decl.lines() {
+            let t = line.trim();
+            if let Some(rest) = t.strip_prefix("trait ").or_else(|| t.strip_prefix("port ")) {
+                let name: String = rest
+                    .chars()
+                    .take_while(|c| c.is_alphanumeric() || *c == '_')
+                    .collect();
+                if !name.is_empty() {
+                    trait_names.insert(name);
+                }
+            }
+        }
     }
     if let Some(tc) = step_trait_construct {
         for m in &tc.methods {
             for p in &m.params {
                 if let TypeExpr::Named(n) = &p.type_expr
-                    && n.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
-                        trait_names.insert(n.clone());
+                    && n.chars().next().map(|c| c.is_uppercase()).unwrap_or(false)
+                    && trait_names.contains(n) {
+                        // Already known trait — keep it
                     }
             }
         }
@@ -1188,12 +1200,13 @@ pub fn emit_runtime_delegated(
     // Coordinator args: if the step trait's `action` method has a trait-typed
     // first param (e.g. `bus: Bus`), pass it from deps. Otherwise just pass steps.
     let coord = to_snake(&rt.coordinator);
+    let layer_routing_traits: std::collections::HashSet<String> = registry.routing_traits().into_iter().collect();
     let routing_param = lookup_method("action")
         .or_else(|| step_trait_construct.and_then(|t| t.methods.first()))
         .and_then(|m| {
             m.params.iter().find_map(|p| {
                 if let TypeExpr::Named(ty) = &p.type_expr
-                    && trait_names.contains(ty) && ty != step_trait {
+                    && layer_routing_traits.contains(ty) {
                         return Some(to_snake(&p.name));
                     }
                 None

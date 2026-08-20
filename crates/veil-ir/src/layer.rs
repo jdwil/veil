@@ -3274,7 +3274,7 @@ pub fn parse_layer_file(content: &str, layer_name: &str) -> Result<RawLayer, Str
             in_codegen = false;
             shared_emit_target = trimmed.strip_prefix("shared_emit ").unwrap().trim().to_string();
             in_shared_emit = true;
-            shared_emit_base_indent = indent + 4; // content inside is indented
+            shared_emit_base_indent = indent + 2; // content inside is one level deeper
             section = Section::None;
             continue;
         }

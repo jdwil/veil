@@ -842,7 +842,7 @@ pkg BusApp
     let reg_mod = project
         .files
         .iter()
-        .find(|f| f.path.ends_with("register_handlers.rs") || f.path.ends_with("lib.rs") && f.content.contains("register_all"))
+        .find(|f| f.path.ends_with("register_handlers.rs") || (f.path.ends_with("lib.rs") && f.content.contains("register_all")))
         .expect("register_handlers.rs");
     assert!(
         reg_mod.content.contains("pub fn register_all"),
