@@ -447,15 +447,15 @@ pub fn emit(expr: &RustExpr) -> String {
             }
         }
         RustExpr::For { binding, iterable, body, .. } => {
-            let body_str = body.iter().map(|e| format!("    {};", emit(e))).collect::<Vec<_>>().join("\n");
+            let body_str = emit_block(body, "    ");
             format!("for {} in {} {{\n{}\n}}", binding, emit(iterable), body_str)
         }
         RustExpr::While { condition, body, .. } => {
-            let body_str = body.iter().map(|e| format!("        {};", emit(e))).collect::<Vec<_>>().join("\n");
+            let body_str = emit_block(body, "        ");
             format!("while {} {{\n{}\n    }}", emit(condition), body_str)
         }
         RustExpr::Loop { body, .. } => {
-            let body_str = body.iter().map(|e| format!("    {};", emit(e))).collect::<Vec<_>>().join("\n");
+            let body_str = emit_block(body, "    ");
             format!("loop {{\n{}\n}}", body_str)
         }
     }
@@ -989,64 +989,65 @@ pub fn lower_to_rust(expr: &Expr, ctx: &GenCtx) -> RustExpr {
 
         // ── Migrated: for loop ───────────────────────────────────────────
         Expr::ForLoop { binding, index, iterable, body } => {
-            let text = {
-                let mut iter_str = expr_to_rust(iterable, ctx);
-                let elem_copy = element_type_of(iterable, ctx)
-                    .as_deref()
-                    .is_some_and(|t| rust_ty_is_copy(t) || rust_ty_is_unit_enum(t, ctx));
-                let iterable_is_call = matches!(iterable.as_ref(), Expr::Call(_));
-                if !elem_copy
-                    && !iterable_is_call
-                    && !iter_str.starts_with('&')
-                    && !iter_str.ends_with(".iter()")
-                    && !iter_str.ends_with(".into_iter()")
+            let mut iter_str = expr_to_rust(iterable, ctx);
+            let elem_copy = element_type_of(iterable, ctx)
+                .as_deref()
+                .is_some_and(|t| rust_ty_is_copy(t) || rust_ty_is_unit_enum(t, ctx));
+            let iterable_is_call = matches!(iterable.as_ref(), Expr::Call(_));
+            if !elem_copy
+                && !iterable_is_call
+                && !iter_str.starts_with('&')
+                && !iter_str.ends_with(".iter()")
+                && !iter_str.ends_with(".into_iter()")
+            {
+                let base = iter_str
+                    .strip_suffix(".clone()")
+                    .unwrap_or(iter_str.as_str());
+                iter_str = format!("&{base}");
+            } else if matches!(iterable.as_ref(), Expr::FieldAccess(_, _))
+                && !iter_str.ends_with(".clone()")
+                && !iter_str.ends_with(".iter()")
+            {
+                iter_str = format!("{iter_str}.clone()");
+            }
+            let bind = if let Some(idx) = index {
+                format!("({}, {})", idx, binding)
+            } else {
+                binding.clone()
+            };
+            let mut body_ctx = ctx.clone_for_inference();
+            body_ctx.locals.insert(binding.clone());
+            if let Some(elem) = element_type_of(iterable, ctx) {
+                body_ctx.local_types.insert(binding.clone(), elem);
+            }
+            if !elem_copy && iter_str.starts_with('&') {
+                body_ctx.ref_elem_locals.insert(binding.clone());
+            }
+            if let Some(idx) = index {
+                body_ctx.locals.insert(idx.clone());
+            }
+            body_ctx.mut_locals.extend(analyze_mut_locals(body));
+            let enumerate = if index.is_some() { ".enumerate()" } else { "" };
+            let iter_expr = if let Expr::Ident(name) = iterable.as_ref() {
+                if ctx
+                    .local_type(name)
+                    .map(is_option_type)
+                    .unwrap_or(false)
                 {
-                    let base = iter_str
-                        .strip_suffix(".clone()")
-                        .unwrap_or(iter_str.as_str());
-                    iter_str = format!("&{base}");
-                } else if matches!(iterable.as_ref(), Expr::FieldAccess(_, _))
-                    && !iter_str.ends_with(".clone()")
-                    && !iter_str.ends_with(".iter()")
-                {
-                    iter_str = format!("{iter_str}.clone()");
-                }
-                let bind = if let Some(idx) = index {
-                    format!("({}, {})", idx, binding)
-                } else {
-                    binding.clone()
-                };
-                let mut body_ctx = ctx.clone_for_inference();
-                body_ctx.locals.insert(binding.clone());
-                if let Some(elem) = element_type_of(iterable, ctx) {
-                    body_ctx.local_types.insert(binding.clone(), elem);
-                }
-                if !elem_copy && iter_str.starts_with('&') {
-                    body_ctx.ref_elem_locals.insert(binding.clone());
-                }
-                if let Some(idx) = index {
-                    body_ctx.locals.insert(idx.clone());
-                }
-                body_ctx.mut_locals.extend(analyze_mut_locals(body));
-                let body_str = emit_tracked_block(body, &body_ctx, "    ");
-                let enumerate = if index.is_some() { ".enumerate()" } else { "" };
-                let iter_expr = if let Expr::Ident(name) = iterable.as_ref() {
-                    if ctx
-                        .local_type(name)
-                        .map(is_option_type)
-                        .unwrap_or(false)
-                    {
-                        format!("{iter_str}.unwrap_or_default()")
-                    } else {
-                        iter_str
-                    }
+                    format!("{iter_str}.unwrap_or_default()")
                 } else {
                     iter_str
-                };
-                format!("for {bind} in {iter_expr}{enumerate} {{\n{body_str}\n}}")
+                }
+            } else {
+                iter_str
             };
-            RustExpr::Raw {
-                text,
+            let iterable_final = format!("{iter_expr}{enumerate}");
+            // Lower body with the custom body_ctx
+            let body_nodes = lower_block_with_ctx(body, &body_ctx);
+            RustExpr::For {
+                binding: bind,
+                iterable: Box::new(RustExpr::Raw { text: iterable_final, ty: None }),
+                body: body_nodes,
                 ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
             }
         }
@@ -1508,6 +1509,29 @@ fn lower_value_block(body: &[Expr], ctx: &GenCtx) -> Vec<RustExpr> {
                 body_ctx.locals.insert(name.clone());
                 if let Some(t) = infer_expr_type(rhs, &body_ctx) {
                     body_ctx.local_types.insert(name.clone(), t);
+                }
+            }
+        }
+        result.push(node);
+    }
+    result
+}
+
+/// Like lower_block but takes a pre-configured body context.
+/// Used by ForLoop/WhileLoop which set up custom contexts (element types,
+/// ref_elem_locals, etc.) before lowering the body.
+fn lower_block_with_ctx(body: &[Expr], body_ctx: &GenCtx) -> Vec<RustExpr> {
+    use super::inference::infer_expr_type;
+
+    let mut ctx = body_ctx.clone_for_inference();
+    let mut result = Vec::new();
+    for e in body {
+        let node = lower_to_rust(e, &ctx);
+        if let Expr::Assign(name, rhs, _) | Expr::MutAssign(name, rhs, _) = e {
+            if !name.contains('.') {
+                ctx.locals.insert(name.clone());
+                if let Some(t) = infer_expr_type(rhs, &ctx) {
+                    ctx.local_types.insert(name.clone(), t);
                 }
             }
         }
