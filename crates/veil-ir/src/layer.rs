@@ -5251,4 +5251,40 @@ pkg test v1
         let ts_tpl = spec.lowers_to.get("typescript").expect("typescript template");
         assert_eq!(ts_tpl, "export interface {{name}} {}");
     }
+
+    #[test]
+    fn parse_inline_has_field_requirement() {
+        let src = r#"pkg test v1
+  construct Entity
+    kw ent
+    mt struct
+    has id: Id
+    has tenant_id: Id
+"#;
+        let mut reg = LayerRegistry::builtin();
+        reg.load_content("test", src).expect("layer should load");
+        let spec = reg.construct("ent").expect("Entity spec");
+        assert_eq!(spec.required_fields.len(), 2);
+        assert_eq!(spec.required_fields[0], ("id".to_string(), "Id".to_string()));
+        assert_eq!(spec.required_fields[1], ("tenant_id".to_string(), "Id".to_string()));
+    }
+
+    #[test]
+    fn has_block_does_not_become_required_field() {
+        // `has` alone (block syntax) should NOT create required_fields.
+        // Indent construct inside `pkg` so that `has` block contents are > indent 4.
+        let src = r#"pkg test v1
+  construct Aggregate
+    kw agg
+    mt struct
+    has
+      root: struct
+      fn[]
+"#;
+        let mut reg = LayerRegistry::builtin();
+        reg.load_content("test", src).expect("layer should load");
+        let spec = reg.construct("agg").expect("Aggregate spec");
+        assert!(spec.required_fields.is_empty(), "block `has` should not produce required_fields");
+        assert!(spec.contains.iter().any(|c| c.starts_with("root")), "root should be in contains: {:?}", spec.contains);
+    }
 }

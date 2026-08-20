@@ -613,4 +613,93 @@ items: vec![TopLevelItem::Construct(root)],
             result.diagnostics
         );
     }
+
+    // ─── Required fields (has field: Type) ─────────────────────────────
+
+    #[test]
+    fn entity_without_required_id_emits_diagnostic() {
+        let mut s = spec("ent", "Entity", Shape::Struct, &[]);
+        s.required_fields = vec![("id".to_string(), "Id".to_string())];
+        let reg = test_registry(vec![s]);
+        // Entity with no id field
+        let ent = Construct::new(
+            "ent",
+            "Entity",
+            Shape::Struct,
+            "Customer".into(),
+            Span::new(0, 0),
+        );
+        let result = check_solution(&sol_with(ent), &reg);
+        let d = result
+            .diagnostics
+            .iter()
+            .find(|d| d.code == "required_field")
+            .expect("required_field diagnostic should be emitted");
+        assert!(d.message.contains("Customer"), "{}", d.message);
+        assert!(d.message.contains("id: Id"), "{}", d.message);
+    }
+
+    #[test]
+    fn entity_with_required_id_passes() {
+        let mut s = spec("ent", "Entity", Shape::Struct, &[]);
+        s.required_fields = vec![("id".to_string(), "Id".to_string())];
+        let reg = test_registry(vec![s]);
+        // Entity with id field
+        let mut ent = Construct::new(
+            "ent",
+            "Entity",
+            Shape::Struct,
+            "Customer".into(),
+            Span::new(0, 0),
+        );
+        ent.fields.push(Field {
+            annotations: Vec::new(),
+            name: "id".to_string(),
+            type_expr: TypeExpr::Named("Id".into()),
+            default_expr: None,
+            span: Span::new(0, 0),
+        });
+        let result = check_solution(&sol_with(ent), &reg);
+        assert!(
+            !result.diagnostics.iter().any(|d| d.code == "required_field"),
+            "should not emit required_field diagnostic when field is present: {:?}",
+            result.diagnostics
+        );
+    }
+
+    #[test]
+    fn aggregate_with_id_in_block_passes() {
+        let mut s = spec("agg", "Aggregate", Shape::Struct, &[]);
+        s.required_fields = vec![("id".to_string(), "Id".to_string())];
+        let reg = test_registry(vec![s]);
+        // Aggregate with id in root block (not top-level fields)
+        let mut agg = Construct::new(
+            "agg",
+            "Aggregate",
+            Shape::Struct,
+            "Order".into(),
+            Span::new(0, 0),
+        );
+        agg.blocks.push(NamedBlock {
+            keyword: "root".into(),
+            shape: Shape::Struct,
+            name: None,
+            fields: vec![Field {
+                annotations: Vec::new(),
+                name: "id".to_string(),
+                type_expr: TypeExpr::Named("Id".into()),
+                default_expr: None,
+                span: Span::new(0, 0),
+            }],
+            variants: Vec::new(),
+            transitions: Vec::new(),
+            span: Span::new(0, 0),
+        });
+        let result = check_solution(&sol_with(agg), &reg);
+        assert!(
+            !result.diagnostics.iter().any(|d| d.code == "required_field"),
+            "should find id in named block: {:?}",
+            result.diagnostics
+        );
+    }
 }
