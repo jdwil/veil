@@ -268,6 +268,17 @@ pub struct ConstructSpec {
     /// `has` field names that are config/protocol keys (not domain types).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub config_keys: Vec<String>,
+    /// Required fields declared by the layer via `has field_name: TypeName`.
+    /// At check time, the engine validates that instances of this construct
+    /// include these fields. The engine does NOT auto-generate them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub required_fields: Vec<(String, String)>,
+    /// Per-target lowering templates (e.g. `"rust"` → template string).
+    /// When present for a target, the backend uses this template INSTEAD of
+    /// its default shape-based emission. Variables: `{{name}}`, `{{subkind}}`,
+    /// `{{for field in fields}}...{{end}}`, `{{for method in methods}}...{{end}}`.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub lowers_to: HashMap<String, String>,
 }
 
 /// Runtime binding for a delegated fn-shaped construct (e.g. `saga`).
@@ -722,6 +733,8 @@ impl LayerRegistry {
                 presentation: Default::default(),
                 roles: Vec::new(),
                 config_keys: Vec::new(),
+                required_fields: Vec::new(),
+                lowers_to: HashMap::new(),
             });
         }
         reg.layers.push("core".to_string());
@@ -1068,6 +1081,14 @@ impl LayerRegistry {
         self.spec_for_construct(c)
             .map(|s| s.config_keys.as_slice())
             .unwrap_or(&[])
+    }
+
+    /// Layer-declared lowering template for a construct (by target).
+    /// When present, the backend uses this template INSTEAD of default emission.
+    pub fn construct_lowers_to(&self, c: &crate::ast::Construct, target: &str) -> Option<&str> {
+        self.spec_for_construct(c)
+            .and_then(|spec| spec.lowers_to.get(target))
+            .map(|s| s.as_str())
     }
 
     /// All constructs in `sol` whose spec has `role`.
@@ -2791,6 +2812,9 @@ pub fn parse_layer_file(content: &str, layer_name: &str) -> Result<RawLayer, Str
     // In-progress `view` under `present` (flushed on next view / role / section).
     let mut present_view: Option<crate::presentation::ViewSpec> = None;
     let mut errors: Vec<String> = Vec::new();
+    // Multi-line lowers_to template accumulator (triple-quoted strings).
+    let mut lowers_to_target: Option<String> = None;
+    let mut lowers_to_lines: Vec<String> = Vec::new();
 
     let flush_present_view = |item: &mut Option<Item>,
                               view: &mut Option<crate::presentation::ViewSpec>| {
@@ -2802,6 +2826,11 @@ pub fn parse_layer_file(content: &str, layer_name: &str) -> Result<RawLayer, Str
     for line in content.lines() {
         let trimmed = line.trim();
         if trimmed.is_empty() || trimmed.starts_with('#') {
+            // Inside multi-line lowers_to: preserve blank lines and #-lines (code).
+            if lowers_to_target.is_some() {
+                lowers_to_lines.push(line.to_string());
+                continue;
+            }
             // Blank lines inside declare blocks are preserved
             if in_declare && !current_decl_lines.is_empty() {
                 current_decl_lines.push(String::new());
@@ -2824,6 +2853,25 @@ pub fn parse_layer_file(content: &str, layer_name: &str) -> Result<RawLayer, Str
             continue;
         }
         let indent = line.len() - line.trim_start().len();
+
+        // Accumulating a multi-line lowers_to template (inside triple-quotes).
+        if lowers_to_target.is_some() {
+            if trimmed == "\"\"\"" {
+                // End of multi-line template — flush.
+                let template = lowers_to_lines.join("\n");
+                let target = lowers_to_target.take().unwrap();
+                lowers_to_lines.clear();
+                if let Some(item) = current.as_mut() {
+                    match item {
+                        Item::Construct(c) => { c.lowers_to.insert(target, template); }
+                        Item::Statement(s) => { s.lowers_to.insert(target, template); }
+                    }
+                }
+            } else {
+                lowers_to_lines.push(line.to_string());
+            }
+            continue;
+        }
 
         // Handle `declare` section: accumulate raw VEIL source text.
         // Must clear other top-level sections first: `prompt`/`codegen` leave
@@ -3020,6 +3068,8 @@ pub fn parse_layer_file(content: &str, layer_name: &str) -> Result<RawLayer, Str
                 presentation: Default::default(),
                 roles: Vec::new(),
                 config_keys: Vec::new(),
+                required_fields: Vec::new(),
+                lowers_to: HashMap::new(),
             }));
             section = Section::None;
             present_view = None;
@@ -3221,13 +3271,23 @@ pub fn parse_layer_file(content: &str, layer_name: &str) -> Result<RawLayer, Str
                 }
             }
             Section::LowersTo => {
-                // Lines: `rust: "template…"` or `typescript: "…"`
-                if let Item::Statement(s) = item {
-                    if let Some((target, rest)) = trimmed.split_once(':') {
-                        let target = target.trim().to_string();
-                        let template = unquote(rest.trim());
+                // Lines: `rust: "template…"` or `rust: """` (multi-line)
+                if let Some((target, rest)) = trimmed.split_once(':') {
+                    let target = target.trim().to_string();
+                    let rest = rest.trim();
+                    if rest == "\"\"\"" || rest.starts_with("\"\"\"") {
+                        // Start of multi-line triple-quoted template.
+                        // If the line is `rust: """content` (rare), we'd need to
+                        // handle inline start — but typical is just `rust: """`
+                        lowers_to_target = Some(target);
+                        lowers_to_lines.clear();
+                    } else {
+                        let template = unquote(rest);
                         if !target.is_empty() && !template.is_empty() {
-                            s.lowers_to.insert(target, template);
+                            match item {
+                                Item::Construct(c) => { c.lowers_to.insert(target, template); }
+                                Item::Statement(s) => { s.lowers_to.insert(target, template); }
+                            }
                         }
                     }
                 }
@@ -3307,6 +3367,15 @@ pub fn parse_layer_file(content: &str, layer_name: &str) -> Result<RawLayer, Str
                         c.dg = v.trim().to_string();
                     } else if trimmed == "au" {
                         c.au = true;
+                    } else if let Some(v) = trimmed.strip_prefix("has ") {
+                        // `has field_name: TypeName` — layer-required field declaration.
+                        if let Some((name, ty)) = v.split_once(':') {
+                            let name = name.trim().to_string();
+                            let ty = ty.trim().to_string();
+                            if !name.is_empty() && !ty.is_empty() {
+                                c.required_fields.push((name, ty));
+                            }
+                        }
                     } else if let Some(v) = trimmed.strip_prefix("role ") {
                         for role in parse_construct_roles(v) {
                             if !c.roles.iter().any(|r| r == &role) {
