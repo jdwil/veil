@@ -129,6 +129,12 @@ pub fn lower_to_ts(expr: &Expr, ctx: &GenCtx) -> TsExpr {
             lower_while_let(inner, body, ctx)
         }
 
+        // ── Batch 9: Calls ────────────────────────────────────────────────
+        Expr::Call(call) => lower_call(call, ctx),
+
+        // ── Batch 10: Actions ────────────────────────────────────────────
+        Expr::Action(action) => lower_action(action, ctx),
+
         // ── Fallback: delegate to old string-based codegen ───────────────
         _ => TsExpr::Raw(expr_to_ts(expr, 0)),
     }
@@ -578,6 +584,9 @@ fn veil_type_str_to_ts(type_str: &str) -> TsType {
     // Fallback: named type
     TsType::Named(type_str.to_string())
 }
+
+mod calls;
+use calls::{lower_call, lower_action};
 
 // ─── camelCase Helper ────────────────────────────────────────────────────────
 

@@ -1740,3 +1740,608 @@ fn lower_block_multiple_stmts() {
     assert_eq!(emit_ts(&result[1]), "const y = 2");
     assert_eq!(emit_ts(&result[2]), "return x + y");
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Batch 9 + 10: Call & Action Lowering Tests
+// ═══════════════════════════════════════════════════════════════════════════════
+
+use veil_ir::ast::{ActionExpr, CallExpr};
+use veil_ir::layer::{Shape, StmtShape};
+use std::collections::HashSet;
+
+/// Helper: create a GenCtx with trait shapes registered.
+fn ctx_with_trait(name: &str) -> GenCtx {
+    let mut shapes = HashMap::new();
+    shapes.insert(name.to_string(), Shape::Trait);
+    GenCtx::new(shapes)
+}
+
+/// Helper: create a GenCtx with a struct shape registered.
+fn ctx_with_struct(name: &str) -> GenCtx {
+    let mut shapes = HashMap::new();
+    shapes.insert(name.to_string(), Shape::Struct);
+    GenCtx::new(shapes)
+}
+
+/// Helper: create a GenCtx with routing traits configured.
+fn ctx_with_routing(trait_name: &str) -> GenCtx {
+    let mut shapes = HashMap::new();
+    shapes.insert(trait_name.to_string(), Shape::Trait);
+    let mut ctx = GenCtx::new(shapes);
+    ctx.routing.routing_traits.insert(trait_name.to_string());
+    ctx.routing.envelope_routing = true;
+    ctx
+}
+
+// ─── Trait Dependency Calls ──────────────────────────────────────────────────
+
+#[test]
+fn lower_trait_dep_call_basic() {
+    let call = CallExpr {
+        target: "CustomerRepo".to_string(),
+        method: "find".to_string(),
+        args: vec![Expr::Ident("id".to_string())],
+        receiver: None,
+        sugar: None,
+        span: Span::new(0, 0),
+    };
+    let ctx = ctx_with_trait("CustomerRepo");
+    let ts = lower_to_ts(&Expr::Call(call), &ctx);
+    let output = emit_ts(&ts);
+    assert_eq!(output, "await deps.customerRepo.find(id)");
+}
+
+#[test]
+fn lower_trait_dep_call_bang_stripped() {
+    let call = CallExpr {
+        target: "OrderRepo".to_string(),
+        method: "save!".to_string(),
+        args: vec![Expr::Ident("order".to_string())],
+        receiver: None,
+        sugar: None,
+        span: Span::new(0, 0),
+    };
+    let ctx = ctx_with_trait("OrderRepo");
+    let ts = lower_to_ts(&Expr::Call(call), &ctx);
+    let output = emit_ts(&ts);
+    // Bang stripped — TS doesn't have it
+    assert_eq!(output, "await deps.orderRepo.save(order)");
+}
+
+#[test]
+fn lower_trait_dep_call_with_dep_field() {
+    let call = CallExpr {
+        target: "NotificationService".to_string(),
+        method: "send".to_string(),
+        args: vec![Expr::Ident("msg".to_string())],
+        receiver: None,
+        sugar: None,
+        span: Span::new(0, 0),
+    };
+    let mut ctx = ctx_with_trait("NotificationService");
+    ctx.dep_fields.insert("NotificationService".to_string(), "notifier".to_string());
+    let ts = lower_to_ts(&Expr::Call(call), &ctx);
+    let output = emit_ts(&ts);
+    assert_eq!(output, "await deps.notifier.send(msg)");
+}
+
+// ─── Struct Constructor Calls ────────────────────────────────────────────────
+
+#[test]
+fn lower_struct_ctor_with_fields() {
+    let call = CallExpr {
+        target: "Order".to_string(),
+        method: "new".to_string(),
+        args: vec![
+            Expr::Ident("id".to_string()),
+            Expr::Ident("customer_id".to_string()),
+            Expr::IntLit(100),
+        ],
+        receiver: None,
+        sugar: None,
+        span: Span::new(0, 0),
+    };
+    let mut ctx = ctx_with_struct("Order");
+    ctx.types.struct_fields.insert(
+        "Order".to_string(),
+        vec![
+            ("id".to_string(), "Str".to_string()),
+            ("customer_id".to_string(), "Str".to_string()),
+            ("total".to_string(), "Int".to_string()),
+        ],
+    );
+    let ts = lower_to_ts(&Expr::Call(call), &ctx);
+    let output = emit_ts(&ts);
+    assert_eq!(output, "{ id, customerId, total: 100 }");
+}
+
+#[test]
+fn lower_struct_ctor_no_field_metadata() {
+    let call = CallExpr {
+        target: "Point".to_string(),
+        method: "new".to_string(),
+        args: vec![Expr::IntLit(1), Expr::IntLit(2)],
+        receiver: None,
+        sugar: None,
+        span: Span::new(0, 0),
+    };
+    let ctx = ctx_with_struct("Point");
+    let ts = lower_to_ts(&Expr::Call(call), &ctx);
+    let output = emit_ts(&ts);
+    // Without field metadata, falls back to field0, field1
+    assert_eq!(output, "{ field0: 1, field1: 2 }");
+}
+
+// ─── Receiver Method Calls ───────────────────────────────────────────────────
+
+#[test]
+fn lower_clone_stripped() {
+    let call = CallExpr {
+        target: String::new(),
+        method: "clone".to_string(),
+        args: vec![],
+        receiver: Some(Box::new(Expr::Ident("user".to_string()))),
+        sugar: None,
+        span: Span::new(0, 0),
+    };
+    let ts = lower_to_ts(&Expr::Call(call), &test_ctx());
+    let output = emit_ts(&ts);
+    assert_eq!(output, "user");
+}
+
+#[test]
+fn lower_to_owned_stripped() {
+    let call = CallExpr {
+        target: String::new(),
+        method: "to_owned".to_string(),
+        args: vec![],
+        receiver: Some(Box::new(Expr::Ident("name".to_string()))),
+        sugar: None,
+        span: Span::new(0, 0),
+    };
+    let ts = lower_to_ts(&Expr::Call(call), &test_ctx());
+    let output = emit_ts(&ts);
+    assert_eq!(output, "name");
+}
+
+#[test]
+fn lower_is_some_to_not_null() {
+    let call = CallExpr {
+        target: String::new(),
+        method: "is_some".to_string(),
+        args: vec![],
+        receiver: Some(Box::new(Expr::Ident("maybe_user".to_string()))),
+        sugar: None,
+        span: Span::new(0, 0),
+    };
+    let ts = lower_to_ts(&Expr::Call(call), &test_ctx());
+    let output = emit_ts(&ts);
+    assert_eq!(output, "maybeUser !== null");
+}
+
+#[test]
+fn lower_is_none_to_eq_null() {
+    let call = CallExpr {
+        target: String::new(),
+        method: "is_none".to_string(),
+        args: vec![],
+        receiver: Some(Box::new(Expr::Ident("result".to_string()))),
+        sugar: None,
+        span: Span::new(0, 0),
+    };
+    let ts = lower_to_ts(&Expr::Call(call), &test_ctx());
+    let output = emit_ts(&ts);
+    assert_eq!(output, "result === null");
+}
+
+#[test]
+fn lower_unwrap_to_non_null_assertion() {
+    let call = CallExpr {
+        target: String::new(),
+        method: "unwrap".to_string(),
+        args: vec![],
+        receiver: Some(Box::new(Expr::Ident("value".to_string()))),
+        sugar: None,
+        span: Span::new(0, 0),
+    };
+    let ts = lower_to_ts(&Expr::Call(call), &test_ctx());
+    let output = emit_ts(&ts);
+    assert_eq!(output, "value!");
+}
+
+#[test]
+fn lower_len_to_length() {
+    let call = CallExpr {
+        target: String::new(),
+        method: "len".to_string(),
+        args: vec![],
+        receiver: Some(Box::new(Expr::Ident("items".to_string()))),
+        sugar: None,
+        span: Span::new(0, 0),
+    };
+    let ts = lower_to_ts(&Expr::Call(call), &test_ctx());
+    let output = emit_ts(&ts);
+    assert_eq!(output, "items.length");
+}
+
+#[test]
+fn lower_contains_to_includes() {
+    let call = CallExpr {
+        target: String::new(),
+        method: "contains".to_string(),
+        args: vec![Expr::StringLit("foo".to_string())],
+        receiver: Some(Box::new(Expr::Ident("tags".to_string()))),
+        sugar: None,
+        span: Span::new(0, 0),
+    };
+    let ts = lower_to_ts(&Expr::Call(call), &test_ctx());
+    let output = emit_ts(&ts);
+    assert_eq!(output, "tags.includes(\"foo\")");
+}
+
+#[test]
+fn lower_unwrap_or_to_nullish_coalesce() {
+    let call = CallExpr {
+        target: String::new(),
+        method: "unwrap_or".to_string(),
+        args: vec![Expr::StringLit("default".to_string())],
+        receiver: Some(Box::new(Expr::Ident("maybe_name".to_string()))),
+        sugar: None,
+        span: Span::new(0, 0),
+    };
+    let ts = lower_to_ts(&Expr::Call(call), &test_ctx());
+    let output = emit_ts(&ts);
+    assert_eq!(output, "maybeName ?? \"default\"");
+}
+
+#[test]
+fn lower_push_method() {
+    let call = CallExpr {
+        target: String::new(),
+        method: "push".to_string(),
+        args: vec![Expr::Ident("item".to_string())],
+        receiver: Some(Box::new(Expr::Ident("list".to_string()))),
+        sugar: None,
+        span: Span::new(0, 0),
+    };
+    let ts = lower_to_ts(&Expr::Call(call), &test_ctx());
+    let output = emit_ts(&ts);
+    assert_eq!(output, "list.push(item)");
+}
+
+#[test]
+fn lower_filter_with_closure() {
+    let call = CallExpr {
+        target: String::new(),
+        method: "filter".to_string(),
+        args: vec![Expr::Closure {
+            params: vec!["x".to_string()],
+            body: vec![Expr::FieldAccess(
+                Box::new(Expr::Ident("x".to_string())),
+                "active".to_string(),
+            )],
+        }],
+        receiver: Some(Box::new(Expr::Ident("items".to_string()))),
+        sugar: None,
+        span: Span::new(0, 0),
+    };
+    let ts = lower_to_ts(&Expr::Call(call), &test_ctx());
+    let output = emit_ts(&ts);
+    assert_eq!(output, "items.filter((x) => x.active)");
+}
+
+// ─── Bus / Routing Calls ─────────────────────────────────────────────────────
+
+#[test]
+fn lower_routing_invoke_with_struct_lit() {
+    let call = CallExpr {
+        target: "Bus".to_string(),
+        method: "invoke".to_string(),
+        args: vec![Expr::StructLit(
+            "ProcessOrder".to_string(),
+            vec![
+                ("order_id".to_string(), Expr::Ident("order_id".to_string())),
+                ("amount".to_string(), Expr::IntLit(500)),
+            ],
+        )],
+        receiver: None,
+        sugar: None,
+        span: Span::new(0, 0),
+    };
+    let ctx = ctx_with_routing("Bus");
+    let ts = lower_to_ts(&Expr::Call(call), &ctx);
+    let output = emit_ts(&ts);
+    assert_eq!(
+        output,
+        "await deps.bus.invoke(\"ProcessOrder\", { orderId, amount: 500 })"
+    );
+}
+
+#[test]
+fn lower_routing_dispatch_plain() {
+    let call = CallExpr {
+        target: "EventBus".to_string(),
+        method: "dispatch".to_string(),
+        args: vec![Expr::Ident("event".to_string())],
+        receiver: None,
+        sugar: None,
+        span: Span::new(0, 0),
+    };
+    let ctx = ctx_with_routing("EventBus");
+    let ts = lower_to_ts(&Expr::Call(call), &ctx);
+    let output = emit_ts(&ts);
+    assert_eq!(output, "await deps.bus.dispatch(\"EventBus\", event)");
+}
+
+// ─── Builtin Calls ───────────────────────────────────────────────────────────
+
+#[test]
+fn lower_id_new() {
+    let call = CallExpr {
+        target: "Id".to_string(),
+        method: "new".to_string(),
+        args: vec![],
+        receiver: None,
+        sugar: None,
+        span: Span::new(0, 0),
+    };
+    let ts = lower_to_ts(&Expr::Call(call), &test_ctx());
+    let output = emit_ts(&ts);
+    assert_eq!(output, "crypto.randomUUID()");
+}
+
+#[test]
+fn lower_uuid_new() {
+    let call = CallExpr {
+        target: "UUID".to_string(),
+        method: "new".to_string(),
+        args: vec![],
+        receiver: None,
+        sugar: None,
+        span: Span::new(0, 0),
+    };
+    let ts = lower_to_ts(&Expr::Call(call), &test_ctx());
+    let output = emit_ts(&ts);
+    assert_eq!(output, "crypto.randomUUID()");
+}
+
+#[test]
+fn lower_str_now_iso8601() {
+    let call = CallExpr {
+        target: "Str".to_string(),
+        method: "now_iso8601".to_string(),
+        args: vec![],
+        receiver: None,
+        sugar: None,
+        span: Span::new(0, 0),
+    };
+    let ts = lower_to_ts(&Expr::Call(call), &test_ctx());
+    let output = emit_ts(&ts);
+    assert_eq!(output, "new Date().toISOString()");
+}
+
+#[test]
+fn lower_int_now_unix() {
+    let call = CallExpr {
+        target: "Int".to_string(),
+        method: "now_unix".to_string(),
+        args: vec![],
+        receiver: None,
+        sugar: None,
+        span: Span::new(0, 0),
+    };
+    let ts = lower_to_ts(&Expr::Call(call), &test_ctx());
+    let output = emit_ts(&ts);
+    assert_eq!(output, "Math.floor(Date.now() / 1000)");
+}
+
+#[test]
+fn lower_json_parse() {
+    let call = CallExpr {
+        target: "Json".to_string(),
+        method: "parse".to_string(),
+        args: vec![Expr::Ident("raw_str".to_string())],
+        receiver: None,
+        sugar: None,
+        span: Span::new(0, 0),
+    };
+    let ts = lower_to_ts(&Expr::Call(call), &test_ctx());
+    let output = emit_ts(&ts);
+    assert_eq!(output, "JSON.parse(rawStr)");
+}
+
+#[test]
+fn lower_json_stringify() {
+    let call = CallExpr {
+        target: "Json".to_string(),
+        method: "stringify".to_string(),
+        args: vec![Expr::Ident("data".to_string())],
+        receiver: None,
+        sugar: None,
+        span: Span::new(0, 0),
+    };
+    let ts = lower_to_ts(&Expr::Call(call), &test_ctx());
+    let output = emit_ts(&ts);
+    assert_eq!(output, "JSON.stringify(data)");
+}
+
+#[test]
+fn lower_dt_now() {
+    let call = CallExpr {
+        target: "Dt".to_string(),
+        method: "now".to_string(),
+        args: vec![],
+        receiver: None,
+        sugar: None,
+        span: Span::new(0, 0),
+    };
+    let ts = lower_to_ts(&Expr::Call(call), &test_ctx());
+    let output = emit_ts(&ts);
+    assert_eq!(output, "new Date()");
+}
+
+#[test]
+fn lower_map_new() {
+    let call = CallExpr {
+        target: "Map".to_string(),
+        method: "new".to_string(),
+        args: vec![],
+        receiver: None,
+        sugar: None,
+        span: Span::new(0, 0),
+    };
+    let ts = lower_to_ts(&Expr::Call(call), &test_ctx());
+    let output = emit_ts(&ts);
+    assert_eq!(output, "new Map()");
+}
+
+#[test]
+fn lower_list_new() {
+    let call = CallExpr {
+        target: "List".to_string(),
+        method: "new".to_string(),
+        args: vec![],
+        receiver: None,
+        sugar: None,
+        span: Span::new(0, 0),
+    };
+    let ts = lower_to_ts(&Expr::Call(call), &test_ctx());
+    let output = emit_ts(&ts);
+    assert_eq!(output, "[]");
+}
+
+// ─── Action Lowering Tests ───────────────────────────────────────────────────
+
+#[test]
+fn lower_guard_action() {
+    let action = ActionExpr {
+        keyword: "guard".to_string(),
+        shape: StmtShape::If,
+        target: String::new(),
+        method: String::new(),
+        args: vec![],
+        named_args: vec![],
+        condition: Some(Box::new(Expr::BinaryOp(BinaryOpExpr {
+            left: Box::new(Expr::Ident("amount".to_string())),
+            op: BinOp::Gt,
+            right: Box::new(Expr::IntLit(0)),
+        }))),
+        message: Some("amount must be positive".to_string()),
+        result_binding: None,
+        body: vec![],
+        span: Span::new(0, 0),
+    };
+    let ts = lower_to_ts(&Expr::Action(action), &test_ctx());
+    let output = emit_ts(&ts);
+    assert!(output.contains("!(amount > 0)"), "output: {}", output);
+    assert!(output.contains("throw new Error(\"amount must be positive\")"), "output: {}", output);
+}
+
+#[test]
+fn lower_guard_action_with_args() {
+    let action = ActionExpr {
+        keyword: "guard".to_string(),
+        shape: StmtShape::If,
+        target: String::new(),
+        method: String::new(),
+        args: vec![
+            Expr::Ident("is_valid".to_string()),
+            Expr::StringLit("validation failed".to_string()),
+        ],
+        named_args: vec![],
+        condition: None,
+        message: None,
+        result_binding: None,
+        body: vec![],
+        span: Span::new(0, 0),
+    };
+    let ts = lower_to_ts(&Expr::Action(action), &test_ctx());
+    let output = emit_ts(&ts);
+    assert!(output.contains("!(isValid)"), "output: {}", output);
+    assert!(output.contains("throw new Error(\"validation failed\")"), "output: {}", output);
+}
+
+#[test]
+fn lower_dispatch_action() {
+    let action = ActionExpr {
+        keyword: "dispatch".to_string(),
+        shape: StmtShape::Call,
+        target: "OrderCreated".to_string(),
+        method: String::new(),
+        args: vec![],
+        named_args: vec![
+            ("order_id".to_string(), Expr::Ident("id".to_string())),
+        ],
+        condition: None,
+        message: None,
+        result_binding: None,
+        body: vec![],
+        span: Span::new(0, 0),
+    };
+    let ts = lower_to_ts(&Expr::Action(action), &test_ctx());
+    let output = emit_ts(&ts);
+    assert!(output.contains("await"), "output: {}", output);
+    assert!(output.contains("deps.bus"), "output: {}", output);
+    assert!(output.contains("dispatch"), "output: {}", output);
+}
+
+#[test]
+fn lower_action_with_result_binding() {
+    let action = ActionExpr {
+        keyword: "invoke".to_string(),
+        shape: StmtShape::Call,
+        target: "ProcessPayment".to_string(),
+        method: String::new(),
+        args: vec![Expr::Ident("payment".to_string())],
+        named_args: vec![],
+        condition: None,
+        message: None,
+        result_binding: Some("result".to_string()),
+        body: vec![],
+        span: Span::new(0, 0),
+    };
+    let ts = lower_to_ts(&Expr::Action(action), &test_ctx());
+    let output = emit_ts(&ts);
+    assert!(output.contains("const result"), "output: {}", output);
+    assert!(output.contains("await"), "output: {}", output);
+}
+
+// ─── Target method calls (local var methods) ─────────────────────────────────
+
+#[test]
+fn lower_target_method_call() {
+    let call = CallExpr {
+        target: "items".to_string(),
+        method: "map".to_string(),
+        args: vec![Expr::Closure {
+            params: vec!["x".to_string()],
+            body: vec![Expr::FieldAccess(
+                Box::new(Expr::Ident("x".to_string())),
+                "name".to_string(),
+            )],
+        }],
+        receiver: None,
+        sugar: None,
+        span: Span::new(0, 0),
+    };
+    let ts = lower_to_ts(&Expr::Call(call), &test_ctx());
+    let output = emit_ts(&ts);
+    assert_eq!(output, "items.map((x) => x.name)");
+}
+
+// ─── Free function calls ─────────────────────────────────────────────────────
+
+#[test]
+fn lower_free_function_call() {
+    let call = CallExpr {
+        target: "process_data".to_string(),
+        method: String::new(),
+        args: vec![Expr::Ident("input".to_string())],
+        receiver: None,
+        sugar: None,
+        span: Span::new(0, 0),
+    };
+    let ts = lower_to_ts(&Expr::Call(call), &test_ctx());
+    let output = emit_ts(&ts);
+    assert_eq!(output, "processData(input)");
+}
