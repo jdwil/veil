@@ -282,7 +282,7 @@ fn lower_builtin_call(call: &CallExpr, ctx: &GenCtx) -> Option<TsExpr> {
         .and_then(|targets| targets.get("typescript"))
     {
         let rendered = interpolate_call_template(template, call, ctx);
-        return Some(TsExpr::Raw(rendered));
+        return Some(TsExpr::LayerEmit(rendered));
     }
 
     // Also check for free-function calls (target used as fn name, empty method)
@@ -292,7 +292,7 @@ fn lower_builtin_call(call: &CallExpr, ctx: &GenCtx) -> Option<TsExpr> {
             .and_then(|targets| targets.get("typescript"))
         {
             let rendered = interpolate_call_template(template, call, ctx);
-            return Some(TsExpr::Raw(rendered));
+            return Some(TsExpr::LayerEmit(rendered));
         }
     }
 
@@ -419,7 +419,7 @@ pub(super) fn lower_action(action: &ActionExpr, ctx: &GenCtx) -> TsExpr {
     if let Some(spec) = ctx.statement_specs.get(&action.keyword) {
         if let Some(template) = spec.lowers_to.get("typescript") {
             let rendered = interpolate_action_template(template, action, spec, ctx);
-            let core = TsExpr::Raw(rendered);
+            let core = TsExpr::LayerEmit(rendered);
             return wrap_action_binding(action, core);
         }
         // Port.method fallback from spec
@@ -450,7 +450,7 @@ pub(super) fn lower_action(action: &ActionExpr, ctx: &GenCtx) -> TsExpr {
                 "/* TODO: lower action '{}' */ undefined",
                 action.keyword
             );
-            let core = TsExpr::Raw(fallback);
+            let core = TsExpr::LayerEmit(fallback);
             wrap_action_binding(action, core)
         }
     }
