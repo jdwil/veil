@@ -770,7 +770,7 @@ pub fn gen_struct_impl(c: &Construct, fields: &[&Field], registry: &LayerRegistr
                     "        if !({}) {{ return Err({}::{}(\"invariant violated\".into())); }}\n",
                     cond_rust,
                     err_type_name,
-                    registry.error_model.as_ref().and_then(|em| em.variant("validation")).unwrap_or("Validation"),
+                    registry.error_model.as_ref().and_then(|em| em.variant("validation")).expect("error_model must declare variant 'validation'"),
                 ));
             }
         }

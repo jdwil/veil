@@ -1204,9 +1204,9 @@ pub fn gen_local_harness_main(
 
     out.push_str(&harness_json_public_helper(modules, registry));
     if let Some(em) = &registry.error_model {
-        let not_found = em.variant("not_found").unwrap_or("NotFound");
-        let validation = em.variant("validation").unwrap_or("Validation");
-        let external = em.variant("external").unwrap_or("External");
+        let not_found = em.variant("not_found").expect("error_model must declare variant 'not_found'");
+        let validation = em.variant("validation").expect("error_model must declare variant 'validation'");
+        let external = em.variant("external").expect("error_model must declare variant 'external'");
         out.push_str(&harness_domain_error_status_helper_dynamic(&em.type_name, not_found, validation, external));
     } else {
         // Sentinel: check pipeline should have blocked compilation before reaching here.

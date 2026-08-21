@@ -813,9 +813,9 @@ pub fn generate_multi_package_harness(
     // Use error model from the first package (shared across workspace).
     let first_reg = packages.first().map(|(_, r)| *r);
     if let Some(reg) = first_reg.and_then(|r| r.error_model.as_ref()) {
-        let not_found = reg.variant("not_found").unwrap_or("NotFound");
-        let validation = reg.variant("validation").unwrap_or("Validation");
-        let external = reg.variant("external").unwrap_or("External");
+        let not_found = reg.variant("not_found").expect("error_model must declare variant 'not_found'");
+        let validation = reg.variant("validation").expect("error_model must declare variant 'validation'");
+        let external = reg.variant("external").expect("error_model must declare variant 'external'");
         main_rs.push_str(&harness_domain_error_status_helper_dynamic(&reg.type_name, not_found, validation, external));
     } else {
         main_rs.push_str(&harness_domain_error_status_helper_dynamic(

@@ -53,9 +53,9 @@ futures = "0.3"
     // blocks user projects from reaching this point, but test fixtures that
     // exercise non-error-model features may legitimately lack one.
     let (err_type, err_not_found, err_validation, err_external) = if let Some(em) = &registry.error_model {
-        let nf = em.variant("not_found").unwrap_or("NotFound").to_string();
-        let val = em.variant("validation").unwrap_or("Validation").to_string();
-        let ext = em.variant("external").unwrap_or("External").to_string();
+        let nf = em.variant("not_found").expect("error_model must declare variant 'not_found'").to_string();
+        let val = em.variant("validation").expect("error_model must declare variant 'validation'").to_string();
+        let ext = em.variant("external").expect("error_model must declare variant 'external'").to_string();
         (em.type_name.clone(), nf, val, ext)
     } else {
         ("__VEIL_NO_ERROR_MODEL__".to_string(), "__NO_NOT_FOUND__".to_string(), "__NO_VALIDATION__".to_string(), "__NO_EXTERNAL__".to_string())
