@@ -5,7 +5,7 @@
 use veil_ir::ast::{ActionExpr, CallExpr, Expr};
 use veil_ir::layer::StmtShape;
 use crate::expr::GenCtx;
-use super::super::expr::{TsBinOp, TsExpr, TsType};
+use super::super::expr::{TsBinOp, TsExpr, TsType, TsUnaryOp};
 use super::{lower_to_ts, to_camel_case};
 
 // ─── Batch 9: Calls ─────────────────────────────────────────────────────────
@@ -476,8 +476,11 @@ fn lower_guard_action(action: &ActionExpr, ctx: &GenCtx) -> TsExpr {
         })
         .unwrap_or_else(|| "precondition failed".to_string());
 
-    // Use Raw for the negated condition to ensure proper parenthesization
-    let negated_condition = TsExpr::Raw(format!("!({})", crate::ts::emit::emit_ts(&condition)));
+    // Structural negation — emit parenthesizes complex operands automatically
+    let negated_condition = TsExpr::UnaryOp {
+        op: TsUnaryOp::Not,
+        expr: Box::new(condition),
+    };
 
     TsExpr::If {
         condition: Box::new(negated_condition),

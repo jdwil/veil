@@ -79,7 +79,18 @@ fn emit_ts_indent(expr: &TsExpr, indent: usize) -> String {
         }
 
         TsExpr::UnaryOp { op, expr } => {
-            format!("{}{}", op.as_str(), emit_ts(expr))
+            let inner = emit_ts(expr);
+            let needs_parens = matches!(
+                expr.as_ref(),
+                TsExpr::BinOp { .. }
+                    | TsExpr::NullishCoalesce { .. }
+                    | TsExpr::UnaryOp { .. }
+            );
+            if needs_parens {
+                format!("{}({})", op.as_str(), inner)
+            } else {
+                format!("{}{}", op.as_str(), inner)
+            }
         }
 
         TsExpr::OptionalChain { base, field } => {
@@ -299,7 +310,12 @@ fn emit_ts_indent(expr: &TsExpr, indent: usize) -> String {
         }
 
         TsExpr::Return(value) => {
-            format!("return {}", emit_ts(value))
+            // `return undefined` → bare `return` (idiomatic TS)
+            if matches!(value.as_ref(), TsExpr::UndefinedLit) {
+                "return".to_string()
+            } else {
+                format!("return {}", emit_ts(value))
+            }
         }
 
         TsExpr::Await(expr) => {
@@ -329,6 +345,7 @@ fn emit_ts_indent(expr: &TsExpr, indent: usize) -> String {
 
         // ── Escape hatches ────────────────────────────────────────────────
         TsExpr::Raw(s) => s.clone(),
+        TsExpr::Noop => String::new(),
         TsExpr::LayerEmit(s) => s.clone(),
     }
 }
