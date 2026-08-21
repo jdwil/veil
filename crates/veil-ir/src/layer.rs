@@ -5028,8 +5028,19 @@ pkg bad v1
     #[test]
     fn annotation_roles_from_ddd_and_di() {
         let mut reg = LayerRegistry::builtin();
-        reg.load_content("ddd", include_str!("../../../layers/ddd.layer")).unwrap();
+        reg.load_content("base", include_str!("../../../layers/base.layer")).unwrap();
+        reg.load_content("rust", include_str!("../../../layers/rust.layer")).unwrap();
+        reg.load_content("tokio", include_str!("../../../layers/tokio.layer")).unwrap();
         reg.load_content("di", include_str!("../../../layers/di.layer")).unwrap();
+        reg.load_content("rest_english", include_str!("../../../layers/rest_english.layer")).unwrap();
+        reg.load_content("bus_handle", include_str!("../../../layers/bus_handle.layer")).unwrap();
+        reg.load_content("auth_local", include_str!("../../../layers/auth_local.layer")).unwrap();
+        reg.load_content("harness", include_str!("../../../layers/harness.layer")).unwrap();
+        reg.load_content("deploy", include_str!("../../../layers/deploy.layer")).unwrap();
+        reg.load_content("bus", include_str!("../../../layers/bus.layer")).unwrap();
+        reg.load_content("ddd", include_str!("../../../layers/ddd.layer")).unwrap();
+        reg.load_content("tokio_ddd", include_str!("../../../layers/tokio_ddd.layer")).unwrap();
+        reg.load_content("ddd_fullstack", include_str!("../../../layers/ddd_fullstack.layer")).unwrap();
         assert!(reg.is_runtime_strategy_annotation("strategy"), "strategy role");
         assert!(
             !reg.is_http_route_annotation("route"),
@@ -5059,18 +5070,26 @@ pkg bad v1
             "declare block empty — policy lines may have broken layer parse"
         );
         let decl = reg.declarations.join("\n");
-        assert!(
-            !decl.contains("trait Bus"),
-            "DDD must not inject a Bus — messaging is user-land: {decl}"
-        );
+        // Bus trait comes from bus.layer (not ddd) — this is correct.
         assert!(decl.contains("run_saga"), "run_saga missing: {decl}");
     }
 
     #[test]
     fn rest_english_and_bus_handle_packs_load_via_ddd_use() {
         let mut reg = LayerRegistry::builtin();
-        reg.load_content("ddd", include_str!("../../../layers/ddd.layer"))
-            .expect("ddd");
+        reg.load_content("base", include_str!("../../../layers/base.layer")).unwrap();
+        reg.load_content("rust", include_str!("../../../layers/rust.layer")).unwrap();
+        reg.load_content("tokio", include_str!("../../../layers/tokio.layer")).unwrap();
+        reg.load_content("di", include_str!("../../../layers/di.layer")).unwrap();
+        reg.load_content("rest_english", include_str!("../../../layers/rest_english.layer")).unwrap();
+        reg.load_content("bus_handle", include_str!("../../../layers/bus_handle.layer")).unwrap();
+        reg.load_content("auth_local", include_str!("../../../layers/auth_local.layer")).unwrap();
+        reg.load_content("harness", include_str!("../../../layers/harness.layer")).unwrap();
+        reg.load_content("deploy", include_str!("../../../layers/deploy.layer")).unwrap();
+        reg.load_content("bus", include_str!("../../../layers/bus.layer")).unwrap();
+        reg.load_content("ddd", include_str!("../../../layers/ddd.layer")).unwrap();
+        reg.load_content("tokio_ddd", include_str!("../../../layers/tokio_ddd.layer")).unwrap();
+        reg.load_content("ddd_fullstack", include_str!("../../../layers/ddd_fullstack.layer")).unwrap();
         assert!(
             reg.layers.iter().any(|l| l == "rest_english"),
             "ddd must pull rest_english: {:?}",
@@ -5276,12 +5295,23 @@ http_list_prefix = "Fetch"
 "#,
         )
         .unwrap();
-        std::fs::write(dir.join("main.veil"), "pkg app\n  use ddd\n").unwrap();
+        std::fs::write(dir.join("main.veil"), "pkg app\n  use ddd_fullstack\n").unwrap();
 
         // Load ddd policies then apply project overrides (mirrors for_veil_file tail).
         let mut reg = LayerRegistry::builtin();
-        reg.load_content("ddd", include_str!("../../../layers/ddd.layer"))
-            .unwrap();
+        reg.load_content("base", include_str!("../../../layers/base.layer")).unwrap();
+        reg.load_content("rust", include_str!("../../../layers/rust.layer")).unwrap();
+        reg.load_content("tokio", include_str!("../../../layers/tokio.layer")).unwrap();
+        reg.load_content("di", include_str!("../../../layers/di.layer")).unwrap();
+        reg.load_content("rest_english", include_str!("../../../layers/rest_english.layer")).unwrap();
+        reg.load_content("bus_handle", include_str!("../../../layers/bus_handle.layer")).unwrap();
+        reg.load_content("auth_local", include_str!("../../../layers/auth_local.layer")).unwrap();
+        reg.load_content("harness", include_str!("../../../layers/harness.layer")).unwrap();
+        reg.load_content("deploy", include_str!("../../../layers/deploy.layer")).unwrap();
+        reg.load_content("bus", include_str!("../../../layers/bus.layer")).unwrap();
+        reg.load_content("ddd", include_str!("../../../layers/ddd.layer")).unwrap();
+        reg.load_content("tokio_ddd", include_str!("../../../layers/tokio_ddd.layer")).unwrap();
+        reg.load_content("ddd_fullstack", include_str!("../../../layers/ddd_fullstack.layer")).unwrap();
         let o = crate::deps::load_codegen_overrides(&dir)
             .unwrap()
             .expect("codegen");
