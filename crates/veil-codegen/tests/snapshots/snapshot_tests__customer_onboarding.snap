@@ -855,8 +855,8 @@ chrono.workspace = true
 tracing.workspace = true
 serde_json.workspace = true
 veil_shared = { path = "../veil_shared" }
-identity = { path = "../identity" }
 billing = { path = "../billing" }
+identity = { path = "../identity" }
 
 // ===== crates/onboarding/src/lib.rs =====
 //! Onboarding — Orchestrator.

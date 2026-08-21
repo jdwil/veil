@@ -606,10 +606,26 @@ pub struct BusPolicy {
 }
 
 /// Which trait name triggers local AllowAllAuth emission (layer-configured).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthPolicy {
     #[serde(default)]
     pub service_trait: Option<String>,
+    /// Name of the generated mock impl struct (default: "AllowAllAuth").
+    /// The engine generates a struct with this name that implements every method
+    /// on the service_trait with Ok(default) returns.
+    #[serde(default = "default_mock_impl_name")]
+    pub mock_impl_name: String,
+}
+
+fn default_mock_impl_name() -> String { "AllowAllAuth".to_string() }
+
+impl Default for AuthPolicy {
+    fn default() -> Self {
+        AuthPolicy {
+            service_trait: None,
+            mock_impl_name: default_mock_impl_name(),
+        }
+    }
 }
 
 /// Layer-declared error model: type name + variant names for domain errors.

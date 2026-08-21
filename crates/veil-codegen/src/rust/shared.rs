@@ -2,7 +2,8 @@ use veil_ir::ast::*;
 use veil_ir::layer::LayerRegistry;
 use super::*;
 
-/// RT-008: AllowAllAuth from the configured auth trait + Principal-like structs.
+/// RT-008: Generate a mock impl for the configured auth service trait.
+/// The impl name comes from auth_policy.mock_impl_name (default: "AllowAllAuth").
 pub fn gen_allow_all_auth_impl(
     auth_trait: &Construct,
     structs: &[&Construct],
@@ -10,6 +11,7 @@ pub fn gen_allow_all_auth_impl(
     registry: &LayerRegistry,
 ) -> String {
     let trait_name = &auth_trait.name;
+    let mock_name = &registry.auth_policy.mock_impl_name;
     let err_type = registry.error_model.as_ref().map(|em| em.type_name.as_str()).unwrap_or("__VEIL_NO_ERROR_MODEL__");
     // Prefer a layer-provided struct referenced by any method return type.
     let principal = auth_trait
@@ -37,10 +39,10 @@ pub fn gen_allow_all_auth_impl(
     let mut out = format!(
         r#"/// Dev/local {trait_name} — allows all tokens and permissions (RT-008).
 /// Host harnesses replace this with Cognito/Auth0/etc. via `provided_by: runtime`.
-pub struct AllowAllAuth;
+pub struct {mock_name};
 
 #[async_trait]
-impl {trait_name} for AllowAllAuth {{
+impl {trait_name} for {mock_name} {{
 "#
     );
     for method in &auth_trait.methods {
