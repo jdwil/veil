@@ -10,7 +10,7 @@
 # examples/, import is deferred — guards below stay honest without hard DTO types.
 
 pkg WearTestApp
-  use ddd
+  use ddd_fullstack
   use di
   use wear_test
   use example_core

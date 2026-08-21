@@ -3,19 +3,20 @@ pkg ddd v1
   author "VEIL"
 
   # Policy packs (INV-001) — override with rest_rpc / veil.toml [codegen] / forks.
-  use rest_english
-  use bus_handle
-  use auth_local
   # After the flip: use ddd includes endpoint / deps / compose.
   # Opt-out: [harness] emit_bin = "never"
-  use harness
   # Pre-deploy hooks (role:deploy_hook). Keyword `hook` is layer spelling.
-  use deploy
 
   # INV-006: FK / identity conventions (opt-in; off without this block)
   identity_policy
     ref_suffix _id
     identity_field id
+
+  # Domain error model — the engine generates this enum in veil_shared::ports.
+  error_model DomainError
+    external External
+    not_found NotFound
+    validation Validation
 
   construct Context
     kw ctx
@@ -79,6 +80,7 @@ pkg ddd v1
     mt struct
     in Context
     desc "Aggregate root — consistency boundary with state, events, and commands"
+    has id: Id
     has
       root: struct
       state: enum
@@ -87,7 +89,6 @@ pkg ddd v1
       Command[]
     cst
       must_have root
-      has_identity id
       mutations_through_methods
     visual
       icon "🧩"
@@ -106,8 +107,7 @@ pkg ddd v1
     mt struct
     in Context
     desc "Entity — domain object with identity"
-    cst
-      has_identity id
+    has id: Id
     visual
       icon "🔑"
       color "#f43f5e"
@@ -123,7 +123,6 @@ pkg ddd v1
     in Context
     desc "Value Object — immutable, identity-less domain concept"
     cst
-      no_identity
       equality_by_value
       deny_calls trait
     visual

@@ -1,68 +1,179 @@
-stub schemars 1.2.1
+stub schemars 1.2.2
+  # @generated veil-stub-gen 1
+  # source crates.io
+  # surface full
+  # cargo_name schemars
+  # generated_at 2026-08-20T19:52:18Z
+  # rustdoc_fingerprint bfb476491867cdab
+  # Auto-inferred codegen policy from rustdoc (do not hand-edit; re-run veil stub-gen)
+  fn transform_subschemas(t: T, schema: Schema)
+    lowers_to
+      rust: "schemars::transform_subschemas({{t}}, {{schema}})"
 
   struct SchemaGenerator
+    path generate
     fn new(settings: SchemaSettings) -> SchemaGenerator
+      lowers_to
+        rust: "schemars::SchemaGenerator::new({{settings}})"
     fn settings() -> SchemaSettings
+      lowers_to
+        rust: "{{self}}.settings({{args}})"
     fn subschema_for() -> Schema
+      lowers_to
+        rust: "{{self}}.subschema_for({{args}})"
     fn definitions() -> JsonMap<Str, Value>
+      lowers_to
+        rust: "{{self}}.definitions({{args}})"
     fn definitions_mut() -> JsonMap<Str, Value>
+      lowers_to
+        rust: "{{self}}.definitions_mut({{args}})"
     fn take_definitions(apply_transforms: Bool) -> JsonMap<Str, Value>
-    fn transforms_mut() -> Str
+      lowers_to
+        rust: "{{self}}.take_definitions({{apply_transforms}})"
+    fn transforms_mut() -> Unknown
+      lowers_to
+        rust: "{{self}}.transforms_mut({{args}})"
     fn root_schema_for() -> Schema
+      lowers_to
+        rust: "{{self}}.root_schema_for({{args}})"
     fn into_root_schema_for() -> Schema
+      lowers_to
+        rust: "{{self}}.into_root_schema_for({{args}})"
     fn root_schema_for_value(value: T) -> Res!<Schema>
+      lowers_to
+        rust: "{{self}}.root_schema_for_value({{value}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
     fn into_root_schema_for_value(value: T) -> Res!<Schema>
+      lowers_to
+        rust: "{{self}}.into_root_schema_for_value({{value}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
     fn contract() -> Contract
+      lowers_to
+        rust: "{{self}}.contract({{args}})"
 
   struct SchemaSettings
+    path generate
     fn draft07() -> SchemaSettings
+      lowers_to
+        rust: "schemars::SchemaSettings::draft07({{args}})"
     fn draft2019_09() -> SchemaSettings
+      lowers_to
+        rust: "schemars::SchemaSettings::draft2019_09({{args}})"
     fn draft2020_12() -> SchemaSettings
+      lowers_to
+        rust: "schemars::SchemaSettings::draft2020_12({{args}})"
     fn openapi3() -> SchemaSettings
-    fn with(configure_fn: Str) -> Self
-    fn with_transform(transform: Str) -> Self
+      lowers_to
+        rust: "schemars::SchemaSettings::openapi3({{args}})"
+    fn with(configure_fn: Unknown) -> Self
+      lowers_to
+        rust: "{{self}}.with({{configure_fn}})"
+    fn with_transform(transform: Unknown) -> Self
+      lowers_to
+        rust: "{{self}}.with_transform({{transform}})"
     fn into_generator() -> SchemaGenerator
+      lowers_to
+        rust: "{{self}}.into_generator({{args}})"
     fn for_deserialize() -> Self
+      lowers_to
+        rust: "{{self}}.for_deserialize({{args}})"
     fn for_serialize() -> Self
+      lowers_to
+        rust: "{{self}}.for_serialize({{args}})"
 
   struct Schema
+    path schema
     fn new_ref(reference: Str) -> Self
+      lowers_to
+        rust: "schemars::Schema::new_ref({{reference}})"
     fn as_value() -> Value
+      lowers_to
+        rust: "{{self}}.as_value({{args}})"
     fn as_bool() -> Opt<Bool>
+      lowers_to
+        rust: "{{self}}.as_bool({{args}})"
     fn as_object() -> Opt<Map<Str, Value>>
+      lowers_to
+        rust: "{{self}}.as_object({{args}})"
     fn as_object_mut() -> Opt<Map<Str, Value>>
+      lowers_to
+        rust: "{{self}}.as_object_mut({{args}})"
     fn to_value() -> Value
+      lowers_to
+        rust: "{{self}}.to_value({{args}})"
     fn ensure_object() -> Map<Str, Value>
+      lowers_to
+        rust: "{{self}}.ensure_object({{args}})"
     fn insert(k: Str, v: Value) -> Opt<Value>
+      lowers_to
+        rust: "{{self}}.insert({{k}}, {{v}})"
     fn get(key: Q) -> Opt<Value>
+      lowers_to
+        rust: "{{self}}.get({{key}})"
     fn get_mut(key: Q) -> Opt<Value>
+      lowers_to
+        rust: "{{self}}.get_mut({{key}})"
     fn pointer(pointer: Str) -> Opt<Value>
+      lowers_to
+        rust: "{{self}}.pointer({{pointer}})"
     fn pointer_mut(pointer: Str) -> Opt<Value>
+      lowers_to
+        rust: "{{self}}.pointer_mut({{pointer}})"
     fn remove(key: Q) -> Opt<Value>
+      lowers_to
+        rust: "{{self}}.remove({{key}})"
 
   struct RecursiveTransform
+    path transform
 
   struct ReplaceBoolSchemas
+    path transform
 
   struct RemoveRefSiblings
+    path transform
 
   struct SetSingleExample
+    path transform
 
   struct ReplaceConstValue
+    path transform
 
   struct ReplacePrefixItems
+    path transform
 
   struct AddNullable
+    path transform
 
   struct ReplaceUnevaluatedProperties
+    path transform
 
   struct RestrictFormats
+    path transform
+
+  enum Contract
+    Deserialize
+    Serialize
+
+    fn is_deserialize() -> Bool
+      lowers_to
+        rust: "{{self}}.is_deserialize({{args}})"
+    fn is_serialize() -> Bool
+      lowers_to
+        rust: "{{self}}.is_serialize({{args}})"
 
   trait JsonSchema
     fn inline_schema() -> Bool
+      lowers_to
+        rust: "schemars::JsonSchema::inline_schema({{args}})"
     fn schema_name() -> Cow<Str>
+      lowers_to
+        rust: "schemars::JsonSchema::schema_name({{args}})"
     fn schema_id() -> Cow<Str>
+      lowers_to
+        rust: "schemars::JsonSchema::schema_id({{args}})"
     fn json_schema(generator: SchemaGenerator) -> Schema
+      lowers_to
+        rust: "schemars::JsonSchema::json_schema({{generator}})"
 
   trait Transform
     fn transform(schema: Schema)
+      lowers_to
+        rust: "{{self}}.transform({{schema}})"

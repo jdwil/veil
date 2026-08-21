@@ -1,0 +1,231 @@
+layer bus
+  desc "In-process message bus — JSON envelope routing between bounded contexts"
+  author "VEIL"
+  use rust
+
+  # ─── Bus Policy ─────────────────────────────────────────────────────────────
+  # Bus policies (strip_name_prefix) are declared by companion layers
+  # like bus_handle.layer. This layer provides the core bus mechanics.
+
+  # ─── Statements ─────────────────────────────────────────────────────────────
+  # invoke / dispatch / request are the bus verbs. Each targets Bus.<method>,
+  # making "Bus" a routing trait. The engine never knows this is a bus — it sees
+  # a trait dep call lowered by the lowers_to template.
+
+  statement invoke
+    mt Bus.invoke
+    desc "Invoke a command handler through the message bus and deserialize the response"
+    sem bus_invoke_command
+    requires_dep Bus
+    lowers_to
+      rust: """
+        serde_json::from_value(
+            deps.{dep}.invoke(
+                serde_json::json!({ "type": {target}, "payload": serde_json::to_value(&{args}).unwrap() })
+            ).await?
+        )?
+      """
+      typescript: "await this.{dep}.invoke({args})"
+    visual
+      icon "📨"
+      color "#6366f1"
+      label "Invoke"
+
+  statement dispatch
+    mt Bus.dispatch
+    desc "Dispatch a fire-and-forget message through the bus"
+    sem bus_dispatch_event
+    requires_dep Bus
+    lowers_to
+      rust: """
+        deps.{dep}.dispatch(
+            serde_json::json!({ "type": {target}, "payload": serde_json::to_value(&{args}).unwrap() })
+        ).await?
+      """
+      typescript: "await this.{dep}.dispatch({args})"
+    visual
+      icon "📤"
+      color "#8b5cf6"
+      label "Dispatch"
+
+  statement request
+    mt Bus.request
+    desc "Send a request through the bus and deserialize the typed response"
+    sem bus_request_query
+    requires_dep Bus
+    lowers_to
+      rust: """
+        serde_json::from_value(
+            deps.{dep}.request(
+                serde_json::json!({ "type": {target}, "payload": serde_json::to_value(&{args}).unwrap() })
+            ).await?
+        )?
+      """
+      typescript: "await this.{dep}.request({args})"
+    visual
+      icon "📬"
+      color "#06b6d4"
+      label "Request"
+
+  # ─── Declare Block ──────────────────────────────────────────────────────────
+  # Bus trait + InProcessBus implementation. Emitted into veil_shared so all
+  # context crates can depend on a single Bus definition.
+
+  declare
+    trait Bus: Send + Sync
+      invoke(envelope: Json) -> Res!<Json>
+      dispatch(envelope: Json) -> Res!
+      request(envelope: Json) -> Res!<Json>
+
+  # ─── Shared Emit ───────────────────────────────────────────────────────────
+  # Raw Rust code emitted into veil_shared when this layer is loaded.
+  # Provides InProcessBus (local harness implementation of Bus) and the
+  # handler registry (HANDLER_NAMES, register_all, handler_count).
+
+  shared_emit rust
+    // ─── InProcessBus (local harness, RT-001 / RT-004) ─────────────────────────
+    // Generated from bus.layer — in-process message bus for local multi-context runs.
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    use futures::future::BoxFuture;
+    use futures::FutureExt;
+
+    type BusHandler = Arc<
+        dyn Fn(serde_json::Value) -> BoxFuture<'static, Result<serde_json::Value, {error_type}>>
+            + Send
+            + Sync,
+    >;
+
+    /// In-process message bus for local multi-context runs.
+    #[derive(Clone, Default)]
+    pub struct InProcessBus {
+        handlers: Arc<std::sync::Mutex<HashMap<String, BusHandler>>>,
+    }
+
+    impl InProcessBus {
+        pub fn new() -> Self {
+            Self {
+                handlers: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            }
+        }
+
+        /// Register a handler for a message type name (manifest `handlers` keys).
+        pub fn register<F, Fut>(&self, name: impl Into<String>, f: F)
+        where
+            F: Fn(serde_json::Value) -> Fut + Send + Sync + 'static,
+            Fut: std::future::Future<Output = Result<serde_json::Value, {error_type}>> + Send + 'static,
+        {
+            let name = name.into();
+            let handler: BusHandler = Arc::new(move |v| f(v).boxed());
+            self.handlers
+                .lock()
+                .expect("bus lock")
+                .insert(name, handler);
+        }
+
+        fn lookup(&self, type_name: &str) -> Option<BusHandler> {
+            self.handlers
+                .lock()
+                .expect("bus lock")
+                .get(type_name)
+                .cloned()
+        }
+    }
+
+    #[async_trait]
+    impl Bus for InProcessBus {
+        async fn invoke(&self, envelope: serde_json::Value) -> Result<serde_json::Value, {error_type}> {
+            let type_name = envelope
+                .get("type")
+                .and_then(|t| t.as_str())
+                .unwrap_or("")
+                .to_string();
+            let handler = self
+                .lookup(&type_name)
+                .ok_or({error_type}::{not_found_variant})?;
+            handler(envelope).await
+        }
+
+        async fn dispatch(&self, envelope: serde_json::Value) -> Result<(), {error_type}> {
+            let type_name = envelope
+                .get("type")
+                .and_then(|t| t.as_str())
+                .unwrap_or("")
+                .to_string();
+            if let Some(handler) = self.lookup(&type_name) {
+                let payload = envelope.clone();
+                tokio::spawn(async move {
+                    let _ = handler(payload).await;
+                });
+            }
+            Ok(())
+        }
+
+        async fn request(&self, envelope: serde_json::Value) -> Result<serde_json::Value, {error_type}> {
+            let type_name = envelope
+                .get("type")
+                .and_then(|t| t.as_str())
+                .unwrap_or("")
+                .to_string();
+            let handler = self
+                .lookup(&type_name)
+                .ok_or({error_type}::{not_found_variant})?;
+            handler(envelope).await
+        }
+    }
+
+    // ─── Handler Registry (CAP-003) ───────────────────────────────────────────
+    // Host calls `register_all` once to wire names → dispatch.
+
+    /// All Bus message types exported by this workspace.
+    pub const HANDLER_NAMES: &[&str] = &[
+    {handler_names_entries}
+    ];
+
+    /// Register every generated handler name with a host-supplied registrar.
+    pub fn register_all<F>(mut register: F)
+    where
+        F: FnMut(&'static str),
+    {
+        for name in HANDLER_NAMES {
+            register(name);
+        }
+    }
+
+    /// Number of handlers in this workspace.
+    pub fn handler_count() -> usize {
+        HANDLER_NAMES.len()
+    }
+
+  # ─── LLM Prompt ─────────────────────────────────────────────────────────────
+  prompt
+    You are writing VEIL code that uses a message bus for inter-context communication.
+
+    ## Overview
+    The `bus` layer provides three verbs for cross-boundary messaging:
+    - `invoke` — send a command, await a typed response
+    - `dispatch` — fire-and-forget event
+    - `request` — send a query, await a typed response
+
+    ## Usage
+    1. Declare a `port Bus` in your domain (or the layer-provided `Bus` trait is used).
+    2. Inject `@dep bus: Bus` on services that send messages.
+    3. Use statement verbs in flow steps:
+       ```
+       invoke ProcessOrder { order_id: id, amount: total }
+       dispatch OrderShipped { order_id: id }
+       result = request GetBalance { account_id: acct }
+       ```
+
+    ## How it works
+    - Each verb serializes its arguments to JSON and routes through the Bus trait
+    - InProcessBus (generated into veil_shared) provides a local implementation
+    - The handler side deserializes the JSON envelope and calls the application fn
+    - For production: implement Bus with a real transport (NATS, SQS, RabbitMQ)
+
+    ## Constraints
+    - You MUST NOT call bus verbs without a Bus dep wired
+    - You SHOULD use `invoke` for commands that return a result
+    - You SHOULD use `dispatch` for events (fire-and-forget)
+    - Handler naming follows bus_policy if a companion layer declares one
+      (e.g., bus_handle strips "Handle" prefix: HandleCreateUser → CreateUser)

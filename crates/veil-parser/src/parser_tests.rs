@@ -9,8 +9,20 @@ mod tests {
     /// learns its entire vocabulary from layer content at runtime.
     fn ddd_registry() -> LayerRegistry {
         let mut reg = LayerRegistry::builtin();
+        reg.load_content("base", include_str!("../../../layers/base.layer")).unwrap();
+        reg.load_content("rust", include_str!("../../../layers/rust.layer")).unwrap();
+        reg.load_content("tokio", include_str!("../../../layers/tokio.layer")).unwrap();
+        reg.load_content("di", include_str!("../../../layers/di.layer")).unwrap();
+        reg.load_content("rest_english", include_str!("../../../layers/rest_english.layer")).unwrap();
+        reg.load_content("bus_handle", include_str!("../../../layers/bus_handle.layer")).unwrap();
+        reg.load_content("auth_local", include_str!("../../../layers/auth_local.layer")).unwrap();
+        reg.load_content("harness", include_str!("../../../layers/harness.layer")).unwrap();
+        reg.load_content("deploy", include_str!("../../../layers/deploy.layer")).unwrap();
+        reg.load_content("bus", include_str!("../../../layers/bus.layer")).unwrap();
         reg.load_content("ddd", include_str!("../../../layers/ddd.layer"))
             .expect("ddd layer should resolve");
+        reg.load_content("tokio_ddd", include_str!("../../../layers/tokio_ddd.layer")).unwrap();
+        reg.load_content("ddd_fullstack", include_str!("../../../layers/ddd_fullstack.layer")).unwrap();
         reg
     }
 
@@ -540,13 +552,20 @@ sol App
     fn test_stacked_layer_resolves_transitively() {
         // crm.layer maps pipeline->ctx->mod and lead->agg->struct.
         let mut reg = LayerRegistry::builtin();
+        reg.load_content("base", include_str!("../../../layers/base.layer"))
+            .expect("base layer");
         reg.load_content("ddd", include_str!("../../../layers/ddd.layer"))
             .expect("ddd layer");
         reg.load_content("crm", include_str!("../../../examples/crm.layer"))
             .expect("crm layer");
 
+        // Debug: what constructs are registered?
+        let kws: Vec<_> = reg.constructs.iter().map(|c| format!("{}→{}", c.keyword, c.name)).collect();
+
         let src = "\
-sol Sales
+pkg Sales
+  use ddd
+  use crm
   pipeline Outbound
     group domain
       lead Prospect
@@ -562,6 +581,8 @@ sol Sales
         let tokens = lex(src);
         let sol = parse_with_registry(&tokens, reg).expect("stacked parse failed");
         let pipeline = find_construct(&sol.items, "Outbound");
+
+        let group = &pipeline.children[0];
         assert_eq!(pipeline.keyword, "pipeline");
         assert_eq!(pipeline.subkind, "Pipeline");
         assert_eq!(pipeline.shape, Shape::Mod); // pipeline -> ctx -> mod
@@ -1602,6 +1623,8 @@ mod recovery_tests {
             presentation: Default::default(),
             roles: Vec::new(),
             config_keys: Vec::new(),
+            required_fields: Vec::new(),
+            lowers_to: std::collections::HashMap::new(),
         }
     }
 

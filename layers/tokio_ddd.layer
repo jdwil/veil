@@ -1,0 +1,18 @@
+layer tokio_ddd
+  use tokio
+  use ddd
+
+  codegen rust
+    # Application services (handlers, orchestrators) are async — they do I/O.
+    match fn where has_role("application_service")
+      emit_to "fn_attrs" priority 400
+      emit """
+        pub async
+      """
+
+    # Domain services are sync — pure domain logic, no I/O.
+    match fn where has_role("domain_service")
+      emit_to "fn_attrs" priority 400
+      emit """
+        pub
+      """

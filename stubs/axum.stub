@@ -1,361 +1,772 @@
 stub axum 0.8.9
-  async_methods send
-
-  struct JsonDataError
-    fn body_text() -> Str
-    fn status() -> StatusCode
-
-  struct JsonSyntaxError
-    fn body_text() -> Str
-    fn status() -> StatusCode
-
-  struct MissingJsonContentType
-    fn body_text() -> Str
-    fn status() -> StatusCode
-
-  struct MissingExtension
-    fn body_text() -> Str
-    fn status() -> StatusCode
+  # @generated veil-stub-gen 1
+  # source crates.io
+  # surface full
+  # cargo_name axum
+  # generated_at 2026-08-20T19:51:37Z
+  # rustdoc_fingerprint e271494fb500a3e5
+  # Auto-inferred codegen policy from rustdoc (do not hand-edit; re-run veil stub-gen)
+  fn any(handler: H) -> MethodRouter<S, Infallible>
+    lowers_to
+      rust: "axum::any({{handler}})"
+  fn any_service(svc: T) -> MethodRouter<S, T::Error>
+    lowers_to
+      rust: "axum::any_service({{svc}})"
+  fn from_extractor() -> FromExtractorLayer<E, ()>
+    lowers_to
+      rust: "axum::from_extractor({{args}})"
+  fn from_extractor_with_state(state: S) -> FromExtractorLayer<E, S>
+    lowers_to
+      rust: "axum::from_extractor_with_state({{state}})"
+  fn from_fn(f: F) -> FromFnLayer<F, (), T>
+    lowers_to
+      rust: "axum::from_fn({{f}})"
+  fn from_fn_with_state(state: S, f: F) -> FromFnLayer<F, S, T>
+    lowers_to
+      rust: "axum::from_fn_with_state({{state}}, {{f}})"
+  fn map_request(f: F) -> MapRequestLayer<F, (), T>
+    lowers_to
+      rust: "axum::map_request({{f}})"
+  fn map_request_with_state(state: S, f: F) -> MapRequestLayer<F, S, T>
+    lowers_to
+      rust: "axum::map_request_with_state({{state}}, {{f}})"
+  fn map_response(f: F) -> MapResponseLayer<F, (), T>
+    lowers_to
+      rust: "axum::map_response({{f}})"
+  fn map_response_with_state(state: S, f: F) -> MapResponseLayer<F, S, T>
+    lowers_to
+      rust: "axum::map_response_with_state({{state}}, {{f}})"
+  fn serve(listener: L, make_service: M) -> Serve<L, M, S>
+    lowers_to
+      rust: "axum::serve({{listener}}, {{make_service}})"
+  fn to_bytes(body: Body, limit: Int) -> BoxFuture<Res!<Bytes>>
+    lowers_to
+      rust: "axum::to_bytes({{body}}, {{limit}}).await.map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
 
   struct MissingPathParams
+    path extract::rejection
     fn body_text() -> Str
+      lowers_to
+        rust: "{{self}}.body_text({{args}})"
     fn status() -> StatusCode
+      lowers_to
+        rust: "{{self}}.status({{args}})"
 
   struct RawForm
+    path extract::raw_form
 
   struct InvalidFormContentType
+    path extract::rejection
     fn body_text() -> Str
+      lowers_to
+        rust: "{{self}}.body_text({{args}})"
     fn status() -> StatusCode
+      lowers_to
+        rust: "{{self}}.status({{args}})"
 
   struct FailedToDeserializeForm
+    path extract::rejection
     fn body_text() -> Str
+      lowers_to
+        rust: "{{self}}.body_text({{args}})"
     fn status() -> StatusCode
+      lowers_to
+        rust: "{{self}}.status({{args}})"
 
   struct FailedToDeserializeFormBody
+    path extract::rejection
     fn body_text() -> Str
+      lowers_to
+        rust: "{{self}}.body_text({{args}})"
     fn status() -> StatusCode
+      lowers_to
+        rust: "{{self}}.status({{args}})"
 
   struct FailedToDeserializeQueryString
+    path extract::rejection
     fn body_text() -> Str
+      lowers_to
+        rust: "{{self}}.body_text({{args}})"
     fn status() -> StatusCode
+      lowers_to
+        rust: "{{self}}.status({{args}})"
 
   struct AddExtension
+    path extension
 
   struct MatchedPath
+    path extract::matched_path
     fn as_str() -> Str
+      lowers_to
+        rust: "{{self}}.as_str({{args}})"
 
   struct MatchedPathMissing
+    path extract::rejection
     fn body_text() -> Str
+      lowers_to
+        rust: "{{self}}.body_text({{args}})"
     fn status() -> StatusCode
+      lowers_to
+        rust: "{{self}}.status({{args}})"
 
   struct NestedPath
+    path extract::nested_path
     fn as_str() -> Str
+      lowers_to
+        rust: "{{self}}.as_str({{args}})"
 
   struct NestedPathRejection
+    path extract::rejection
     fn body_text() -> Str
+      lowers_to
+        rust: "{{self}}.body_text({{args}})"
     fn status() -> StatusCode
-
-  struct WebSocketUpgrade
-    fn read_buffer_size(size: usize) -> Self
-    fn write_buffer_size(size: usize) -> Self
-    fn max_write_buffer_size(max: usize) -> Self
-    fn max_message_size(max: usize) -> Self
-    fn max_frame_size(max: usize) -> Self
-    fn accept_unmasked_frames(accept: Bool) -> Self
-    fn protocols(protocols: I) -> Self
-    fn requested_protocols() -> Str
-    fn set_selected_protocol(protocol: HeaderValue)
-    fn selected_protocol() -> Opt<HeaderValue>
-    fn on_failed_upgrade(callback: C) -> WebSocketUpgrade<C>
-    fn on_upgrade(callback: C) -> Response
-
-  struct MethodNotGet
-    fn body_text() -> Str
-    fn status() -> StatusCode
-
-  struct MethodNotConnect
-    fn body_text() -> Str
-    fn status() -> StatusCode
-
-  struct InvalidConnectionHeader
-    fn body_text() -> Str
-    fn status() -> StatusCode
-
-  struct InvalidUpgradeHeader
-    fn body_text() -> Str
-    fn status() -> StatusCode
-
-  struct InvalidProtocolPseudoheader
-    fn body_text() -> Str
-    fn status() -> StatusCode
-
-  struct HandlerService
-    fn state() -> S
-    fn into_make_service() -> IntoMakeService<HandlerService<H, T, S>>
-    fn into_make_service_with_connect_info() -> IntoMakeServiceWithConnectInfo<HandlerService<H, T, S>, C>
-
-  struct InvalidWebSocketVersionHeader
-    fn body_text() -> Str
-    fn status() -> StatusCode
-
-  struct WebSocketKeyHeaderMissing
-    fn body_text() -> Str
-    fn status() -> StatusCode
-
-  struct ConnectionNotUpgradable
-    fn body_text() -> Str
-    fn status() -> StatusCode
-
-  struct IntoMakeService
-
-  struct MethodFilter
-    fn or(other: Self) -> Self
-
-  struct DefaultOnFailedUpgrade
-
-  struct WebSocket
-    fn recv() -> Opt<Res!<Message>>
-    fn send(msg: Message) -> Res!<Str>
-    fn protocol() -> Opt<HeaderValue>
-
-  struct Query
-    fn try_from_uri(value: Uri) -> Res!<Self>
-
-  struct Form
-
-  struct Utf8Bytes
-    fn from_static(str: Str) -> Self
-    fn as_str() -> Str
-
-  struct IntoMakeServiceWithConnectInfo
-
-  struct CloseFrame
+      lowers_to
+        rust: "{{self}}.status({{args}})"
 
   struct OriginalUri
+    path extract::original_uri
 
   struct RawQuery
+    path extract::raw_query
 
   struct State
+    path extract::state
 
   struct IntoServiceFuture
+    path handler::future
 
-  struct Json
-    fn from_bytes(bytes: Str) -> Res!<Self>
+  struct Query
+    path extract::query
+    fn try_from_uri(value: Uri) -> Res!<Self>
+      lowers_to
+        rust: "axum::Query::try_from_uri({{value}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
 
   struct Layered
+    path handler
 
   struct LayeredFuture
+    path handler::future
+
+  struct Form
+    path form
+
+  struct HandlerService
+    path handler::service
+    fn state() -> S
+      lowers_to
+        rust: "{{self}}.state({{args}})"
+    fn into_make_service() -> IntoMakeService<HandlerService<H, T, S>>
+      lowers_to
+        rust: "{{self}}.into_make_service({{args}})"
+    fn into_make_service_with_connect_info() -> IntoMakeServiceWithConnectInfo<HandlerService<H, T, S>, C>
+      lowers_to
+        rust: "{{self}}.into_make_service_with_connect_info({{args}})"
 
   struct InfallibleRouteFuture
+    path routing::route
 
   struct MethodRouter
+    path routing::method_routing
     fn on(filter: MethodFilter, handler: H) -> Self
+      lowers_to
+        rust: "{{self}}.on({{filter}}, {{handler}})"
     fn connect(handler: H) -> Self
+      lowers_to
+        rust: "{{self}}.connect({{handler}})"
     fn delete(handler: H) -> Self
+      lowers_to
+        rust: "{{self}}.delete({{handler}})"
     fn get(handler: H) -> Self
+      lowers_to
+        rust: "{{self}}.get({{handler}})"
     fn head(handler: H) -> Self
+      lowers_to
+        rust: "{{self}}.head({{handler}})"
     fn options(handler: H) -> Self
+      lowers_to
+        rust: "{{self}}.options({{handler}})"
     fn patch(handler: H) -> Self
+      lowers_to
+        rust: "{{self}}.patch({{handler}})"
     fn post(handler: H) -> Self
+      lowers_to
+        rust: "{{self}}.post({{handler}})"
     fn put(handler: H) -> Self
+      lowers_to
+        rust: "{{self}}.put({{handler}})"
     fn trace(handler: H) -> Self
+      lowers_to
+        rust: "{{self}}.trace({{handler}})"
     fn fallback(handler: H) -> Self
+      lowers_to
+        rust: "{{self}}.fallback({{handler}})"
     fn into_make_service() -> IntoMakeService<Self>
+      lowers_to
+        rust: "{{self}}.into_make_service({{args}})"
     fn into_make_service_with_connect_info() -> IntoMakeServiceWithConnectInfo<Self, C>
+      lowers_to
+        rust: "{{self}}.into_make_service_with_connect_info({{args}})"
     fn new() -> Self
+      lowers_to
+        rust: "axum::MethodRouter::new({{args}})"
     fn with_state(state: S) -> MethodRouter<S2, E>
+      lowers_to
+        rust: "{{self}}.with_state({{state}})"
     fn on_service(filter: MethodFilter, svc: T) -> Self
+      lowers_to
+        rust: "{{self}}.on_service({{filter}}, {{svc}})"
     fn connect_service(svc: T) -> Self
+      lowers_to
+        rust: "{{self}}.connect_service({{svc}})"
     fn delete_service(svc: T) -> Self
+      lowers_to
+        rust: "{{self}}.delete_service({{svc}})"
     fn get_service(svc: T) -> Self
+      lowers_to
+        rust: "{{self}}.get_service({{svc}})"
     fn head_service(svc: T) -> Self
+      lowers_to
+        rust: "{{self}}.head_service({{svc}})"
     fn options_service(svc: T) -> Self
+      lowers_to
+        rust: "{{self}}.options_service({{svc}})"
     fn patch_service(svc: T) -> Self
+      lowers_to
+        rust: "{{self}}.patch_service({{svc}})"
     fn post_service(svc: T) -> Self
+      lowers_to
+        rust: "{{self}}.post_service({{svc}})"
     fn put_service(svc: T) -> Self
+      lowers_to
+        rust: "{{self}}.put_service({{svc}})"
     fn trace_service(svc: T) -> Self
+      lowers_to
+        rust: "{{self}}.trace_service({{svc}})"
     fn fallback_service(svc: T) -> Self
+      lowers_to
+        rust: "{{self}}.fallback_service({{svc}})"
     fn layer(layer: L) -> MethodRouter<S, NewError>
+      lowers_to
+        rust: "{{self}}.layer({{layer}})"
     fn route_layer(layer: L) -> MethodRouter<S, E>
+      lowers_to
+        rust: "{{self}}.route_layer({{layer}})"
     fn merge(other: MethodRouter<S, E>) -> Self
+      lowers_to
+        rust: "{{self}}.merge({{other}})"
     fn handle_error(f: F) -> MethodRouter<S, Infallible>
+      lowers_to
+        rust: "{{self}}.handle_error({{f}})"
 
   struct FromExtractorLayer
+    path middleware::from_extractor
 
   struct FromExtractor
+    path middleware::from_extractor
 
   struct ResponseFuture
-
-  struct Extension
+    path extract::connect_info
 
   struct Next
-    fn run(req: Request) -> Response
+    path middleware::from_fn
+    fn run(req: Request) -> BoxFuture<Response>
+      lowers_to
+        rust: "{{self}}.run({{req}}).await"
+
+  struct IntoMakeService
+    path routing::into_make_service
 
   struct FromFnLayer
+    path middleware::from_fn
 
   struct FromFn
+    path middleware::from_fn
 
   struct ResponseFuture
+    path extract::connect_info
+
+  struct IntoMakeServiceWithConnectInfo
+    path extract::connect_info
+
+  struct Json
+    path json
+    fn from_bytes(bytes: List<Int>) -> Res!<Self>
+      lowers_to
+        rust: "axum::Json::from_bytes({{bytes}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
 
   struct MapRequestLayer
+    path middleware::map_request
 
   struct MapRequest
-
-  struct Router
-    fn new() -> Self
-    fn without_v07_checks() -> Self
-    fn route(path: Str, method_router: MethodRouter<S>) -> Self
-    fn route_service(path: Str, service: T) -> Self
-    fn nest(path: Str, router: Router<S>) -> Self
-    fn nest_service(path: Str, service: T) -> Self
-    fn merge(other: R) -> Self
-    fn layer(layer: L) -> Router<S>
-    fn route_layer(layer: L) -> Self
-    fn has_routes() -> Bool
-    fn fallback(handler: H) -> Self
-    fn fallback_service(service: T) -> Self
-    fn method_not_allowed_fallback(handler: H) -> Self
-    fn reset_fallback() -> Self
-    fn with_state(state: S) -> Router<S2>
-    fn as_service() -> RouterAsService<B, S>
-    fn into_service() -> RouterIntoService<B, S>
-    fn into_make_service() -> IntoMakeService<Self>
-    fn into_make_service_with_connect_info() -> IntoMakeServiceWithConnectInfo<Self, C>
+    path middleware::map_request
 
   struct ResponseFuture
-
-  struct ConnectInfo
-
-  struct HandleError
-    fn new(inner: S, f: F) -> Self
+    path extract::connect_info
 
   struct MapResponseLayer
+    path middleware::map_response
 
   struct MapResponse
-
-  struct HandleErrorFuture
+    path middleware::map_response
 
   struct ResponseFuture
+    path extract::connect_info
 
   struct ResponseAxumBodyLayer
+    path middleware::response_axum_body
 
   struct ResponseAxumBody
+    path middleware::response_axum_body
 
   struct ResponseAxumBodyFuture
+    path middleware::response_axum_body
+
+  struct Router
+    path routing
+    fn new() -> Self
+      lowers_to
+        rust: "axum::Router::new({{args}})"
+    fn without_v07_checks() -> Self
+      lowers_to
+        rust: "{{self}}.without_v07_checks({{args}})"
+    fn route(path: Str, method_router: MethodRouter<S>) -> Self
+      lowers_to
+        rust: "{{self}}.route({{path}}, {{method_router}})"
+    fn route_service(path: Str, service: T) -> Self
+      lowers_to
+        rust: "{{self}}.route_service({{path}}, {{service}})"
+    fn nest(path: Str, router: Router<S>) -> Self
+      lowers_to
+        rust: "{{self}}.nest({{path}}, {{router}})"
+    fn nest_service(path: Str, service: T) -> Self
+      lowers_to
+        rust: "{{self}}.nest_service({{path}}, {{service}})"
+    fn merge(other: R) -> Self
+      lowers_to
+        rust: "{{self}}.merge({{other}})"
+    fn layer(layer: L) -> Router<S>
+      lowers_to
+        rust: "{{self}}.layer({{layer}})"
+    fn route_layer(layer: L) -> Self
+      lowers_to
+        rust: "{{self}}.route_layer({{layer}})"
+    fn has_routes() -> Bool
+      lowers_to
+        rust: "{{self}}.has_routes({{args}})"
+    fn fallback(handler: H) -> Self
+      lowers_to
+        rust: "{{self}}.fallback({{handler}})"
+    fn fallback_service(service: T) -> Self
+      lowers_to
+        rust: "{{self}}.fallback_service({{service}})"
+    fn method_not_allowed_fallback(handler: H) -> Self
+      lowers_to
+        rust: "{{self}}.method_not_allowed_fallback({{handler}})"
+    fn reset_fallback() -> Self
+      lowers_to
+        rust: "{{self}}.reset_fallback({{args}})"
+    fn with_state(state: S) -> Router<S2>
+      lowers_to
+        rust: "{{self}}.with_state({{state}})"
+    fn as_service() -> RouterAsService<B, S>
+      lowers_to
+        rust: "{{self}}.as_service({{args}})"
+    fn into_service() -> RouterIntoService<B, S>
+      lowers_to
+        rust: "{{self}}.into_service({{args}})"
+    fn into_make_service() -> IntoMakeService<Self>
+      lowers_to
+        rust: "{{self}}.into_make_service({{args}})"
+    fn into_make_service_with_connect_info() -> IntoMakeServiceWithConnectInfo<Self, C>
+      lowers_to
+        rust: "{{self}}.into_make_service_with_connect_info({{args}})"
+
+  struct ConnectInfo
+    path extract::connect_info
 
   struct Redirect
+    path response::redirect
     fn to(uri: Str) -> Self
+      lowers_to
+        rust: "axum::Redirect::to({{uri}})"
     fn temporary(uri: Str) -> Self
+      lowers_to
+        rust: "axum::Redirect::temporary({{uri}})"
     fn permanent(uri: Str) -> Self
+      lowers_to
+        rust: "axum::Redirect::permanent({{uri}})"
     fn status_code() -> StatusCode
+      lowers_to
+        rust: "{{self}}.status_code({{args}})"
     fn location() -> Str
+      lowers_to
+        rust: "{{self}}.location({{args}})"
+
+  struct HandleError
+    path error_handling
+    fn new(inner: S, f: F) -> Self
+      lowers_to
+        rust: "axum::HandleError::new({{inner}}, {{f}})"
 
   struct Sse
+    path response::sse
     fn new(stream: S) -> Self
+      lowers_to
+        rust: "axum::Sse::new({{stream}})"
     fn keep_alive(keep_alive: KeepAlive) -> Sse<KeepAliveStream<S>>
+      lowers_to
+        rust: "{{self}}.keep_alive({{keep_alive}})"
 
   struct Event
+    path response::sse
     fn into_data_writer() -> EventDataWriter
+      lowers_to
+        rust: "{{self}}.into_data_writer({{args}})"
     fn data(data: T) -> Self
+      lowers_to
+        rust: "{{self}}.data({{data}})"
     fn json_data(data: T) -> Res!<Self>
+      lowers_to
+        rust: "{{self}}.json_data({{data}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
     fn comment(comment: T) -> Event
+      lowers_to
+        rust: "{{self}}.comment({{comment}})"
     fn event(event: T) -> Event
+      lowers_to
+        rust: "{{self}}.event({{event}})"
     fn retry(duration: Duration) -> Event
+      lowers_to
+        rust: "{{self}}.retry({{duration}})"
     fn id(id: T) -> Event
+      lowers_to
+        rust: "{{self}}.id({{id}})"
 
   struct KeepAlive
+    path response::sse
     fn new() -> Self
+      lowers_to
+        rust: "axum::KeepAlive::new({{args}})"
     fn interval(time: Duration) -> Self
+      lowers_to
+        rust: "{{self}}.interval({{time}})"
     fn text(text: I) -> Self
+      lowers_to
+        rust: "{{self}}.text({{text}})"
     fn event(event: Event) -> Self
+      lowers_to
+        rust: "{{self}}.event({{event}})"
 
   struct KeepAliveStream
+    path response::sse
 
   struct EventDataWriter
+    path response::sse
     fn into_event() -> Event
+      lowers_to
+        rust: "{{self}}.into_event({{args}})"
 
-  struct HandleErrorLayer
-    fn new(f: F) -> Self
+  struct Extension
+    path extension
+
+  struct HandleErrorFuture
+    path error_handling::future
 
   struct Html
+    path response
 
   struct NoContent
+    path response
 
   struct IntoMakeServiceFuture
+    path routing::into_make_service
 
   struct RouteFuture
+    path routing::route
+
+  struct MethodFilter
+    path routing::method_filter
+    fn or(other: Self) -> Self
+      lowers_to
+        rust: "{{self}}.or({{other}})"
 
   struct Route
+    path routing::route
 
   struct NoMatchingMethodFilter
+    path routing::method_filter
+
+  struct HandleErrorLayer
+    path error_handling
+    fn new(f: F) -> Self
+      lowers_to
+        rust: "axum::HandleErrorLayer::new({{f}})"
 
   struct RouterAsService
+    path routing
 
   struct RouterIntoService
+    path routing
 
   struct ServeFuture
+    path serve::private
 
   struct Serve
+    path serve
     fn with_graceful_shutdown(signal: F) -> WithGracefulShutdown<L, M, S, F>
-    fn local_addr() -> Res!<Str>
+      lowers_to
+        rust: "{{self}}.with_graceful_shutdown({{signal}})"
+    fn local_addr() -> Res!<L::Addr>
+      lowers_to
+        rust: "{{self}}.local_addr({{args}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
 
   struct WithGracefulShutdown
-    fn local_addr() -> Res!<Str>
+    path serve
+    fn local_addr() -> Res!<L::Addr>
+      lowers_to
+        rust: "{{self}}.local_addr({{args}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
 
   struct ResponseFuture
+    path extract::connect_info
 
   struct IncomingStream
-    fn io() -> Str
-    fn remote_addr() -> Str
+    path serve
+    fn io() -> L::Io
+      lowers_to
+        rust: "{{self}}.io({{args}})"
+    fn remote_addr() -> L::Addr
+      lowers_to
+        rust: "{{self}}.remote_addr({{args}})"
 
   struct TapIo
+    path serve::listener
 
   struct MockConnectInfo
+    path extract::connect_info
 
   struct Path
+    path extract::path
 
   struct FailedToDeserializePathParams
+    path extract::path
     fn kind() -> ErrorKind
+      lowers_to
+        rust: "{{self}}.kind({{args}})"
     fn into_kind() -> ErrorKind
+      lowers_to
+        rust: "{{self}}.into_kind({{args}})"
     fn body_text() -> Str
+      lowers_to
+        rust: "{{self}}.body_text({{args}})"
     fn status() -> StatusCode
+      lowers_to
+        rust: "{{self}}.status({{args}})"
 
   struct RawPathParams
+    path extract::path
     fn iter() -> RawPathParamsIter
+      lowers_to
+        rust: "{{self}}.iter({{args}})"
 
   struct RawPathParamsIter
+    path extract::path
 
   struct InvalidUtf8InPathParam
+    path extract::path
     fn body_text() -> Str
+      lowers_to
+        rust: "{{self}}.body_text({{args}})"
     fn status() -> StatusCode
+      lowers_to
+        rust: "{{self}}.status({{args}})"
+
+  struct JsonDataError
+    path extract::rejection
+    fn body_text() -> Str
+      lowers_to
+        rust: "{{self}}.body_text({{args}})"
+    fn status() -> StatusCode
+      lowers_to
+        rust: "{{self}}.status({{args}})"
+
+  struct JsonSyntaxError
+    path extract::rejection
+    fn body_text() -> Str
+      lowers_to
+        rust: "{{self}}.body_text({{args}})"
+    fn status() -> StatusCode
+      lowers_to
+        rust: "{{self}}.status({{args}})"
+
+  struct MissingJsonContentType
+    path extract::rejection
+    fn body_text() -> Str
+      lowers_to
+        rust: "{{self}}.body_text({{args}})"
+    fn status() -> StatusCode
+      lowers_to
+        rust: "{{self}}.status({{args}})"
+
+  struct MissingExtension
+    path extract::rejection
+    fn body_text() -> Str
+      lowers_to
+        rust: "{{self}}.body_text({{args}})"
+    fn status() -> StatusCode
+      lowers_to
+        rust: "{{self}}.status({{args}})"
+
+  enum RawFormRejection
+    InvalidFormContentType(InvalidFormContentType)
+    BytesRejection(BytesRejection)
+
+    fn body_text() -> Str
+      lowers_to
+        rust: "{{self}}.body_text({{args}})"
+    fn status() -> StatusCode
+      lowers_to
+        rust: "{{self}}.status({{args}})"
+
+  enum QueryRejection
+    FailedToDeserializeQueryString(FailedToDeserializeQueryString)
+
+    fn body_text() -> Str
+      lowers_to
+        rust: "{{self}}.body_text({{args}})"
+    fn status() -> StatusCode
+      lowers_to
+        rust: "{{self}}.status({{args}})"
+
+  enum MatchedPathRejection
+    MatchedPathMissing(MatchedPathMissing)
+
+    fn body_text() -> Str
+      lowers_to
+        rust: "{{self}}.body_text({{args}})"
+    fn status() -> StatusCode
+      lowers_to
+        rust: "{{self}}.status({{args}})"
+
+  enum FormRejection
+    InvalidFormContentType(InvalidFormContentType)
+    FailedToDeserializeForm(FailedToDeserializeForm)
+    FailedToDeserializeFormBody(FailedToDeserializeFormBody)
+    BytesRejection(BytesRejection)
+
+    fn body_text() -> Str
+      lowers_to
+        rust: "{{self}}.body_text({{args}})"
+    fn status() -> StatusCode
+      lowers_to
+        rust: "{{self}}.status({{args}})"
+
+  enum JsonRejection
+    JsonDataError(JsonDataError)
+    JsonSyntaxError(JsonSyntaxError)
+    MissingJsonContentType(MissingJsonContentType)
+    BytesRejection(BytesRejection)
+
+    fn body_text() -> Str
+      lowers_to
+        rust: "{{self}}.body_text({{args}})"
+    fn status() -> StatusCode
+      lowers_to
+        rust: "{{self}}.status({{args}})"
+
+  enum PathRejection
+    FailedToDeserializePathParams(FailedToDeserializePathParams)
+    MissingPathParams(MissingPathParams)
+
+    fn body_text() -> Str
+      lowers_to
+        rust: "{{self}}.body_text({{args}})"
+    fn status() -> StatusCode
+      lowers_to
+        rust: "{{self}}.status({{args}})"
+
+  enum ErrorKind
+    WrongNumberOfParameters
+    ParseErrorAtKey
+    ParseErrorAtIndex
+    ParseError
+    InvalidUtf8InPathParam
+    UnsupportedType
+    DeserializeError
+    Message(Str)
+
+  enum RawPathParamsRejection
+    InvalidUtf8InPathParam(InvalidUtf8InPathParam)
+    MissingPathParams(MissingPathParams)
+
+    fn body_text() -> Str
+      lowers_to
+        rust: "{{self}}.body_text({{args}})"
+    fn status() -> StatusCode
+      lowers_to
+        rust: "{{self}}.status({{args}})"
+
+  enum ExtensionRejection
+    MissingExtension(MissingExtension)
+
+    fn body_text() -> Str
+      lowers_to
+        rust: "{{self}}.body_text({{args}})"
+    fn status() -> StatusCode
+      lowers_to
+        rust: "{{self}}.status({{args}})"
 
   trait ServiceExt
     fn into_make_service() -> IntoMakeService<Self>
+      lowers_to
+        rust: "{{self}}.into_make_service({{args}})"
     fn into_make_service_with_connect_info() -> IntoMakeServiceWithConnectInfo<Self, C>
+      lowers_to
+        rust: "{{self}}.into_make_service_with_connect_info({{args}})"
     fn handle_error(f: F) -> HandleError<Self, F, T>
-
-  trait OnFailedUpgrade
-    fn call(error: Error)
-
-  trait Handler
-    fn call(req: Request, state: S) -> Str
-    fn layer(layer: L) -> Layered<L, Self, T, S>
-    fn with_state(state: S) -> HandlerService<Self, T, S>
-
-  trait HandlerWithoutStateExt
-    fn into_service() -> HandlerService<Self, T, Str>
-    fn into_make_service() -> IntoMakeService<HandlerService<Self, T, Str>>
-    fn into_make_service_with_connect_info() -> IntoMakeServiceWithConnectInfo<HandlerService<Self, T, Str>, C>
+      lowers_to
+        rust: "{{self}}.handle_error({{f}})"
 
   trait IntoMapRequestResult
     fn into_map_request_result() -> Res!<Request<B>>
+      lowers_to
+        rust: "{{self}}.into_map_request_result({{args}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"
+
+  trait Handler
+    fn call(req: Request, state: S) -> Self::Future
+      lowers_to
+        rust: "{{self}}.call({{req}}, {{state}})"
+    fn layer(layer: L) -> Layered<L, Self, T, S>
+      lowers_to
+        rust: "{{self}}.layer({{layer}})"
+    fn with_state(state: S) -> HandlerService<Self, T, S>
+      lowers_to
+        rust: "{{self}}.with_state({{state}})"
+
+  trait HandlerWithoutStateExt
+    fn into_service() -> HandlerService<Self, T, ()>
+      lowers_to
+        rust: "{{self}}.into_service({{args}})"
+    fn into_make_service() -> IntoMakeService<HandlerService<Self, T, ()>>
+      lowers_to
+        rust: "{{self}}.into_make_service({{args}})"
+    fn into_make_service_with_connect_info() -> IntoMakeServiceWithConnectInfo<HandlerService<Self, T, ()>, C>
+      lowers_to
+        rust: "{{self}}.into_make_service_with_connect_info({{args}})"
 
   trait ListenerExt
     fn tap_io(tap_fn: F) -> TapIo<Self, F>
+      lowers_to
+        rust: "{{self}}.tap_io({{tap_fn}})"
 
   trait Connected
     fn connect_info(stream: T) -> Self
+      lowers_to
+        rust: "axum::Connected::connect_info({{stream}})"
 
   trait Listener
-    fn accept() -> Str
-    fn local_addr() -> Res!<Str>
+    fn accept() -> BoxFuture<(Self::Io, Self::Addr)>
+      lowers_to
+        rust: "{{self}}.accept({{args}}).await"
+    fn local_addr() -> Res!<Self::Addr>
+      lowers_to
+        rust: "{{self}}.local_addr({{args}}).map_err(|e| {{error_model.external}}(format!("{e:?}")))?"

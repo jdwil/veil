@@ -10,11 +10,12 @@ pub fn gen_types(
     solution: &Solution,
     layer_derives: Option<&str>,
     sibling_crates: &[String],
+    template_output: &crate::template::TemplateOutput,
 ) -> GeneratedFile {
     let mut out = String::new();
     out.push_str("//! Domain types.\n\n");
     out.push_str("#![allow(unused_imports)]\n\n");
-    out.push_str("use serde::{Deserialize, Serialize};\nuse uuid::Uuid;\nuse chrono::{DateTime, Utc};\nuse std::collections::HashMap;\nuse crate::ports::{ValidationError, DomainError};\nuse crate::domain::messages::*;\n\n");
+    out.push_str("use serde::{Deserialize, Serialize};\nuse uuid::Uuid;\nuse chrono::{DateTime, Utc};\nuse std::collections::HashMap;\nuse crate::ports::*;\nuse crate::domain::messages::*;\n\n");
 
     // Collect defined and referenced type names for stub generation.
     let mut defined_types: Vec<String> = Vec::new();
@@ -178,7 +179,7 @@ pub fn gen_types(
     }
 
     // Enums first (unit enums derive Default for fill-in). Nested VOs that are
-    // all-defaultable join `defaultable_structs` so later aggregates can omit
+    // all-defaultable join `defaultable_structs` so later structs can omit
     // them from smart-ctor params (`retry_settings: RetrySettings::default()`).
     // Domain enums stay as required ctor params (AuthType is intentional input).
     let mut defaultable_structs: std::collections::HashSet<String> =
@@ -197,6 +198,11 @@ pub fn gen_types(
         out.push_str(&chunk);
         if is_defaultable {
             defaultable_structs.insert(c.name.clone());
+        }
+        // Append inline template contributions for this struct (emit without emit_to/emit_file).
+        if let Some(inline) = crate::template::compose_inline(template_output, &c.name) {
+            out.push_str(&inline);
+            out.push_str("\n\n");
         }
     }
 
@@ -317,23 +323,25 @@ pub fn gen_struct(
     layer_derives: Option<&str>,
 ) -> (String, bool) {
     let mut out = String::new();
+
+    // ─── Construct lowers_to: template takes full control ──────────────
+    if let Some(template) = registry.construct_lowers_to(c, "rust") {
+        let rendered = interpolate_construct_template(template, c, registry);
+        out.push_str(&rendered);
+        out.push_str("\n\n");
+        return (out, false);
+    }
+
     let has_invariant = c.annotations.iter().any(|a| registry.is_invariant_annotation(&a.name));
 
     // ─── Phase 6: Constraint-driven emission ───────────────────────────
-    // Look up layer constraints for this construct (equality_by_value, immutable, no_identity).
+    // Look up layer constraints for this construct (equality_by_value, immutable).
     let constraints: Vec<String> = registry
         .spec_for_construct(c)
         .map(|spec| spec.constraints.clone())
         .unwrap_or_default();
     let has_equality_by_value = constraints.iter().any(|c| c == "equality_by_value");
-    let has_no_identity = constraints.iter().any(|c| c == "no_identity");
     let has_immutable = constraints.iter().any(|c| c == "immutable");
-    // Phase 6d: no_identity — construct should not have an `id` field auto-generated.
-    // Currently `id` is always a required user param (not auto-defaulted), so
-    // this constraint is primarily enforced by the validator. The flag is kept
-    // here for forward-compatibility: if identity_policy ever adds `id` to
-    // auto_fields, this guard prevents it from being auto-filled.
-    let _ = has_no_identity;
 
     // Fields: direct plus struct-shaped named blocks (e.g. root).
     let mut fields: Vec<&Field> = c.fields.iter().collect();
@@ -591,7 +599,7 @@ pub fn gen_struct(
 
     // Generate impl block with business logic fns (if any exist).
     if !c.fns.is_empty() {
-        out.push_str(&gen_aggregate_impl(c, &fields, registry, has_immutable));
+        out.push_str(&gen_struct_impl(c, &fields, registry, has_immutable));
     }
 
     // Types with zero-arg smart ctors (all fields defaultable) are reusable as
@@ -684,8 +692,8 @@ pub fn string_field_default(field_name: &str) -> Option<&'static str> {
     }
 }
 
-/// Generate `impl Name { ... }` block for aggregate business logic fns.
-pub fn gen_aggregate_impl(c: &Construct, fields: &[&Field], registry: &LayerRegistry, is_immutable: bool) -> String {
+/// Generate `impl Name { ... }` block for struct business logic fns.
+pub fn gen_struct_impl(c: &Construct, fields: &[&Field], registry: &LayerRegistry, is_immutable: bool) -> String {
     use crate::expr::{GenCtx, expr_to_rust};
     use std::collections::HashMap;
 
@@ -724,15 +732,16 @@ pub fn gen_aggregate_impl(c: &Construct, fields: &[&Field], registry: &LayerRegi
 
         // Explicit return type from the VEIL signature; otherwise event-collecting
         // methods default to `Result<Vec<Events>, DomainError>`.
+        let err_type_name = registry.error_model.as_ref().map(|em| em.type_name.as_str()).unwrap_or("__VEIL_NO_ERROR_MODEL__");
         let has_explicit_return = func.return_type.as_ref()
             .map(|t| !matches!(t, TypeExpr::Result(None)))
             .unwrap_or(false);
         let return_type_str = if has_explicit_return {
             func.return_type.as_ref()
-                .map(type_to_rust)
-                .unwrap_or_else(|| format!("Result<Vec<{}>, DomainError>", event_enum_name))
+                .map(|t| type_to_rust_with_error(t, err_type_name))
+                .unwrap_or_else(|| format!("Result<Vec<{}>, {}>", event_enum_name, err_type_name))
         } else {
-            format!("Result<Vec<{}>, DomainError>", event_enum_name)
+            format!("Result<Vec<{}>, {}>", event_enum_name, err_type_name)
         };
 
         // Pure query methods use `&self`; mutations / emits need `&mut self`.
@@ -758,8 +767,10 @@ pub fn gen_aggregate_impl(c: &Construct, fields: &[&Field], registry: &LayerRegi
                 // Simple invariant: field == Value → self.field == EnumName::Value
                 let cond_rust = translate_invariant_condition(cond_text, &field_names, &enum_map);
                 out.push_str(&format!(
-                    "        if !({}) {{ return Err(DomainError::Validation(\"invariant violated\".into())); }}\n",
-                    cond_rust
+                    "        if !({}) {{ return Err({}::{}(\"invariant violated\".into())); }}\n",
+                    cond_rust,
+                    err_type_name,
+                    registry.error_model.as_ref().and_then(|em| em.variant("validation")).expect("error_model must declare variant 'validation'"),
                 ));
             }
         }
@@ -775,7 +786,7 @@ pub fn gen_aggregate_impl(c: &Construct, fields: &[&Field], registry: &LayerRegi
         ctx.self_fields = field_names.clone();
         ctx.expected_return_rust = Some(return_type_str.clone());
         // Seed struct field types so `for x in self.list` can type elements.
-        ctx.struct_fields.insert(
+        ctx.types.struct_fields.insert(
             c.name.clone(),
             fields
                 .iter()
@@ -784,11 +795,11 @@ pub fn gen_aggregate_impl(c: &Construct, fields: &[&Field], registry: &LayerRegi
         );
         for p in &func.params {
             ctx.locals.insert(p.name.clone());
-            ctx.local_types
+            ctx.types.local_types
                 .insert(p.name.clone(), type_to_rust(&p.type_expr));
         }
-        ctx.mut_locals = crate::expr::analyze_mut_locals(&func.body);
-        ctx.ident_uses = crate::expr::count_ident_uses(&func.body);
+        ctx.ownership.mut_locals = crate::expr::analyze_mut_locals(&func.body);
+        ctx.ownership.ident_uses = crate::expr::count_ident_uses(&func.body);
 
         let mut has_explicit_ret = false;
         for expr in &func.body {
@@ -846,7 +857,7 @@ pub fn gen_aggregate_impl(c: &Construct, fields: &[&Field], registry: &LayerRegi
                         && !name.contains('.') && !field_names.contains(name) {
                             ctx.locals.insert(name.clone());
                             if let Some(t) = crate::expr::infer_expr_type_pub(rhs, &ctx) {
-                                ctx.local_types.insert(name.clone(), t);
+                                ctx.types.local_types.insert(name.clone(), t);
                             }
                         }
                 }
@@ -1144,3 +1155,260 @@ pub fn gen_child_types(contents: &ModuleContents, crate_name: &str) -> Generated
     }
 }
 
+
+// ─── Construct lowers_to template interpolation ──────────────────────────────
+
+/// Interpolate a construct's `lowers_to` template with construct data.
+///
+/// Supported variables:
+/// - `{{name}}` → construct name (PascalCase)
+/// - `{{name_snake}}` → construct name (snake_case)
+/// - `{{subkind}}` → layer subkind
+/// - `{{annotation.X.N}}` → Nth arg of annotation named X on this construct
+/// - `{{has.X}}` → value of has-field X (from construct's `has` block)
+/// - `{{for field in fields}}...{{end}}` → iterate fields
+///   - `{{field.name}}` → field name (snake_case)
+///   - `{{field.type}}` → Rust type (via type_to_rust)
+/// - `{{for method in methods}}...{{end}}` → iterate methods
+///   - `{{method.name}}` → method name (snake_case)
+///   - `{{method.params}}` → parameter list (`name: Type, ...`)
+///   - `{{method.return_type}}` → return type or empty string
+/// - `{{for child in children where role == "X"}}...{{end}}` → iterate children by role
+///   - `{{child.name}}` → child construct name (PascalCase)
+///   - `{{child.name_snake}}` → child construct name (snake_case)
+///   - `{{child.has.X}}` → child has-field value
+///   - `{{child.annotation.X.N}}` → Nth arg of annotation X on child
+///   - `{{child.field.X}}` → value of named field X on child
+pub fn interpolate_construct_template(
+    template: &str,
+    c: &Construct,
+    registry: &LayerRegistry,
+) -> String {
+    let mut output = template.to_string();
+
+    // Simple substitutions
+    output = output.replace("{{name}}", &c.name);
+    output = output.replace("{{name_snake}}", &to_snake(&c.name));
+    output = output.replace("{{subkind}}", &c.subkind);
+
+    // {{annotation.X.N}} — access annotation args on the parent construct
+    output = interpolate_annotation_refs(&output, "annotation", &c.annotations);
+
+    // {{has.X}} — access has-block field values on the parent construct
+    output = interpolate_has_refs(&output, "has", c);
+
+    // {{for field in fields}}...{{end}} loop (repeatable)
+    output = expand_for_loops(&output, "{{for field in fields}}", |body| {
+        let mut fields: Vec<&Field> = c.fields.iter().collect();
+        for block in &c.blocks {
+            if block.shape != Shape::Enum {
+                fields.extend(block.fields.iter());
+            }
+        }
+        let mut expanded = String::new();
+        for field in &fields {
+            let mut line = body.to_string();
+            line = line.replace("{{field.name}}", &to_snake(&field.name));
+            line = line.replace("{{field.type}}", &type_to_rust(&field.type_expr));
+            expanded.push_str(&line);
+        }
+        expanded
+    });
+
+    // {{for method in methods}}...{{end}} loop (repeatable)
+    output = expand_for_loops(&output, "{{for method in methods}}", |body| {
+        let mut expanded = String::new();
+        for method in &c.methods {
+            let mut line = body.to_string();
+            line = line.replace("{{method.name}}", &to_snake(&method.name));
+            let params = method
+                .params
+                .iter()
+                .map(|p| format!("{}: {}", to_snake(&p.name), type_to_rust(&p.type_expr)))
+                .collect::<Vec<_>>()
+                .join(", ");
+            line = line.replace("{{method.params}}", &params);
+            let ret = match &method.return_type {
+                Some(t) => type_to_rust(t),
+                None => String::new(),
+            };
+            line = line.replace("{{method.return_type}}", &ret);
+            expanded.push_str(&line);
+        }
+        expanded
+    });
+
+    // {{for child in children where role == "X"}}...{{end}} — iterate children by role
+    output = expand_child_role_loops(&output, c, registry);
+
+    // Dedent: find minimum indentation of non-empty lines and strip it.
+    let lines: Vec<&str> = output.lines().collect();
+    let min_indent = lines
+        .iter()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| l.len() - l.trim_start().len())
+        .min()
+        .unwrap_or(0);
+    if min_indent > 0 {
+        output = lines
+            .iter()
+            .map(|l| {
+                if l.len() >= min_indent {
+                    &l[min_indent..]
+                } else {
+                    l.trim()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+    }
+
+    // Trim leading/trailing blank lines
+    output.trim().to_string()
+}
+
+/// Expand all occurrences of a `{{for X in Y}}...{{end}}` loop tag.
+/// Calls `expander(body)` for each occurrence and replaces the loop with the result.
+fn expand_for_loops(output: &str, tag: &str, expander: impl Fn(&str) -> String) -> String {
+    let mut result = output.to_string();
+    while let Some(start) = result.find(tag) {
+        let after_tag = start + tag.len();
+        if let Some(end_offset) = result[after_tag..].find("{{end}}") {
+            let end = after_tag + end_offset + "{{end}}".len();
+            let body = &result[after_tag..after_tag + end_offset];
+            let expanded = expander(body);
+            result = format!("{}{}{}", &result[..start], expanded, &result[end..]);
+        } else {
+            break;
+        }
+    }
+    result
+}
+
+/// Expand `{{for child in children where role == "X"}}...{{end}}` loops.
+/// Supports multiple loops with different roles in one template.
+fn expand_child_role_loops(output: &str, c: &Construct, registry: &LayerRegistry) -> String {
+    use std::borrow::Cow;
+    let tag_prefix = "{{for child in children where role == \"";
+    let mut result = Cow::Borrowed(output);
+
+    loop {
+        let owned = result.to_string();
+        let Some(start) = owned.find(tag_prefix) else {
+            break;
+        };
+        let after_prefix = start + tag_prefix.len();
+        // Extract role name up to closing `"}}`
+        let Some(role_end) = owned[after_prefix..].find("\"}}") else {
+            break;
+        };
+        let role = &owned[after_prefix..after_prefix + role_end];
+        let tag_end = after_prefix + role_end + "\"}}".len();
+        // Find matching {{end}}
+        let Some(end_offset) = owned[tag_end..].find("{{end}}") else {
+            break;
+        };
+        let end = tag_end + end_offset + "{{end}}".len();
+        let body = &owned[tag_end..tag_end + end_offset];
+
+        // Collect children matching this role (recursive)
+        let children = collect_children_with_role(c, role, registry);
+
+        let mut expanded = String::new();
+        for child in &children {
+            let mut line = body.to_string();
+            line = line.replace("{{child.name}}", &child.name);
+            line = line.replace("{{child.name_snake}}", &to_snake(&child.name));
+            // {{child.has.X}} — has-block fields
+            line = interpolate_has_refs(&line, "child.has", child);
+            // {{child.annotation.X.N}} — child annotation args
+            line = interpolate_annotation_refs(&line, "child.annotation", &child.annotations);
+            // {{child.field.X}} — named field values (from Construct.fields by name)
+            line = interpolate_field_refs(&line, "child.field", child);
+            expanded.push_str(&line);
+        }
+
+        result = Cow::Owned(format!("{}{}{}", &owned[..start], expanded, &owned[end..]));
+    }
+    result.into_owned()
+}
+
+/// Recursively collect child constructs matching a given role.
+fn collect_children_with_role<'a>(
+    c: &'a Construct,
+    role: &str,
+    registry: &LayerRegistry,
+) -> Vec<&'a Construct> {
+    let mut out = Vec::new();
+    for child in &c.children {
+        if registry.construct_has_role(child, role) {
+            out.push(child);
+        }
+        // Recurse into grandchildren
+        out.extend(collect_children_with_role(child, role, registry));
+    }
+    out
+}
+
+/// Replace `{{prefix.X.N}}` patterns with annotation arg values.
+/// E.g. `{{annotation.route.0}}` → first arg of @route annotation.
+fn interpolate_annotation_refs(text: &str, prefix: &str, annotations: &[Annotation]) -> String {
+    let mut result = text.to_string();
+    let pattern = format!("{{{{{prefix}.");
+    while let Some(start) = result.find(&pattern) {
+        let after = start + pattern.len();
+        if let Some(close) = result[after..].find("}}") {
+            let key = &result[after..after + close];
+            let end = after + close + "}}".len();
+            // key is "annotation_name.N" or just "annotation_name" (defaults to .0)
+            let (ann_name, idx) = if let Some((n, i)) = key.rsplit_once('.') {
+                (n, i.parse::<usize>().unwrap_or(0))
+            } else {
+                (key, 0)
+            };
+            let value = annotations
+                .iter()
+                .find(|a| a.name == ann_name)
+                .and_then(|a| a.args.get(idx))
+                .map(|s| s.as_str())
+                .unwrap_or("");
+            result = format!("{}{}{}", &result[..start], value, &result[end..]);
+        } else {
+            break;
+        }
+    }
+    result
+}
+
+/// Replace `{{prefix.X}}` patterns with has-block field values.
+/// In the AST, has-block values (method, path, handle, etc.) are stored as
+/// regular fields on the construct. This is an alias for field access.
+fn interpolate_has_refs(text: &str, prefix: &str, c: &Construct) -> String {
+    interpolate_field_refs(text, prefix, c)
+}
+
+/// Replace `{{prefix.X}}` patterns with named field values from the construct.
+/// Fields store their "value" as TypeExpr — Named("GET"), LitStr("/api/items"), etc.
+fn interpolate_field_refs(text: &str, prefix: &str, c: &Construct) -> String {
+    let mut result = text.to_string();
+    let pattern = format!("{{{{{prefix}.");
+    while let Some(start) = result.find(&pattern) {
+        let after = start + pattern.len();
+        if let Some(close) = result[after..].find("}}") {
+            let field_name = &result[after..after + close];
+            let end = after + close + "}}".len();
+            let value = c.fields.iter()
+                .find(|f| f.name == field_name || to_snake(&f.name) == field_name)
+                .map(|f| match &f.type_expr {
+                    TypeExpr::Named(n) => n.clone(),
+                    TypeExpr::LitStr(s) => s.clone(),
+                    other => type_to_rust(other),
+                })
+                .unwrap_or_default();
+            result = format!("{}{}{}", &result[..start], value, &result[end..]);
+        } else {
+            break;
+        }
+    }
+    result
+}

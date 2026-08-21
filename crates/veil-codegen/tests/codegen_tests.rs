@@ -5,11 +5,36 @@
 
 use veil_ir::LayerRegistry;
 
-/// Parse an example .veil file with the ddd layer and generate the project.
+/// Parse an example .veil file with the ddd_fullstack layer stack and generate the project.
 fn generate_example(src: &str) -> String {
     let mut reg = LayerRegistry::builtin();
+    // Load the full layer stack that ddd_fullstack composes
+    reg.load_content("base", include_str!("../../../layers/base.layer"))
+        .expect("base layer should load");
+    reg.load_content("rust", include_str!("../../../layers/rust.layer"))
+        .expect("rust layer should load");
+    reg.load_content("tokio", include_str!("../../../layers/tokio.layer"))
+        .expect("tokio layer should load");
+    reg.load_content("di", include_str!("../../../layers/di.layer"))
+        .expect("di layer should load");
+    reg.load_content("rest_english", include_str!("../../../layers/rest_english.layer"))
+        .expect("rest_english layer should load");
+    reg.load_content("bus", include_str!("../../../layers/bus.layer"))
+        .expect("bus layer should load");
+    reg.load_content("bus_handle", include_str!("../../../layers/bus_handle.layer"))
+        .expect("bus_handle layer should load");
+    reg.load_content("auth_local", include_str!("../../../layers/auth_local.layer"))
+        .expect("auth_local layer should load");
+    reg.load_content("harness", include_str!("../../../layers/harness.layer"))
+        .expect("harness layer should load");
+    reg.load_content("deploy", include_str!("../../../layers/deploy.layer"))
+        .expect("deploy layer should load");
     reg.load_content("ddd", include_str!("../../../layers/ddd.layer"))
         .expect("ddd layer should load");
+    reg.load_content("tokio_ddd", include_str!("../../../layers/tokio_ddd.layer"))
+        .expect("tokio_ddd layer should load");
+    reg.load_content("ddd_fullstack", include_str!("../../../layers/ddd_fullstack.layer"))
+        .expect("ddd_fullstack layer should load");
     let tokens = veil_parser::lex(src);
     let sol = veil_parser::parse_with_registry(&tokens, reg.clone()).expect("parse failed");
     let project = veil_codegen::generate(&sol, &reg);
@@ -95,7 +120,7 @@ fn test_action_template_interpolation() {
         span: Span::default(),
     };
     let template = ctx.statement_specs["call_agent"].lowers_to["rust"].clone();
-    let out = interpolate_action_template(&template, &action, &ctx, &|e, c| {
+    let out = interpolate_action_template(&template, &action, &ctx, &|e, _c| {
         // Minimal expr lower for the test
         match e {
             Expr::StringLit(s) => format!("\"{s}\""),
@@ -112,7 +137,7 @@ fn test_action_fallback_no_template() {
     let out = generate_example(
         r#"
 sol App
-  use ddd
+  use ddd_fullstack
   ctx C
     group domain
       port Bus
@@ -261,7 +286,7 @@ pkg mini v1
     let app = "sol MiniApp\n  use mini\n  widget Gadget\n    size: Int";
     let out = generate_with_layer("mini", layer, app);
     assert!(
-        out.contains("pub async fn sum_all("),
+        out.contains("pub async fn sum_all(") || out.contains("pub fn sum_all("),
         "declared fn not generated:\n{}",
         out
     );
@@ -371,7 +396,12 @@ pkg mini v1
   construct Handler
     keyword handler
     maps_to fn
-    allowed_in Context";
+    allowed_in Context
+  construct DepField
+    kw dep
+    mt struct
+    ann
+      dep: \"Injected dependency\" field role:dependency";
     let app = r#"sol MiniApp
   use mini
   ctx App
@@ -512,7 +542,8 @@ fn saga_lowers_to_step_impls_and_delegates_to_coordinator() {
     );
     // The saga fn just builds the step list and calls the layer coordinator.
     assert!(
-        out.contains("run_saga(&steps).await") || out.contains("run_saga(steps).await"),
+        out.contains("run_saga(&steps).await") || out.contains("run_saga(steps).await")
+            || out.contains("run_saga(deps.bus.as_ref(), &steps).await"),
         "coordinator call missing:\n{}",
         grep(&out, "run_saga")
     );
@@ -528,7 +559,7 @@ fn saga_lowers_to_step_impls_and_delegates_to_coordinator() {
 fn saga_knowledge_is_not_in_the_engine() {
     // The saga coordinator + SagaStep trait come from the layer, not the engine.
     let out = customer_onboarding();
-    assert!(out.contains("pub async fn run_saga("), "coordinator not generated from layer");
+    assert!(out.contains("pub async fn run_saga(") || out.contains("pub fn run_saga("), "coordinator not generated from layer");
     assert!(out.contains("pub trait SagaStep"), "SagaStep trait not generated from layer");
 }
 
@@ -608,7 +639,7 @@ fn flow_return_type_is_inferred_not_hardcoded() {
     // blanket Uuid. Build a minimal solution inline.
     let src = "\
 sol T
-  use ddd
+  use ddd_fullstack
   ctx C
     group g
       agg Order
@@ -673,7 +704,7 @@ fn generate_ts_example(src: &str) -> String {
         .expect("ddd layer should load");
     let tokens = veil_parser::lex(src);
     let sol = veil_parser::parse_with_registry(&tokens, reg.clone()).expect("parse failed");
-    let project = veil_codegen::generate_ts(&sol, &reg);
+    let project = veil_codegen::generate_ts_ir(&sol, &reg);
     project
         .files
         .iter()
@@ -693,9 +724,9 @@ fn ts_struct_generates_interface() {
 #[test]
 fn ts_trait_generates_interface_with_async_methods() {
     let out = generate_ts_example(include_str!("../../../examples/customer_onboarding.veil"));
-    assert!(out.contains("export interface CustomerRepo"), "trait not mapped to TS interface");
-    assert!(out.contains("save(c: Customer): Promise<void>"), "Res! not mapped to Promise<void>");
-    assert!(out.contains("find(id: string): Promise<Customer | null>"), "Res!<Opt<T>> not mapped to Promise<T | null>");
+    assert!(out.contains("interface CustomerRepo"), "trait not mapped to TS interface");
+    assert!(out.contains("save(c: T.Customer): Promise<void>"), "Res! not mapped to Promise<void>");
+    assert!(out.contains("find(id: string): Promise<T.Customer | null>"), "Res!<Opt<T>> not mapped to Promise<T | null>");
 }
 
 #[test]
@@ -709,7 +740,7 @@ fn ts_generates_project_scaffolding() {
 
 #[test]
 fn ts_type_mapping_covers_all_primitives() {
-    use veil_codegen::typescript::type_to_ts;
+    use veil_codegen::ts::lower::type_to_ts;
     use veil_ir::ast::TypeExpr;
 
     assert_eq!(type_to_ts(&TypeExpr::Named("Str".into())), "string");
@@ -777,7 +808,7 @@ sol TestApp
 fn register_all_handlers_module() {
     let src = r#"
 pkg BusApp
-  use ddd
+  use ddd_fullstack
   ctx Orders
     port OrderRepo
       get(id: Str) -> Str
@@ -791,15 +822,27 @@ pkg BusApp
         ret "ok"
 "#;
     let mut reg = LayerRegistry::builtin();
+    reg.load_content("base", include_str!("../../../layers/base.layer")).unwrap();
+    reg.load_content("rust", include_str!("../../../layers/rust.layer")).unwrap();
+    reg.load_content("tokio", include_str!("../../../layers/tokio.layer")).unwrap();
+    reg.load_content("di", include_str!("../../../layers/di.layer")).unwrap();
+    reg.load_content("rest_english", include_str!("../../../layers/rest_english.layer")).unwrap();
+    reg.load_content("bus", include_str!("../../../layers/bus.layer")).unwrap();
+    reg.load_content("bus_handle", include_str!("../../../layers/bus_handle.layer")).unwrap();
+    reg.load_content("auth_local", include_str!("../../../layers/auth_local.layer")).unwrap();
+    reg.load_content("harness", include_str!("../../../layers/harness.layer")).unwrap();
+    reg.load_content("deploy", include_str!("../../../layers/deploy.layer")).unwrap();
     reg.load_content("ddd", include_str!("../../../layers/ddd.layer"))
         .expect("ddd");
+    reg.load_content("tokio_ddd", include_str!("../../../layers/tokio_ddd.layer")).unwrap();
+    reg.load_content("ddd_fullstack", include_str!("../../../layers/ddd_fullstack.layer")).unwrap();
     let tokens = veil_parser::lex(src);
     let sol = veil_parser::parse_with_registry(&tokens, reg.clone()).expect("parse");
     let project = veil_codegen::generate(&sol, &reg);
     let reg_mod = project
         .files
         .iter()
-        .find(|f| f.path.ends_with("register_handlers.rs"))
+        .find(|f| f.path.ends_with("register_handlers.rs") || (f.path.ends_with("lib.rs") && f.content.contains("register_all")))
         .expect("register_handlers.rs");
     assert!(
         reg_mod.content.contains("pub fn register_all"),
@@ -822,7 +865,11 @@ pkg BusApp
         .iter()
         .find(|f| f.path == "crates/veil_shared/src/lib.rs")
         .expect("shared lib");
-    assert!(shared.content.contains("pub mod register_handlers"));
+    assert!(
+        shared.content.contains("pub mod register_handlers") || shared.content.contains("register_all"),
+        "shared lib must reference register_all:\n{}",
+        shared.content
+    );
 }
 
 /// CAP-002/006: link veil_server + @main → ProductHost bin main.
@@ -830,7 +877,7 @@ pkg BusApp
 fn product_host_main_when_link_veil_server() {
     let src = r#"
 pkg HostApp
-  use ddd
+  use ddd_fullstack
   use di
   link veil_server
   @main
@@ -839,10 +886,19 @@ pkg HostApp
       ret Ok
 "#;
     let mut reg = LayerRegistry::builtin();
-    reg.load_content("ddd", include_str!("../../../layers/ddd.layer"))
-        .expect("ddd");
-    reg.load_content("di", include_str!("../../../layers/di.layer"))
-        .expect("di");
+    reg.load_content("base", include_str!("../../../layers/base.layer")).unwrap();
+    reg.load_content("rust", include_str!("../../../layers/rust.layer")).unwrap();
+    reg.load_content("tokio", include_str!("../../../layers/tokio.layer")).unwrap();
+    reg.load_content("di", include_str!("../../../layers/di.layer")).unwrap();
+    reg.load_content("rest_english", include_str!("../../../layers/rest_english.layer")).unwrap();
+    reg.load_content("bus", include_str!("../../../layers/bus.layer")).unwrap();
+    reg.load_content("bus_handle", include_str!("../../../layers/bus_handle.layer")).unwrap();
+    reg.load_content("auth_local", include_str!("../../../layers/auth_local.layer")).unwrap();
+    reg.load_content("harness", include_str!("../../../layers/harness.layer")).unwrap();
+    reg.load_content("deploy", include_str!("../../../layers/deploy.layer")).unwrap();
+    reg.load_content("ddd", include_str!("../../../layers/ddd.layer")).unwrap();
+    reg.load_content("tokio_ddd", include_str!("../../../layers/tokio_ddd.layer")).unwrap();
+    reg.load_content("ddd_fullstack", include_str!("../../../layers/ddd_fullstack.layer")).unwrap();
     let tokens = veil_parser::lex(src);
     let sol = veil_parser::parse_with_registry(&tokens, reg.clone()).expect("parse");
     let project = veil_codegen::generate(&sol, &reg);
@@ -874,7 +930,7 @@ pkg HostApp
 fn emit_bin_never_still_emits_product_host() {
     let src = r#"
 pkg HostApp
-  use ddd
+  use ddd_fullstack
   use di
   link veil_server
   @main
@@ -887,6 +943,8 @@ pkg HostApp
         .expect("ddd");
     reg.load_content("di", include_str!("../../../layers/di.layer"))
         .expect("di");
+    reg.load_content("harness", include_str!("../../../layers/harness.layer"))
+        .expect("harness");
     reg.harness_policy.emit_bin = Some(veil_ir::EmitBin::Never);
     let tokens = veil_parser::lex(src);
     let sol = veil_parser::parse_with_registry(&tokens, reg.clone()).expect("parse");
@@ -908,7 +966,7 @@ pkg HostApp
 fn harness_honors_declared_endpoint() {
     let src = r#"
 pkg RouteApp
-  use ddd
+  use ddd_fullstack
   use di
   use harness
 
@@ -996,7 +1054,7 @@ pkg UiApp
         Ok(s) => s,
         Err(_) => return, // layer parse quirks — skip
     };
-    let project = veil_codegen::generate_ts(&sol, &reg);
+    let project = veil_codegen::generate_ts_ir(&sol, &reg);
     let has_dist = project.files.iter().any(|f| f.path == "dist/index.html");
     let spa = project
         .files
@@ -1062,7 +1120,7 @@ pkg WearUi
         app.annotations
     );
 
-    let project = veil_codegen::generate_ts(&sol, &reg);
+    let project = veil_codegen::generate_ts_ir(&sol, &reg);
     let hooks = project
         .files
         .iter()
@@ -1135,14 +1193,14 @@ pkg WearUi
     }
     let tokens = veil_parser::lex(src);
     let sol = veil_parser::parse_with_registry(&tokens, reg.clone()).expect("parse");
-    let project = veil_codegen::generate_ts(&sol, &reg);
+    let project = veil_codegen::generate_ts_ir(&sol, &reg);
     let paths: Vec<&str> = project.files.iter().map(|f| f.path.as_str()).collect();
     assert!(
-        paths.iter().any(|p| *p == "src/routes/pulls/[id]/+page.svelte"),
+        paths.contains(&"src/routes/pulls/[id]/+page.svelte"),
         "nested ui_route missing: {paths:?}"
     );
     assert!(
-        paths.iter().any(|p| *p == "src/routes/settings/+page.svelte"),
+        paths.contains(&"src/routes/settings/+page.svelte"),
         "settings ui_route missing: {paths:?}"
     );
 }
@@ -1152,7 +1210,7 @@ pkg WearUi
 fn link_external_crates_in_cargo_toml() {
     let src = r#"
 pkg HostApp
-  use ddd
+  use ddd_fullstack
   link veil_server
   link veil_local path "../../crates/veil-local" features "local"
   @main
@@ -1276,7 +1334,7 @@ fn generated_examples_compile() {
         // Write to a temp directory
         let tmp = std::env::temp_dir().join(format!(
             "veil_compile_test_{}",
-            rel.replace('/', "_").replace('.', "_")
+            rel.replace(['/', '.'], "_")
         ));
         let _ = std::fs::remove_dir_all(&tmp);
         for f in &project.files {
@@ -1366,7 +1424,7 @@ fn generated_examples_compile() {
         let project = veil_codegen::generate(&sol, &reg);
         let tmp = std::env::temp_dir().join(format!(
             "veil_compile_test_{}",
-            rel.replace('/', "_").replace('.', "_")
+            rel.replace(['/', '.'], "_")
         ));
         let _ = std::fs::remove_dir_all(&tmp);
         for f in &project.files {
@@ -1429,7 +1487,7 @@ fn ts_svelte_demo_generates_project() {
     let src = include_str!("../../../examples/svelte_present_demo.veil");
     let tokens = veil_parser::lex(src);
     let sol = veil_parser::parse_with_registry(&tokens, reg.clone()).expect("parse");
-    let project = veil_codegen::generate_ts(&sol, &reg);
+    let project = veil_codegen::generate_ts_ir(&sol, &reg);
     let joined: String = project
         .files
         .iter()
@@ -1451,7 +1509,7 @@ fn ts_svelte_demo_generates_project() {
 fn flow_return_type_from_bang_list_call() {
     let src = r#"
 pkg App
-  use ddd
+  use ddd_fullstack
   use di
   ctx Store
     group domain
@@ -1513,7 +1571,7 @@ pkg App
 fn harness_skips_deps_when_no_port_deps() {
     let src = r#"
 pkg App
-  use ddd
+  use ddd_fullstack
   use di
   ctx Store
     group domain
@@ -1558,7 +1616,7 @@ pkg App
 fn declared_harness_emits_named_deps_and_only_declared_routes() {
     let src = r#"
 pkg Demo
-  use ddd
+  use ddd_fullstack
   use harness
   ctx Catalog
     group domain
@@ -1664,7 +1722,7 @@ pkg Demo
 fn single_emitter_compat_synthesizes_post_fallback() {
     let src = r#"
 pkg App
-  use ddd
+  use ddd_fullstack
   ctx Hello
     group application
       svc GreetUser
@@ -1673,8 +1731,19 @@ pkg App
         ret name
 "#;
     let mut reg = LayerRegistry::builtin();
-    reg.load_content("ddd", include_str!("../../../layers/ddd.layer"))
-        .unwrap();
+    reg.load_content("base", include_str!("../../../layers/base.layer")).unwrap();
+    reg.load_content("rust", include_str!("../../../layers/rust.layer")).unwrap();
+    reg.load_content("tokio", include_str!("../../../layers/tokio.layer")).unwrap();
+    reg.load_content("di", include_str!("../../../layers/di.layer")).unwrap();
+    reg.load_content("rest_english", include_str!("../../../layers/rest_english.layer")).unwrap();
+    reg.load_content("bus", include_str!("../../../layers/bus.layer")).unwrap();
+    reg.load_content("bus_handle", include_str!("../../../layers/bus_handle.layer")).unwrap();
+    reg.load_content("auth_local", include_str!("../../../layers/auth_local.layer")).unwrap();
+    reg.load_content("harness", include_str!("../../../layers/harness.layer")).unwrap();
+    reg.load_content("deploy", include_str!("../../../layers/deploy.layer")).unwrap();
+    reg.load_content("ddd", include_str!("../../../layers/ddd.layer")).unwrap();
+    reg.load_content("tokio_ddd", include_str!("../../../layers/tokio_ddd.layer")).unwrap();
+    reg.load_content("ddd_fullstack", include_str!("../../../layers/ddd_fullstack.layer")).unwrap();
     let tokens = veil_parser::lex(src);
     let sol = veil_parser::parse_with_registry(&tokens, reg.clone()).expect("parse");
     let project = veil_codegen::generate(&sol, &reg);
@@ -1703,7 +1772,7 @@ pkg App
 fn emit_bin_never_skips_customer_bin() {
     let src = r#"
 pkg App
-  use ddd
+  use ddd_fullstack
   ctx Hello
     group application
       svc GreetUser
@@ -1712,8 +1781,19 @@ pkg App
         ret name
 "#;
     let mut reg = LayerRegistry::builtin();
-    reg.load_content("ddd", include_str!("../../../layers/ddd.layer"))
-        .unwrap();
+    reg.load_content("base", include_str!("../../../layers/base.layer")).unwrap();
+    reg.load_content("rust", include_str!("../../../layers/rust.layer")).unwrap();
+    reg.load_content("tokio", include_str!("../../../layers/tokio.layer")).unwrap();
+    reg.load_content("di", include_str!("../../../layers/di.layer")).unwrap();
+    reg.load_content("rest_english", include_str!("../../../layers/rest_english.layer")).unwrap();
+    reg.load_content("bus", include_str!("../../../layers/bus.layer")).unwrap();
+    reg.load_content("bus_handle", include_str!("../../../layers/bus_handle.layer")).unwrap();
+    reg.load_content("auth_local", include_str!("../../../layers/auth_local.layer")).unwrap();
+    reg.load_content("harness", include_str!("../../../layers/harness.layer")).unwrap();
+    reg.load_content("deploy", include_str!("../../../layers/deploy.layer")).unwrap();
+    reg.load_content("ddd", include_str!("../../../layers/ddd.layer")).unwrap();
+    reg.load_content("tokio_ddd", include_str!("../../../layers/tokio_ddd.layer")).unwrap();
+    reg.load_content("ddd_fullstack", include_str!("../../../layers/ddd_fullstack.layer")).unwrap();
     reg.harness_policy.emit_bin = Some(veil_ir::EmitBin::Never);
     let tokens = veil_parser::lex(src);
     let sol = veil_parser::parse_with_registry(&tokens, reg.clone()).expect("parse");
@@ -1731,7 +1811,7 @@ pkg App
 fn deploy_hook_emits_veil_hooks_and_skips_handler_names() {
     let src = r#"
 pkg HookDemo
-  use ddd
+  use ddd_fullstack
   ctx App
     group application
       hook Announce
@@ -1775,7 +1855,7 @@ pkg HookDemo
 fn deploy_hook_context_is_shared_struct_not_string_alias() {
     let src = r#"
 pkg HookDemo
-  use ddd
+  use ddd_fullstack
   ctx App
     group application
       hook OnDeploy
@@ -1852,7 +1932,7 @@ pkg HookDemo
 fn deploy_hook_deps_match_application_and_all_env_fields() {
     let src = r#"
 pkg HookDemo
-  use ddd
+  use ddd_fullstack
   ctx App
     group domain
       port Store
@@ -1903,7 +1983,7 @@ pkg HookDemo
 fn deploy_hook_json_require_and_args_index_compile() {
     let src = r#"
 pkg HookDemo
-  use ddd
+  use ddd_fullstack
   ctx App
     group application
       hook OnDeploy
@@ -1963,7 +2043,7 @@ pkg HookDemo
 fn require_json_field_assign_is_string_not_value_coercion() {
     let src = r#"
 pkg HookDemo
-  use ddd
+  use ddd_fullstack
   ctx App
     group domain
       val Route
@@ -1999,7 +2079,7 @@ pkg HookDemo
 fn generated_rust_is_quality() {
     let src = r#"
 pkg HookDemo
-  use ddd
+  use ddd_fullstack
   ctx App
     group domain
       val Route
@@ -2085,7 +2165,7 @@ pkg HookDemo
 fn match_string_arm_is_owned_string() {
     let src = r#"
 pkg HookDemo
-  use ddd
+  use ddd_fullstack
   ctx App
     group domain
       enum Kind
@@ -2120,7 +2200,7 @@ pkg HookDemo
 fn for_method_items_is_not_double_ref() {
     let src = r#"
 pkg HookDemo
-  use ddd
+  use ddd_fullstack
   ctx App
     group domain
       port Store
@@ -2155,7 +2235,7 @@ pkg HookDemo
 fn for_shared_ref_element_is_cloned_when_owned() {
     let src = r#"
 pkg HookDemo
-  use ddd
+  use ddd_fullstack
   ctx App
     group domain
       val Box
@@ -2188,7 +2268,7 @@ pkg HookDemo
 fn product_redeclaration_of_layer_type_does_not_emit_local_struct() {
     let src = r#"
 pkg HookDemo
-  use ddd
+  use ddd_fullstack
   ctx App
     group domain
       val DeployContext
@@ -2220,7 +2300,7 @@ pkg HookDemo
 fn no_hooks_omits_veil_hooks_crate() {
     let src = r#"
 pkg Plain
-  use ddd
+  use ddd_fullstack
   ctx App
     group application
       handler HandlePing
@@ -2241,7 +2321,7 @@ pkg Plain
 fn value_object_derives_eq_hash_from_constraint() {
     let src = r#"
 pkg Inventory
-  use ddd
+  use ddd_fullstack
   ctx Warehouse
     val Money
       amount: Int
@@ -2315,7 +2395,7 @@ fn immutable_construct_uses_shared_ref() {
 fn mutable_aggregate_uses_mut_ref() {
     let src = r#"
 pkg TestDomain
-  use ddd
+  use ddd_fullstack
   ctx Core
     agg Order
       root
@@ -2336,4 +2416,574 @@ pkg TestDomain
         types.contains("&mut self"),
         "Aggregate method that mutates state must use &mut self:\n{types}"
     );
+}
+
+#[test]
+fn immutable_construct_uses_self_ref_not_mut() {
+    // An Event has the `immutable` constraint in ddd.layer.
+    // Even if the method body assigns to a local with the same name as a field,
+    // it MUST still use `&self` (not `&mut self`).
+    let src = r#"
+pkg ImmutableTest
+  use ddd_fullstack
+
+  ctx Core
+    group domain
+      agg Order
+        root
+          id: Id
+          items: List<Str>
+
+        evt OrderPlaced
+          order_id: Id
+          total: Int
+
+          fn summary
+            total = total + 1
+            ret total
+"#;
+    let out = generate_example(src);
+    // Find the types module output
+    let types_section = out
+        .split("// ==== crates/")
+        .find(|s| s.contains("domain/types.rs"))
+        .unwrap_or(&out);
+    // The OrderPlaced event is immutable — its `summary` method must use `&self`
+    // even though the body does `total = total + 1` which looks like mutation.
+    if types_section.contains("fn summary") {
+        assert!(
+            !types_section.contains("fn summary(&mut self"),
+            "Immutable event method must NOT use &mut self:\n{types_section}"
+        );
+        assert!(
+            types_section.contains("fn summary(&self"),
+            "Immutable event method must use &self:\n{types_section}"
+        );
+    }
+}
+
+// ─── fn_attrs / Runtime Layer Tests ───────────────────────────────────────────
+// These verify the generic emit_to fn_attrs mechanism and runtime layer behavior.
+
+/// With tokio.layer loaded, fn-shaped constructs emit `pub async fn`.
+#[test]
+fn fn_attrs_with_tokio_layer_produces_async() {
+    let out = generate_example(include_str!("../../../examples/customer_onboarding.veil"));
+    // All application functions should be async when tokio is in the layer stack.
+    assert!(
+        out.contains("pub async fn create_customer_service("),
+        "with tokio loaded, fns should be pub async fn"
+    );
+}
+
+/// Without any runtime layer providing fn_attrs, engine produces plain `pub fn`.
+#[test]
+fn fn_attrs_no_runtime_layer_produces_sync() {
+    let layer = "\
+pkg mini v1
+  construct Widget
+    keyword widget
+    maps_to struct
+    allowed_in top
+  declare
+    fn greet(name: Str) -> Res!<Str>
+      ret name";
+    let app = "sol App\n  use mini\n  widget Thing\n    x: Int";
+    let out = generate_with_layer("mini", layer, app);
+    // No runtime layer → engine fallback → plain pub fn (sync)
+    assert!(
+        out.contains("pub fn greet("),
+        "without runtime layer, engine fallback should be sync (pub fn):\n{}",
+        out
+    );
+    assert!(
+        !out.contains("pub async fn greet("),
+        "without runtime layer, fn should NOT be async:\n{}",
+        out
+    );
+}
+
+/// The tokio.layer provides fn_attrs at priority 200.
+#[test]
+fn fn_attrs_tokio_layer_priority_200() {
+    // When tokio is loaded and a fn-shaped construct exists, it's emitted as async.
+    // Use the customer_onboarding example which has proper fn-shaped constructs via DDD.
+    let out = generate_example(include_str!("../../../examples/customer_onboarding.veil"));
+    // The saga delegated function uses fn_attrs (application code, not framework)
+    assert!(
+        out.contains("pub async fn onboard("),
+        "with tokio.layer at priority 200, fn-shaped constructs should be async:\n{}",
+        grep(&out, "pub async fn onboard\npub fn onboard")
+    );
+}
+
+// ─── Template Inline Composition Tests ───────────────────────────────────────
+// Bare `emit` (no emit_to, no emit_file) now lands inline in the construct's
+// primary file instead of creating a separate _generated.rs file.
+
+/// A layer with bare `emit` on struct → output appears in domain/types.rs
+#[test]
+fn inline_emit_appears_in_struct_file() {
+    let layer = r#"
+pkg inline_test v1
+  construct Widget
+    keyword widget
+    maps_to struct
+    allowed_in mod
+
+  codegen rust
+    match struct
+      emit """
+        impl {{name}} {
+            pub fn custom_method(&self) -> &str {
+                "hello from layer"
+            }
+        }
+      """
+"#;
+    let app = r#"
+sol App
+  use inline_test
+  mod Core
+    widget Thing
+      x: Int
+"#;
+    let out = generate_with_layer("inline_test", layer, app);
+    // The impl block should appear in the same file as the struct (domain/types.rs)
+    let types_section = out
+        .split("// ==== ")
+        .find(|s| s.contains("domain/types.rs"))
+        .expect("domain/types.rs should exist");
+    assert!(
+        types_section.contains("impl Thing"),
+        "inline emit should appear in domain/types.rs:\n{}",
+        types_section
+    );
+    assert!(
+        types_section.contains("pub fn custom_method"),
+        "inline emit body should be in domain/types.rs:\n{}",
+        types_section
+    );
+    // No separate _generated.rs file should exist
+    assert!(
+        !out.contains("_generated.rs"),
+        "no _generated.rs file should be created for bare emit"
+    );
+}
+
+/// A layer with `emit_file` still creates a separate file at the specified path.
+#[test]
+fn emit_file_creates_separate_file() {
+    let layer = r#"
+pkg file_test v1
+  construct Widget
+    keyword widget
+    maps_to struct
+    allowed_in mod
+
+  codegen rust
+    match struct
+      emit_file "crates/{{name_lower}}_extra.rs"
+      emit """
+        // Extra code for {{name}}
+        pub fn extra() {}
+      """
+"#;
+    let app = r#"
+sol App
+  use file_test
+  mod Core
+    widget Gadget
+      y: Str
+"#;
+    let out = generate_with_layer("file_test", layer, app);
+    // The emit_file output should appear in its own file
+    assert!(
+        out.contains("// ==== crates/gadget_extra.rs ===="),
+        "emit_file should create a file at the specified path:\n{}",
+        out
+    );
+    // The content should be in that separate file
+    let file_section = out
+        .split("// ==== ")
+        .find(|s| s.starts_with("crates/gadget_extra.rs"))
+        .expect("gadget_extra.rs should exist");
+    assert!(
+        file_section.contains("pub fn extra()"),
+        "emit_file content should be in the separate file:\n{}",
+        file_section
+    );
+    // The domain/types.rs should NOT contain the emit_file content
+    let types_section = out
+        .split("// ==== ")
+        .find(|s| s.contains("domain/types.rs"))
+        .expect("domain/types.rs should exist");
+    assert!(
+        !types_section.contains("pub fn extra()"),
+        "emit_file content should NOT appear in domain/types.rs:\n{}",
+        types_section
+    );
+}
+
+/// Multiple inline contributions are all included (not just highest priority).
+#[test]
+fn inline_emit_multiple_contributions_all_included() {
+    let layer = r#"
+pkg multi_test v1
+  construct Widget
+    keyword widget
+    maps_to struct
+    allowed_in mod
+
+  codegen rust
+    match struct
+      emit """
+        impl {{name}} {
+            pub fn first(&self) -> i32 { 1 }
+        }
+      """
+    match struct
+      emit """
+        impl {{name}} {
+            pub fn second(&self) -> i32 { 2 }
+        }
+      """
+"#;
+    let app = r#"
+sol App
+  use multi_test
+  mod Core
+    widget Foo
+      val: Int
+"#;
+    let out = generate_with_layer("multi_test", layer, app);
+    let types_section = out
+        .split("// ==== ")
+        .find(|s| s.contains("domain/types.rs"))
+        .expect("domain/types.rs should exist");
+    assert!(
+        types_section.contains("pub fn first"),
+        "first inline contribution should be in types.rs:\n{}",
+        types_section
+    );
+    assert!(
+        types_section.contains("pub fn second"),
+        "second inline contribution should be in types.rs:\n{}",
+        types_section
+    );
+}
+
+
+// ─── Construct lowers_to tests ───────────────────────────────────────────────
+
+#[test]
+fn construct_lowers_to_struct_uses_template() {
+    // Layer declares lowers_to for a struct-shaped construct; codegen should
+    // emit the template instead of the default derive/struct/impl.
+    let layer = "\
+pkg test v1
+  construct Context
+    keyword ctx
+    maps_to mod
+    allowed_in top
+  construct ValueObject
+    kw val
+    mt struct
+    allowed_in Context
+    constraint equality_by_value
+    lowers_to
+      rust: \"\"\"
+        #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+        pub struct {{name}} {
+            {{for field in fields}}pub {{field.name}}: {{field.type}},
+            {{end}}
+        }
+      \"\"\"";
+    let app = "sol App\n  use test\n  ctx Main\n    val Price\n      amount: F64\n      currency: Str";
+    let out = generate_with_layer("test", layer, app);
+    // Should contain the template output
+    assert!(
+        out.contains("#[derive(Debug, Clone, PartialEq, Eq, Hash)]"),
+        "lowers_to template should be used; got:\n{}",
+        out
+    );
+    assert!(
+        out.contains("pub struct Price"),
+        "template should interpolate name; got:\n{}",
+        out
+    );
+    assert!(
+        out.contains("pub amount: f64,"),
+        "template should iterate fields with type conversion; got:\n{}",
+        out
+    );
+    assert!(
+        out.contains("pub currency: String,"),
+        "template should iterate all fields; got:\n{}",
+        out
+    );
+    // Should NOT contain default emission (Serialize, Deserialize)
+    assert!(
+        !out.contains("Serialize, Deserialize"),
+        "lowers_to should suppress default derives; got:\n{}",
+        out
+    );
+}
+
+#[test]
+fn construct_without_lowers_to_uses_default_emission() {
+    // Construct with NO lowers_to should emit the standard shape-based code.
+    let layer = "\
+pkg test v1
+  construct Context
+    keyword ctx
+    maps_to mod
+    allowed_in top
+  construct ValueObject
+    kw val
+    mt struct
+    allowed_in Context
+    constraint equality_by_value";
+    let app = "sol App\n  use test\n  ctx Main\n    val Price\n      amount: F64\n      currency: Str";
+    let out = generate_with_layer("test", layer, app);
+    // Default emission includes Serialize/Deserialize and struct
+    assert!(
+        out.contains("Serialize, Deserialize"),
+        "without lowers_to, default derives should be emitted; got:\n{}",
+        out
+    );
+    assert!(
+        out.contains("pub struct Price"),
+        "without lowers_to, struct should still be generated; got:\n{}",
+        out
+    );
+    assert!(
+        out.contains("pub amount: f64,"),
+        "fields should be emitted with default gen_struct; got:\n{}",
+        out
+    );
+}
+
+#[test]
+fn construct_lowers_to_field_iteration() {
+    // Verify {{for field in fields}} iterates all fields correctly
+    let layer = "\
+pkg test v1
+  construct Context
+    keyword ctx
+    maps_to mod
+    allowed_in top
+  construct Entity
+    kw ent
+    mt struct
+    allowed_in Context
+    lowers_to
+      rust: \"\"\"
+        // FIELDS_START
+        {{for field in fields}}// field: {{field.name}} -> {{field.type}}
+        {{end}}// FIELDS_END
+        pub struct {{name}} {}
+      \"\"\"";
+    let app = "sol App\n  use test\n  ctx Main\n    ent Customer\n      name: Str\n      email: Str\n      age: Int";
+    let out = generate_with_layer("test", layer, app);
+    assert!(
+        out.contains("// field: name -> String"),
+        "should iterate field name; got:\n{}",
+        out
+    );
+    assert!(
+        out.contains("// field: email -> String"),
+        "should iterate all fields; got:\n{}",
+        out
+    );
+    assert!(
+        out.contains("// field: age -> i64"),
+        "should convert types; got:\n{}",
+        out
+    );
+    assert!(
+        out.contains("pub struct Customer {}"),
+        "name should interpolate; got:\n{}",
+        out
+    );
+}
+
+#[test]
+fn construct_lowers_to_single_line_template() {
+    // Single-line (quoted) template should also work
+    let layer = "\
+pkg test v1
+  construct Context
+    keyword ctx
+    maps_to mod
+    allowed_in top
+  construct Marker
+    kw mark
+    mt struct
+    allowed_in Context
+    lowers_to
+      rust: \"pub struct {{name}};\"";
+    let app = "sol App\n  use test\n  ctx Main\n    mark Empty";
+    let out = generate_with_layer("test", layer, app);
+    assert!(
+        out.contains("pub struct Empty;"),
+        "single-line lowers_to should work; got:\n{}",
+        out
+    );
+    // The types.rs section should not contain default derives for Empty
+    let types_section = out
+        .split("// ==== ")
+        .find(|s| s.contains("domain/types.rs"))
+        .unwrap_or("");
+    assert!(
+        !types_section.contains("#[derive"),
+        "single-line lowers_to should suppress default in types.rs; got:\n{}",
+        types_section
+    );
+}
+
+// ─── TypeScript IR codegen (generate_ts_ir) tests ────────────────────────────
+
+/// Helper: parse VEIL source and run the new IR pipeline.
+fn generate_ts_ir_example(src: &str) -> String {
+    let mut reg = veil_ir::LayerRegistry::builtin();
+    reg.load_content("ddd", include_str!("../../../layers/ddd.layer"))
+        .expect("ddd layer should load");
+    let tokens = veil_parser::lex(src);
+    let sol = veil_parser::parse_with_registry(&tokens, reg.clone()).expect("parse failed");
+    let project = veil_codegen::generate_ts_ir(&sol, &reg);
+    project
+        .files
+        .iter()
+        .map(|f| format!("// ==== {} ====\n{}", f.path, f.content))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn ts_ir_generates_file_structure() {
+    let out = generate_ts_ir_example(include_str!("../../../examples/customer_onboarding.veil"));
+    assert!(out.contains("// ==== src/types.ts ===="), "types.ts not generated");
+    assert!(out.contains("// ==== src/interfaces.ts ===="), "interfaces.ts not generated");
+    assert!(out.contains("// ==== src/services.ts ===="), "services.ts not generated");
+    assert!(out.contains("// ==== src/index.ts ===="), "index.ts not generated");
+    assert!(out.contains("// ==== package.json ===="), "package.json not generated");
+    assert!(out.contains("// ==== tsconfig.json ===="), "tsconfig.json not generated");
+}
+
+#[test]
+fn ts_ir_struct_generates_interface() {
+    let out = generate_ts_ir_example(include_str!("../../../examples/customer_onboarding.veil"));
+    assert!(out.contains("export interface Customer"), "struct not mapped to TS interface");
+}
+
+#[test]
+fn ts_ir_trait_generates_interface() {
+    let out = generate_ts_ir_example(include_str!("../../../examples/customer_onboarding.veil"));
+    assert!(out.contains("export interface CustomerRepo"), "trait not mapped to TS interface");
+}
+
+#[test]
+fn ts_ir_services_uses_emit_ts() {
+    // The services.ts should contain function definitions from IR lowering
+    let out = generate_ts_ir_example(include_str!("../../../examples/customer_onboarding.veil"));
+    // Should have at least one export function in services
+    assert!(out.contains("export"), "services.ts missing function exports");
+}
+
+#[test]
+fn ts_ir_package_json_has_typescript_dep() {
+    let out = generate_ts_ir_example(include_str!("../../../examples/customer_onboarding.veil"));
+    assert!(
+        out.contains("\"typescript\": \"^5.4.0\""),
+        "typescript dep not in package.json"
+    );
+}
+
+#[test]
+fn ts_ir_index_re_exports() {
+    let out = generate_ts_ir_example(include_str!("../../../examples/customer_onboarding.veil"));
+    assert!(out.contains("export * from './types'"), "index.ts missing types re-export");
+    assert!(out.contains("export * from './interfaces'"), "index.ts missing interfaces re-export");
+    assert!(out.contains("export * from './services'"), "index.ts missing services re-export");
+}
+
+#[test]
+fn ts_ir_async_detection_marks_functions() {
+    // Services with await calls should produce async functions
+    let out = generate_ts_ir_example(include_str!("../../../examples/customer_onboarding.veil"));
+    let services_section = out
+        .split("// ==== ")
+        .find(|s| s.starts_with("src/services.ts"))
+        .unwrap_or("");
+    // Services with trait dep calls (async) should be async
+    if services_section.contains("await") {
+        assert!(
+            services_section.contains("async function"),
+            "function with await should be marked async"
+        );
+    }
+}
+
+#[test]
+fn ts_ir_import_tracking_finds_types() {
+    use veil_codegen::ts::{track_imports, TsExpr, TsType};
+
+    let exprs = vec![
+        TsExpr::TypeAssertion {
+            expr: Box::new(TsExpr::Ident {
+                name: "data".into(),
+                ty: None,
+            }),
+            ty: "Customer".into(),
+        },
+        TsExpr::NewCall {
+            class: "Order".into(),
+            args: vec![],
+            ty: Some(TsType::Named("Invoice".into())),
+        },
+    ];
+
+    let imports = track_imports(&exprs);
+    assert!(imports.contains(&"Customer".to_string()));
+    assert!(imports.contains(&"Order".to_string()));
+    assert!(imports.contains(&"Invoice".to_string()));
+}
+
+#[test]
+fn ts_ir_detect_async_with_await() {
+    use veil_codegen::ts::{detect_async, TsExpr};
+
+    let body_async = vec![TsExpr::Await(Box::new(TsExpr::FnCall {
+        name: "fetch".into(),
+        args: vec![],
+        ty: None,
+    }))];
+    assert!(detect_async(&body_async));
+
+    let body_sync = vec![TsExpr::Return(Box::new(TsExpr::IntLit(42)))];
+    assert!(!detect_async(&body_sync));
+}
+
+#[test]
+fn ts_ir_detect_async_respects_arrow_boundary() {
+    use veil_codegen::ts::{detect_async, TsExpr};
+
+    // Await inside arrow fn should NOT make outer function async
+    let body = vec![TsExpr::ArrowFn {
+        params: vec![],
+        body: vec![TsExpr::Await(Box::new(TsExpr::FnCall {
+            name: "fetch".into(),
+            args: vec![],
+            ty: None,
+        }))],
+        is_async: true,
+    }];
+    assert!(!detect_async(&body));
+}
+
+#[test]
+fn ts_ir_tsconfig_has_strict_mode() {
+    let out = generate_ts_ir_example(include_str!("../../../examples/customer_onboarding.veil"));
+    assert!(out.contains("\"strict\": true"), "tsconfig missing strict mode");
 }

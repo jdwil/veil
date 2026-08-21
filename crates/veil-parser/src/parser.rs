@@ -4784,7 +4784,14 @@ impl<'a> Parser<'a> {
         match word.as_str() {
             "tests" => Ok(Some(TopLevelItem::TestBlock(self.parse_test_block()?))),
             "fixture" => Ok(Some(TopLevelItem::Fixture(self.parse_fixture()?))),
-            "integration" => Ok(Some(TopLevelItem::Integration(self.parse_integration()?))),
+            "integration" => {
+                // If a layer has registered "integration" as a construct keyword,
+                // prefer the construct interpretation over the test-item one.
+                if self.registry.construct("integration").is_some() {
+                    return Ok(None);
+                }
+                Ok(Some(TopLevelItem::Integration(self.parse_integration()?)))
+            }
             "scenario" => Ok(Some(TopLevelItem::Scenario(self.parse_scenario()?))),
             _ => Ok(None),
         }

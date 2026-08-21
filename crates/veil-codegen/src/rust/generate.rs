@@ -105,6 +105,18 @@ pub fn generate(solution: &Solution, registry: &LayerRegistry) -> GeneratedProje
     // CAP-003: collect handler message names for register_all.
     let handler_names = collect_handler_names(solution, &modules, registry);
 
+    // ─── Layer Template Augmentation ─────────────────────────────────────
+    // Execute codegen templates from loaded layers (di.layer, rust.layer, etc.)
+    // BEFORE module generation so sections (derives, trait_attrs, fn_attrs) are
+    // available to gen_types/gen_traits/gen_impls.
+    let template_output = crate::template::execute_templates(solution, registry, "rust");
+
+    // Extract layer-declared section overrides. When present, these replace the
+    // backend's hardcoded defaults for derives, trait attributes, and fn modifiers.
+    let layer_derives = crate::template::compose_section(&template_output, "derives");
+    let layer_trait_attrs = crate::template::compose_section(&template_output, "trait_attrs");
+    let layer_fn_attrs = crate::template::compose_section(&template_output, "fn_attrs");
+
     files.extend(gen_shared_crate(
         &shared_traits,
         &shared_structs,
@@ -113,6 +125,7 @@ pub fn generate(solution: &Solution, registry: &LayerRegistry) -> GeneratedProje
         registry,
         &resolved_links,
         &handler_names,
+        layer_fn_attrs.as_deref(),
     ));
 
     // Impl-shaped constructs may live at top level or inside other modules;
@@ -132,21 +145,6 @@ pub fn generate(solution: &Solution, registry: &LayerRegistry) -> GeneratedProje
     let mut harness_ir = veil_ir::lower_harness(solution, registry);
     apply_compat_synthesis(&mut harness_ir, solution, registry);
 
-    // ─── Layer Template Augmentation ─────────────────────────────────────
-    // Execute codegen templates from loaded layers (di.layer, rust.layer, etc.)
-    // BEFORE module generation so sections (derives, trait_attrs, fn_attrs) are
-    // available to gen_types/gen_traits/gen_impls.
-    let template_output = crate::template::execute_templates(solution, registry, "rust");
-
-    // Extract layer-declared section overrides. When present, these replace the
-    // backend's hardcoded defaults for derives, trait attributes, and fn modifiers.
-    let layer_derives = crate::template::compose_section(&template_output, "derives");
-    let layer_trait_attrs = crate::template::compose_section(&template_output, "trait_attrs");
-    // NOTE: fn_attrs (e.g. "async") is declared in rust.layer but not consumed here
-    // because the backend hardcodes `pub async fn` for all fn-shaped constructs.
-    // If a future layer needs different fn modifiers, consume it here and pass
-    // through gen_module_crate → application::gen_flow.
-
     let mut flow_generated = false;
     for module in &modules {
         files.extend(gen_module_crate(
@@ -160,6 +158,8 @@ pub fn generate(solution: &Solution, registry: &LayerRegistry) -> GeneratedProje
             &harness_ir,
             layer_derives.as_deref(),
             layer_trait_attrs.as_deref(),
+            layer_fn_attrs.as_deref(),
+            &template_output,
         ));
     }
 
@@ -173,11 +173,12 @@ pub fn generate(solution: &Solution, registry: &LayerRegistry) -> GeneratedProje
     let emit_blocked = harness_ir.emit_bin == veil_ir::EmitBin::Never && !wants_product_host;
     let has_compose = harness_ir.contexts.iter().any(|c| c.compose.is_some());
     let has_declared_endpoints = package_has_declared_endpoints(solution, registry);
-    let has_entry = crate::template::compose_main_section(&template_output, "rust").is_some()
+    let has_entry = crate::template::compose_main_section(&template_output, "rust", Some(registry)).is_some()
         || package_has_main_annotation(solution, registry)
         || wants_product_host
         || has_compose
-        || has_declared_endpoints;
+        || has_declared_endpoints
+        || harness_ir.contexts.iter().any(|c| !c.endpoints.is_empty());
     let has_main = !emit_blocked && has_entry;
     // role:deploy_hook → veil_hooks bin (provisioner). Not zipped into Lambda.
     if let Some(hook_files) = crate::emit_hooks::emit_hooks_crate(solution, &modules, registry, &harness_ir)
@@ -196,16 +197,26 @@ pub fn generate(solution: &Solution, registry: &LayerRegistry) -> GeneratedProje
     if has_main {
         let module_crates: Vec<String> = modules.iter().map(|m| module_crate_name(m, solution)).collect();
         let main_body = if wants_product_host {
-            gen_product_host_main(solution, &handler_names)
+            gen_product_host_main(solution, &handler_names, registry)
         } else if !modules.is_empty() {
-            gen_local_harness_main(solution, &modules, registry, &harness_ir)
-        } else if let Some(body) = crate::template::compose_main_section(&template_output, "rust")
+            let tpl_data = compute_harness_template_data(solution, &modules, registry, &harness_ir);
+            if let Some(layer_tpl) = registry.harness_render_templates.get("rust_bin") {
+                render_harness_from_layer_template(layer_tpl, &tpl_data)
+            } else {
+                // Fallback: harness.layer not loaded (should not happen in practice)
+                format!("fn main() {{\n    eprintln!(\"veil_bin: harness layer not loaded\");\n}}\n")
+            }
+        } else if let Some(body) = crate::template::compose_main_section(&template_output, "rust", Some(registry))
         {
             body
         } else {
-            String::from(
-                "#[tokio::main]\nasync fn main() -> Result<(), Box<dyn std::error::Error>> {\n    println!(\"veil_bin: no modules to run\");\n    Ok(())\n}\n",
-            )
+            // Fallback: empty main wrapper from layer (or inline default)
+            let wrapper = registry.harness_render_templates.get("rust_bin_main_wrapper")
+                .map(|t| t.replace("{body}", "    println!(\"veil_bin: no modules to run\");\n"))
+                .unwrap_or_else(|| String::from(
+                    "fn main() {\n    println!(\"veil_bin: no modules to run\");\n}\n"
+                ));
+            wrapper
         };
         files.extend(gen_bin_crate(
             solution,

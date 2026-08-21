@@ -71,7 +71,7 @@ pub fn generate_crate_tests(
 
     let mut out = String::new();
     out.push_str("//! Generated from VEIL `tests` / `it` blocks (SL-022).\n\n");
-    out.push_str("#![allow(unused_mut, unused_variables)]\n\n");
+    out.push_str("#![allow(unused_imports, unused_mut)]\n\n");
     out.push_str("use super::*;\n");
     out.push_str("use crate::application::*;\n");
     out.push_str("use crate::domain::types::*;\n");
@@ -81,7 +81,7 @@ pub fn generate_crate_tests(
 
     for port in ports {
         if all_deps.contains(&port.name) {
-            out.push_str(&gen_port_double(port));
+            out.push_str(&gen_port_double(port, registry));
         }
     }
 
@@ -140,16 +140,17 @@ fn parse_stub_target(raw: &str) -> (String, String) {
     }
 }
 
-fn result_ok_inner(ret: &Option<TypeExpr>) -> String {
+fn result_ok_inner(ret: &Option<TypeExpr>, error_type: &str) -> String {
     let rust = match ret {
         Some(t) => crate::rust::type_to_rust(t),
         None => "()".to_string(),
     };
-    if rust == "Result<(), DomainError>" {
+    let err_suffix = format!(", {}>", error_type);
+    if rust == format!("Result<(), {}>", error_type) {
         "()".into()
     } else if let Some(inner) = rust
         .strip_prefix("Result<")
-        .and_then(|s| s.strip_suffix(", DomainError>"))
+        .and_then(|s| s.strip_suffix(&err_suffix))
     {
         inner.to_string()
     } else {
@@ -161,13 +162,17 @@ fn is_unit_ok(inner: &str) -> bool {
     inner == "()"
 }
 
-fn gen_port_double(port: &Construct) -> String {
+fn gen_port_double(port: &Construct, registry: &LayerRegistry) -> String {
+    let err_type = registry.error_model.as_ref().map(|em| em.type_name.as_str()).unwrap_or("__VEIL_NO_ERROR_MODEL__");
+    let err_external = registry.error_model.as_ref()
+        .and_then(|em| em.variant_path("external"))
+        .unwrap_or_else(|| "DomainError::External".to_string());
     let name = format!("TestDouble{}", port.name);
     let mut fields = String::new();
     let mut methods = String::new();
     for m in &port.methods {
         let fname = crate::rust::to_snake(&m.name);
-        let inner = result_ok_inner(&m.return_type);
+        let inner = result_ok_inner(&m.return_type, err_type);
         let field_ty = if is_unit_ok(&inner) {
             "Option<()>".to_string()
         } else {
@@ -190,8 +195,8 @@ fn gen_port_double(port: &Construct) -> String {
             .join(", ");
         let sep = if params.is_empty() { "" } else { ", " };
         let ret = match &m.return_type {
-            Some(t) => format!(" -> {}", crate::rust::type_to_rust(t)),
-            None => " -> Result<(), DomainError>".into(),
+            Some(t) => format!(" -> {}", crate::rust::type_to_rust_with_error(t, err_type)),
+            None => format!(" -> Result<(), {}>", err_type),
         };
         let ok_arm = if is_unit_ok(&inner) {
             "Some(()) => Ok(())".to_string()
@@ -199,7 +204,7 @@ fn gen_port_double(port: &Construct) -> String {
             "Some(v) => Ok(v.clone())".to_string()
         };
         methods.push_str(&format!(
-            "    async fn {}(&self{sep}{params}){ret} {{\n        if let Some(msg) = &self.{fname}_err {{\n            return Err(DomainError::External(msg.clone()));\n        }}\n        match &self.{fname} {{\n            {ok_arm},\n            None => Err(DomainError::External(\"unstubbed {}.{}\".into())),\n        }}\n    }}\n",
+            "    async fn {}(&self{sep}{params}){ret} {{\n        if let Some(msg) = &self.{fname}_err {{\n            return Err({err_external}(msg.clone()));\n        }}\n        match &self.{fname} {{\n            {ok_arm},\n            None => Err({err_external}(\"unstubbed {}.{}\".into())),\n        }}\n    }}\n",
             crate::rust::to_snake(&m.name),
             port.name,
             m.name
@@ -290,6 +295,7 @@ fn gen_handler_test_case(
         let fname = method_c
             .map(|m| crate::rust::to_snake(&m.name))
             .unwrap_or_else(|| crate::rust::to_snake(&method));
+        let err_type = registry.error_model.as_ref().map(|em| em.type_name.as_str()).unwrap_or("__VEIL_NO_ERROR_MODEL__");
         match &stub.variant {
             StubVariant::Error(msg) => {
                 body.push_str(&format!(
@@ -299,7 +305,7 @@ fn gen_handler_test_case(
             }
             StubVariant::Simple(expr) => {
                 let inner = method_c
-                    .map(|m| result_ok_inner(&m.return_type))
+                    .map(|m| result_ok_inner(&m.return_type, err_type))
                     .unwrap_or_else(|| "()".into());
                 let val = expr_to_test_rust(expr, &inner, enums, structs);
                 if is_unit_ok(&inner) {
@@ -317,7 +323,7 @@ fn gen_handler_test_case(
             StubVariant::Sequence(exprs) => {
                 if let Some(first) = exprs.first() {
                     let inner = method_c
-                        .map(|m| result_ok_inner(&m.return_type))
+                        .map(|m| result_ok_inner(&m.return_type, err_type))
                         .unwrap_or_else(|| "()".into());
                     let val = expr_to_test_rust(first, &inner, enums, structs);
                     body.push_str(&format!(
@@ -328,7 +334,7 @@ fn gen_handler_test_case(
             StubVariant::Conditional { otherwise, .. } => {
                 if let Some(expr) = otherwise {
                     let inner = method_c
-                        .map(|m| result_ok_inner(&m.return_type))
+                        .map(|m| result_ok_inner(&m.return_type, err_type))
                         .unwrap_or_else(|| "()".into());
                     let val = expr_to_test_rust(expr, &inner, enums, structs);
                     body.push_str(&format!(
@@ -395,8 +401,12 @@ fn gen_handler_test_case(
             args.join(", ")
         ));
     } else {
+        let err_type = registry.error_model.as_ref().map(|em| em.type_name.as_str()).unwrap_or("__VEIL_NO_ERROR_MODEL__");
+        let err_external = registry.error_model.as_ref()
+            .and_then(|em| em.variant_path("external"))
+            .unwrap_or_else(|| "DomainError::External".to_string());
         body.push_str(&format!(
-            "        let result: Result<(), DomainError> = Err(DomainError::External(\
+            "        let result: Result<(), {err_type}> = Err({err_external}(\
              \"unresolved VEIL test target {}\".into()));\n",
             target.unwrap_or("<none>")
         ));

@@ -268,6 +268,17 @@ pub struct ConstructSpec {
     /// `has` field names that are config/protocol keys (not domain types).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub config_keys: Vec<String>,
+    /// Required fields declared by the layer via `has field_name: TypeName`.
+    /// At check time, the engine validates that instances of this construct
+    /// include these fields. The engine does NOT auto-generate them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub required_fields: Vec<(String, String)>,
+    /// Per-target lowering templates (e.g. `"rust"` → template string).
+    /// When present for a target, the backend uses this template INSTEAD of
+    /// its default shape-based emission. Variables: `{{name}}`, `{{subkind}}`,
+    /// `{{for field in fields}}...{{end}}`, `{{for method in methods}}...{{end}}`.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub lowers_to: HashMap<String, String>,
 }
 
 /// Runtime binding for a delegated fn-shaped construct (e.g. `saga`).
@@ -562,6 +573,8 @@ pub struct LayerRegistry {
     pub bus_policy: BusPolicy,
     /// Auth service trait name for local AllowAllAuth (RT-008). Default: none.
     pub auth_policy: AuthPolicy,
+    /// Layer-declared error model (type name + variants). None = no error model declared.
+    pub error_model: Option<ErrorModelPolicy>,
     /// Name-derived REST verb/path prefixes. Default empty = no name-derived REST.
     pub http_name_policy: HttpNamePolicy,
     /// Declared local-harness knobs (layers + `veil.toml` `[harness]`).
@@ -572,6 +585,20 @@ pub struct LayerRegistry {
     pub extra_layer_roots: Vec<std::path::PathBuf>,
     /// True when `veil.toml` `[codegen] http_*` was present (warn after flip).
     pub codegen_http_from_toml: bool,
+    /// Per-target lowering templates for declared trait/struct methods.
+    /// Key: `(TypeName, MethodName)`, Value: `{ target → template }`.
+    /// Populated from `declare` blocks with `lowers_to` on methods.
+    /// Example: `("ApiClient", "fetch")` → `{ "typescript" → "..." }`.
+    pub method_lowers_to: HashMap<(String, String), HashMap<String, String>>,
+    /// Raw target-language code to emit into the shared crate.
+    /// Each entry is `(target, code_template)`. Templates support `{error_type}` substitution.
+    /// Populated from `shared_emit <target>` blocks in layer files.
+    pub shared_emit: Vec<(String, String)>,
+    /// Harness render templates per target. The engine interpolates HarnessTemplateData
+    /// into these templates to produce framework-specific main.rs code.
+    /// Populated from `harness_template <target>` blocks in layer files.
+    /// Key: target (e.g. "rust_bin"), Value: template string.
+    pub harness_render_templates: HashMap<String, String>,
 }
 
 /// Layer-declared bus message naming (no hard-coded `Handle` in the engine).
@@ -584,10 +611,51 @@ pub struct BusPolicy {
 }
 
 /// Which trait name triggers local AllowAllAuth emission (layer-configured).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthPolicy {
     #[serde(default)]
     pub service_trait: Option<String>,
+    /// Name of the generated mock impl struct (default: "AllowAllAuth").
+    /// The engine generates a struct with this name that implements every method
+    /// on the service_trait with Ok(default) returns.
+    #[serde(default = "default_mock_impl_name")]
+    pub mock_impl_name: String,
+}
+
+fn default_mock_impl_name() -> String { "AllowAllAuth".to_string() }
+
+impl Default for AuthPolicy {
+    fn default() -> Self {
+        AuthPolicy {
+            service_trait: None,
+            mock_impl_name: default_mock_impl_name(),
+        }
+    }
+}
+
+/// Layer-declared error model: type name + variant names for domain errors.
+/// Lets codegen emit `ErrorType::Variant(...)` without hardcoding names.
+/// A layer (e.g. ddd.layer) declares: `error_model DomainError { external External, not_found NotFound, validation Validation }`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ErrorModelPolicy {
+    /// The error type name (e.g. "DomainError", "AppError").
+    pub type_name: String,
+    /// Named variants: key = semantic role, value = variant name.
+    /// Standard roles: "external", "not_found", "validation".
+    /// Layers may declare additional variants.
+    pub variants: Vec<(String, String)>,
+}
+
+impl ErrorModelPolicy {
+    /// Get variant name by semantic role (e.g. "external" → "External").
+    pub fn variant(&self, role: &str) -> Option<&str> {
+        self.variants.iter().find(|(r, _)| r == role).map(|(_, v)| v.as_str())
+    }
+
+    /// Get full path for a variant role: `DomainError::External`.
+    pub fn variant_path(&self, role: &str) -> Option<String> {
+        self.variant(role).map(|v| format!("{}::{}", self.type_name, v))
+    }
 }
 
 /// Name-derived REST routes when no role:http_route annotation is present.
@@ -628,10 +696,14 @@ impl Default for LayerRegistry {
             identity_policy: IdentityPolicy::default(),
             bus_policy: BusPolicy::default(),
             auth_policy: AuthPolicy::default(),
+            error_model: None,
             http_name_policy: HttpNamePolicy::default(),
             harness_policy: crate::harness::HarnessPolicy::documented_defaults(),
             extra_layer_roots: Vec::new(),
             codegen_http_from_toml: false,
+            method_lowers_to: HashMap::new(),
+            shared_emit: Vec::new(),
+            harness_render_templates: HashMap::new(),
         }
     }
 }
@@ -656,10 +728,14 @@ impl Clone for LayerRegistry {
             identity_policy: self.identity_policy.clone(),
             bus_policy: self.bus_policy.clone(),
             auth_policy: self.auth_policy.clone(),
+            error_model: self.error_model.clone(),
             http_name_policy: self.http_name_policy.clone(),
             harness_policy: self.harness_policy.clone(),
             extra_layer_roots: self.extra_layer_roots.clone(),
             codegen_http_from_toml: self.codegen_http_from_toml,
+            method_lowers_to: self.method_lowers_to.clone(),
+            shared_emit: self.shared_emit.clone(),
+            harness_render_templates: self.harness_render_templates.clone(),
         }
     }
 }
@@ -722,6 +798,8 @@ impl LayerRegistry {
                 presentation: Default::default(),
                 roles: Vec::new(),
                 config_keys: Vec::new(),
+                required_fields: Vec::new(),
+                lowers_to: HashMap::new(),
             });
         }
         reg.layers.push("core".to_string());
@@ -1070,6 +1148,23 @@ impl LayerRegistry {
             .unwrap_or(&[])
     }
 
+    /// Layer-declared lowering template for a construct (by target).
+    /// When present, the backend uses this template INSTEAD of default emission.
+    pub fn construct_lowers_to(&self, c: &crate::ast::Construct, target: &str) -> Option<&str> {
+        self.spec_for_construct(c)
+            .and_then(|spec| spec.lowers_to.get(target))
+            .map(|s| s.as_str())
+    }
+
+    /// Get the lowering template for a declared type's method.
+    /// Returns `None` if no `lowers_to` was declared for this (type, method, target).
+    pub fn method_lowers_to_template(&self, type_name: &str, method: &str, target: &str) -> Option<&str> {
+        self.method_lowers_to
+            .get(&(type_name.to_string(), method.to_string()))
+            .and_then(|targets| targets.get(target))
+            .map(|s| s.as_str())
+    }
+
     /// All constructs in `sol` whose spec has `role`.
     pub fn constructs_with_role<'a>(
         &'a self,
@@ -1247,6 +1342,9 @@ impl LayerRegistry {
             if auth.service_trait.is_some() {
                 self.auth_policy = auth;
             }
+        }
+        if let Some(em) = parse_error_model(&content) {
+            self.error_model = Some(em);
         }
         if let Some(http) = parse_http_name_policy(&content) {
             self.http_name_policy = merge_http_name_policy(&self.http_name_policy, &http);
@@ -1441,6 +1539,9 @@ impl LayerRegistry {
             if auth.service_trait.is_some() {
                 self.auth_policy = auth;
             }
+        }
+        if let Some(em) = parse_error_model(content) {
+            self.error_model = Some(em);
         }
         if let Some(http) = parse_http_name_policy(content) {
             self.http_name_policy = merge_http_name_policy(&self.http_name_policy, &http);
@@ -1778,8 +1879,18 @@ impl LayerRegistry {
                 })?;
             // Resolve port_target/port_method: follow transitive chain to find Port.method
             let (target, method) = resolve_port_binding(&stmt.maps_to, &existing_stmts, &snapshot_stmts);
-            stmt.port_target = target;
-            stmt.port_method = method;
+            stmt.port_target = target.clone();
+            stmt.port_method = method.clone();
+            // If statement has port_target + lowers_to, register as method_lowers_to
+            // so that `trait.method(...)` call syntax also uses the layer template.
+            if let (Some(port), Some(meth)) = (target.as_ref(), method.as_ref()) {
+                if !stmt.lowers_to.is_empty() {
+                    self.method_lowers_to
+                        .entry((port.to_string(), meth.to_string()))
+                        .or_default()
+                        .extend(stmt.lowers_to.iter().map(|(k, v)| (k.clone(), v.clone())));
+                }
+            }
             self.statements.retain(|s| s.keyword != stmt.keyword);
             self.statements.push(stmt);
         }
@@ -1799,6 +1910,21 @@ impl LayerRegistry {
         // Accumulate codegen templates.
         for tpl in raw.codegen_templates {
             self.codegen_templates.push(tpl);
+        }
+
+        // Accumulate declared method lowering templates.
+        for (key, targets) in raw.method_lowers_to {
+            self.method_lowers_to.entry(key).or_default().extend(targets);
+        }
+
+        // Accumulate shared_emit blocks from layers.
+        for entry in raw.shared_emit {
+            self.shared_emit.push(entry);
+        }
+
+        // Accumulate harness_render_templates from layers (last loaded wins for same target).
+        for (target, template) in raw.harness_render_templates {
+            self.harness_render_templates.insert(target, template);
         }
 
         // Validate presentation construct-name refs + enums (LAY-002).
@@ -2000,10 +2126,6 @@ pub struct StubCrate {
     #[serde(default)]
     pub free_fns: Vec<StubMethod>,
     /// Method names that are always async on this crate's types (e.g. `send`, `send_with`).
-    /// Line form: `async_methods send, send_with`.
-    /// When a method is both fallible and in this set, it gets `.await.map_err(…)?`.
-    #[serde(default)]
-    pub async_methods: Vec<String>,
     /// Field names that require borrow (`&self.field`) instead of clone.
     /// Line form: `borrow_fields pool`.
     /// Used when the type requires `&T` for trait impls (e.g. sqlx Executor for &Pool).
@@ -2146,6 +2268,11 @@ pub struct StubMethod {
     pub name: String,
     pub params: Vec<(String, String, bool)>, // (param_name, type_string, is_ref)
     pub return_type: Option<String>,         // VEIL type syntax (e.g. "Res!<Str>")
+    /// Per-target lowering templates: target name (e.g. "rust") → template string.
+    /// When present, the codegen engine uses this template directly instead of
+    /// heuristic suffix detection (async/fallible/builder patterns).
+    #[serde(default)]
+    pub lowers_to: HashMap<String, String>,
 }
 
 /// Apply a `# key value` or bare directive provenance line onto a stub.
@@ -2252,6 +2379,17 @@ pub fn parse_stub_file(content: &str) -> Option<StubCrate> {
     let mut harness_field_name: Option<String> = None;
     let mut harness_field_buf: Option<String> = None;
     let mut saw_header = false;
+    // lowers_to block parsing: tracks whether we're inside a lowers_to block
+    // and which method container (struct/impl/free_fns) + index the template attaches to.
+    let mut in_lowers_to = false;
+    let mut lowers_to_base_indent: usize = 0;
+    // Which container and index the lowers_to block belongs to
+    enum LowersToTarget {
+        StructMethod(usize),  // index in current_struct.methods
+        ImplMethod(usize),    // index in current_impl.methods
+        FreeFn(usize),        // index in stub.free_fns
+    }
+    let mut lowers_to_target: Option<LowersToTarget> = None;
 
     for line in content.lines() {
         // Finish multi-line harness_field raw string
@@ -2289,6 +2427,75 @@ pub fn parse_stub_file(content: &str) -> Option<StubCrate> {
         }
         let indent = line.len() - line.trim_start().len();
 
+        // lowers_to block parsing: if we're inside a lowers_to block, accumulate
+        // `target: "template"` lines until indent drops back.
+        if in_lowers_to {
+            if indent > lowers_to_base_indent {
+                // Parse `rust: "template string"` or `typescript: "template"`
+                if let Some(colon_pos) = trimmed.find(':') {
+                    let target = trimmed[..colon_pos].trim();
+                    let value = trimmed[colon_pos + 1..].trim();
+                    // Strip surrounding quotes
+                    let template = if (value.starts_with('"') && value.ends_with('"'))
+                        || (value.starts_with('\'') && value.ends_with('\''))
+                    {
+                        value[1..value.len() - 1].to_string()
+                    } else {
+                        value.to_string()
+                    };
+                    if !target.is_empty() && !template.is_empty() {
+                        // Attach to the correct method
+                        match &lowers_to_target {
+                            Some(LowersToTarget::StructMethod(idx)) => {
+                                if let Some(ref mut s) = current_struct {
+                                    if let Some(m) = s.methods.get_mut(*idx) {
+                                        m.lowers_to.insert(target.to_string(), template);
+                                    }
+                                }
+                            }
+                            Some(LowersToTarget::ImplMethod(idx)) => {
+                                if let Some(ref mut i) = current_impl {
+                                    if let Some(m) = i.methods.get_mut(*idx) {
+                                        m.lowers_to.insert(target.to_string(), template);
+                                    }
+                                }
+                            }
+                            Some(LowersToTarget::FreeFn(idx)) => {
+                                if let Some(m) = stub.free_fns.get_mut(*idx) {
+                                    m.lowers_to.insert(target.to_string(), template);
+                                }
+                            }
+                            None => {}
+                        }
+                    }
+                }
+                continue;
+            } else {
+                // Indent dropped — exit lowers_to mode, fall through to normal parsing
+                in_lowers_to = false;
+                lowers_to_target = None;
+            }
+        }
+
+        // Detect `lowers_to` keyword (deeper indent than the method it follows)
+        if trimmed == "lowers_to" {
+            in_lowers_to = true;
+            lowers_to_base_indent = indent;
+            // Determine which method we're attaching to
+            if let Some(ref s) = current_struct {
+                if !s.methods.is_empty() {
+                    lowers_to_target = Some(LowersToTarget::StructMethod(s.methods.len() - 1));
+                }
+            } else if let Some(ref i) = current_impl {
+                if !i.methods.is_empty() {
+                    lowers_to_target = Some(LowersToTarget::ImplMethod(i.methods.len() - 1));
+                }
+            } else if !stub.free_fns.is_empty() {
+                lowers_to_target = Some(LowersToTarget::FreeFn(stub.free_fns.len() - 1));
+            }
+            continue;
+        }
+
         // Header: stub <name> <version>
         if trimmed.starts_with("stub ") {
             let parts: Vec<&str> = trimmed.strip_prefix("stub ").unwrap().split_whitespace().collect();
@@ -2322,15 +2529,9 @@ pub fn parse_stub_file(content: &str) -> Option<StubCrate> {
             continue;
         }
 
-        // async_methods send, send_with — method names that are always async on this crate's types
+        // async_methods send, send_with — DEPRECATED: templates carry this info now.
+        // Kept as no-op parser for backward compatibility with old stub files.
         if trimmed.starts_with("async_methods ") {
-            stub.async_methods = trimmed
-                .strip_prefix("async_methods ")
-                .unwrap_or("")
-                .split(',')
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .collect();
             continue;
         }
 
@@ -2594,6 +2795,7 @@ pub fn parse_stub_file(content: &str) -> Option<StubCrate> {
                         name: vname,
                         params,
                         return_type: ret_type,
+                        lowers_to: HashMap::new(),
                     });
                 }
             }
@@ -2692,7 +2894,7 @@ fn parse_stub_method(line: &str) -> StubMethod {
             .collect()
     };
 
-    StubMethod { name, params, return_type: ret }
+    StubMethod { name, params, return_type: ret, lowers_to: HashMap::new() }
 }
 
 /// Split on commas that are not inside `<…>` or `(…)`.
@@ -2734,6 +2936,16 @@ pub struct RawLayer {
     pub prompt: Option<String>,
     /// Codegen template blocks declared by this layer.
     pub codegen_templates: Vec<CodegenTemplate>,
+    /// Per-target lowering templates for declared trait/struct methods.
+    /// Key: `(TypeName, MethodName)`, Value: `{ target → template }`.
+    pub method_lowers_to: HashMap<(String, String), HashMap<String, String>>,
+    /// Raw target-language code to emit into the shared crate.
+    /// Each entry is `(target, code_template)`. Templates support `{error_type}` substitution.
+    /// Populated from `shared_emit <target>` blocks in layer files.
+    pub shared_emit: Vec<(String, String)>,
+    /// Harness render templates per target (e.g. "rust_bin" → template string).
+    /// Populated from `harness_template <target>` blocks in layer files.
+    pub harness_render_templates: HashMap<String, String>,
 }
 
 /// Pkg-level `use` names in a layer body (`use deploy`, `use harness`, …).
@@ -2779,6 +2991,12 @@ pub fn parse_layer_file(content: &str, layer_name: &str) -> Result<RawLayer, Str
     let mut in_declare = false;
     let mut declare_base_indent: usize = 0;
     let mut current_decl_lines: Vec<String> = Vec::new();
+    // Declare lowers_to: track current type+method for attaching templates
+    let mut decl_current_type: String = String::new();
+    let mut decl_current_method: String = String::new();
+    let mut decl_in_lowers_to = false;
+    let mut decl_lowers_to_indent: usize = 0;
+    let mut method_lowers_to: HashMap<(String, String), HashMap<String, String>> = HashMap::new();
     let mut in_prompt = false;
     let mut prompt_base_indent: usize = 0;
     let mut prompt_lines: Vec<String> = Vec::new();
@@ -2788,9 +3006,24 @@ pub fn parse_layer_file(content: &str, layer_name: &str) -> Result<RawLayer, Str
     let mut codegen_target: String = String::new();
     let mut codegen_base_indent: usize = 0;
     let mut codegen_lines: Vec<String> = Vec::new();
+    // shared_emit block parsing state
+    let mut shared_emit: Vec<(String, String)> = Vec::new();
+    let mut in_shared_emit = false;
+    let mut shared_emit_target: String = String::new();
+    let mut shared_emit_base_indent: usize = 0;
+    let mut shared_emit_lines: Vec<String> = Vec::new();
+    // harness_template block parsing state
+    let mut harness_render_templates: HashMap<String, String> = HashMap::new();
+    let mut in_harness_template = false;
+    let mut harness_template_target: String = String::new();
+    let mut harness_template_base_indent: usize = 0;
+    let mut harness_template_lines: Vec<String> = Vec::new();
     // In-progress `view` under `present` (flushed on next view / role / section).
     let mut present_view: Option<crate::presentation::ViewSpec> = None;
     let mut errors: Vec<String> = Vec::new();
+    // Multi-line lowers_to template accumulator (triple-quoted strings).
+    let mut lowers_to_target: Option<String> = None;
+    let mut lowers_to_lines: Vec<String> = Vec::new();
 
     let flush_present_view = |item: &mut Option<Item>,
                               view: &mut Option<crate::presentation::ViewSpec>| {
@@ -2802,17 +3035,65 @@ pub fn parse_layer_file(content: &str, layer_name: &str) -> Result<RawLayer, Str
     for line in content.lines() {
         let trimmed = line.trim();
         if trimmed.is_empty() || trimmed.starts_with('#') {
+            // Inside multi-line lowers_to: preserve blank lines and #-lines (code).
+            if lowers_to_target.is_some() {
+                lowers_to_lines.push(line.to_string());
+                continue;
+            }
             // Blank lines inside declare blocks are preserved
             if in_declare && !current_decl_lines.is_empty() {
                 current_decl_lines.push(String::new());
             }
-            // Blank lines inside codegen blocks are preserved
+            // Inside codegen blocks, blank lines are preserved AND lines starting
+            // with # are real code (e.g. #[derive(...)]), not layer comments.
             if in_codegen {
-                codegen_lines.push(String::new());
+                if trimmed.is_empty() {
+                    codegen_lines.push(String::new());
+                } else {
+                    // # line inside codegen — treat as code content, not comment
+                    let dedented = if line.len() > codegen_base_indent {
+                        &line[codegen_base_indent..]
+                    } else {
+                        trimmed
+                    };
+                    codegen_lines.push(dedented.to_string());
+                }
+            }
+            // Inside harness_template blocks, blank lines and #-lines are code content.
+            if in_harness_template {
+                if trimmed.is_empty() {
+                    harness_template_lines.push(String::new());
+                } else {
+                    let dedented = if line.len() > harness_template_base_indent {
+                        &line[harness_template_base_indent..]
+                    } else {
+                        trimmed
+                    };
+                    harness_template_lines.push(dedented.to_string());
+                }
             }
             continue;
         }
         let indent = line.len() - line.trim_start().len();
+
+        // Accumulating a multi-line lowers_to template (inside triple-quotes).
+        if lowers_to_target.is_some() {
+            if trimmed == "\"\"\"" {
+                // End of multi-line template — flush.
+                let template = lowers_to_lines.join("\n");
+                let target = lowers_to_target.take().unwrap();
+                lowers_to_lines.clear();
+                if let Some(item) = current.as_mut() {
+                    match item {
+                        Item::Construct(c) => { c.lowers_to.insert(target, template); }
+                        Item::Statement(s) => { s.lowers_to.insert(target, template); }
+                    }
+                }
+            } else {
+                lowers_to_lines.push(line.to_string());
+            }
+            continue;
+        }
 
         // Handle `declare` section: accumulate raw VEIL source text.
         // Must clear other top-level sections first: `prompt`/`codegen` leave
@@ -2893,8 +3174,90 @@ pub fn parse_layer_file(content: &str, layer_name: &str) -> Result<RawLayer, Str
                     current_decl_lines.clear();
                 }
                 in_declare = false;
+                decl_in_lowers_to = false;
                 // Fall through to normal parsing of this line
             } else {
+                // ── Intercept lowers_to blocks on declared methods ────────
+                // lowers_to keyword at method+2 indent
+                if trimmed == "lowers_to" {
+                    decl_in_lowers_to = true;
+                    decl_lowers_to_indent = indent;
+                    continue;
+                }
+                // Inside a lowers_to block: `target: "template"`
+                // Must be indented deeper than the lowers_to keyword itself,
+                // and target must be a bare word (language name like "typescript").
+                if decl_in_lowers_to {
+                    if indent > decl_lowers_to_indent {
+                        if let Some((target, rest)) = trimmed.split_once(':') {
+                            let target = target.trim();
+                            // Valid target is a bare word (no parens, no spaces)
+                            let is_valid_target = !target.is_empty()
+                                && !target.contains('(')
+                                && !target.contains(' ');
+                            if is_valid_target {
+                                let template = unquote(rest.trim());
+                                if !template.is_empty() {
+                                    let key = if decl_current_type.is_empty() {
+                                        (decl_current_method.clone(), String::new())
+                                    } else {
+                                        (decl_current_type.clone(), decl_current_method.clone())
+                                    };
+                                    if !key.0.is_empty() {
+                                        method_lowers_to
+                                            .entry(key)
+                                            .or_default()
+                                            .insert(target.to_string(), template);
+                                    }
+                                }
+                                continue;
+                            }
+                        }
+                    }
+                    // Indent decreased or line doesn't match → exit lowers_to
+                    decl_in_lowers_to = false;
+                }
+
+                // Track current type name (trait/struct at base indent)
+                if indent == declare_base_indent {
+                    decl_in_lowers_to = false;
+                    // Free function at base indent: `fn name(...)`
+                    if let Some(rest) = trimmed.strip_prefix("fn ") {
+                        let fn_name: String = rest
+                            .chars()
+                            .take_while(|c| c.is_alphanumeric() || *c == '_')
+                            .collect();
+                        if !fn_name.is_empty() {
+                            decl_current_type.clear(); // free fn, no enclosing type
+                            decl_current_method = fn_name;
+                        }
+                    } else {
+                        for prefix in ["trait ", "struct ", "enum "] {
+                            if let Some(rest) = trimmed.strip_prefix(prefix) {
+                                decl_current_type = rest
+                                    .chars()
+                                    .take_while(|c| c.is_alphanumeric() || *c == '_')
+                                    .collect();
+                                decl_current_method.clear();
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                // Track current method name (fn or bare method at base+2 indent)
+                if indent == declare_base_indent + 2 && !decl_current_type.is_empty() {
+                    decl_in_lowers_to = false;
+                    let method_line = trimmed.strip_prefix("fn ").unwrap_or(trimmed);
+                    let method_name: String = method_line
+                        .chars()
+                        .take_while(|c| c.is_alphanumeric() || *c == '_')
+                        .collect();
+                    if !method_name.is_empty() && method_line.contains('(') {
+                        decl_current_method = method_name;
+                    }
+                }
+
                 // Determine whether to flush the accumulated declaration block.
                 // A declaration is "one construct with optional leading annotations."
                 // We flush when a new top-level item begins. An annotation at base
@@ -2920,6 +3283,121 @@ pub fn parse_layer_file(content: &str, layer_name: &str) -> Result<RawLayer, Str
                     trimmed
                 };
                 current_decl_lines.push(dedented.to_string());
+                continue;
+            }
+        }
+
+        // Handle `shared_emit <target>` blocks: raw target-language code for the shared crate
+        if trimmed.starts_with("shared_emit ") && indent <= 2 {
+            // Flush any in-progress sections
+            if in_shared_emit && !shared_emit_lines.is_empty() {
+                shared_emit.push((shared_emit_target.clone(), shared_emit_lines.join("\n")));
+                shared_emit_lines.clear();
+            }
+            if in_declare && !current_decl_lines.is_empty() {
+                while current_decl_lines.last().map(|l| l.is_empty()).unwrap_or(false) {
+                    current_decl_lines.pop();
+                }
+                declarations.push(current_decl_lines.join("\n"));
+                current_decl_lines.clear();
+            }
+            if in_codegen && !codegen_lines.is_empty() {
+                let template = parse_codegen_block(&codegen_target, &codegen_lines, layer_name);
+                codegen_templates.push(template);
+                codegen_lines.clear();
+            }
+            if let Some(item) = current.take() {
+                items.push(item);
+            }
+            in_declare = false;
+            in_prompt = false;
+            in_codegen = false;
+            shared_emit_target = trimmed.strip_prefix("shared_emit ").unwrap().trim().to_string();
+            in_shared_emit = true;
+            shared_emit_base_indent = indent + 2; // content inside is one level deeper
+            section = Section::None;
+            continue;
+        }
+
+        // Handle `harness_template <target>` blocks: template for harness main.rs generation
+        if trimmed.starts_with("harness_template ") && indent <= 2 {
+            // Flush any in-progress sections
+            if in_harness_template && !harness_template_lines.is_empty() {
+                harness_render_templates.insert(harness_template_target.clone(), harness_template_lines.join("\n"));
+                harness_template_lines.clear();
+            }
+            if in_shared_emit && !shared_emit_lines.is_empty() {
+                shared_emit.push((shared_emit_target.clone(), shared_emit_lines.join("\n")));
+                shared_emit_lines.clear();
+            }
+            if in_declare && !current_decl_lines.is_empty() {
+                while current_decl_lines.last().map(|l| l.is_empty()).unwrap_or(false) {
+                    current_decl_lines.pop();
+                }
+                declarations.push(current_decl_lines.join("\n"));
+                current_decl_lines.clear();
+            }
+            if in_codegen && !codegen_lines.is_empty() {
+                let template = parse_codegen_block(&codegen_target, &codegen_lines, layer_name);
+                codegen_templates.push(template);
+                codegen_lines.clear();
+            }
+            if let Some(item) = current.take() {
+                items.push(item);
+            }
+            in_declare = false;
+            in_prompt = false;
+            in_codegen = false;
+            in_shared_emit = false;
+            harness_template_target = trimmed.strip_prefix("harness_template ").unwrap().trim().to_string();
+            in_harness_template = true;
+            harness_template_base_indent = indent + 2;
+            section = Section::None;
+            continue;
+        }
+
+        if in_shared_emit {
+            if indent <= 2 && !trimmed.is_empty() {
+                // Leaving shared_emit — flush
+                if !shared_emit_lines.is_empty() {
+                    shared_emit.push((shared_emit_target.clone(), shared_emit_lines.join("\n")));
+                    shared_emit_lines.clear();
+                }
+                in_shared_emit = false;
+                // Fall through to normal parsing of this line
+            } else {
+                // Accumulate raw code lines (dedented)
+                let dedented = if line.len() > shared_emit_base_indent {
+                    &line[shared_emit_base_indent..]
+                } else if trimmed.is_empty() {
+                    ""
+                } else {
+                    trimmed
+                };
+                shared_emit_lines.push(dedented.to_string());
+                continue;
+            }
+        }
+
+        if in_harness_template {
+            if indent <= 2 && !trimmed.is_empty() {
+                // Leaving harness_template — flush
+                if !harness_template_lines.is_empty() {
+                    harness_render_templates.insert(harness_template_target.clone(), harness_template_lines.join("\n"));
+                    harness_template_lines.clear();
+                }
+                in_harness_template = false;
+                // Fall through to normal parsing of this line
+            } else {
+                // Accumulate raw template lines (dedented)
+                let dedented = if line.len() > harness_template_base_indent {
+                    &line[harness_template_base_indent..]
+                } else if trimmed.is_empty() {
+                    ""
+                } else {
+                    trimmed
+                };
+                harness_template_lines.push(dedented.to_string());
                 continue;
             }
         }
@@ -3009,6 +3487,8 @@ pub fn parse_layer_file(content: &str, layer_name: &str) -> Result<RawLayer, Str
                 presentation: Default::default(),
                 roles: Vec::new(),
                 config_keys: Vec::new(),
+                required_fields: Vec::new(),
+                lowers_to: HashMap::new(),
             }));
             section = Section::None;
             present_view = None;
@@ -3210,13 +3690,23 @@ pub fn parse_layer_file(content: &str, layer_name: &str) -> Result<RawLayer, Str
                 }
             }
             Section::LowersTo => {
-                // Lines: `rust: "template…"` or `typescript: "…"`
-                if let Item::Statement(s) = item {
-                    if let Some((target, rest)) = trimmed.split_once(':') {
-                        let target = target.trim().to_string();
-                        let template = unquote(rest.trim());
+                // Lines: `rust: "template…"` or `rust: """` (multi-line)
+                if let Some((target, rest)) = trimmed.split_once(':') {
+                    let target = target.trim().to_string();
+                    let rest = rest.trim();
+                    if rest == "\"\"\"" || rest.starts_with("\"\"\"") {
+                        // Start of multi-line triple-quoted template.
+                        // If the line is `rust: """content` (rare), we'd need to
+                        // handle inline start — but typical is just `rust: """`
+                        lowers_to_target = Some(target);
+                        lowers_to_lines.clear();
+                    } else {
+                        let template = unquote(rest);
                         if !target.is_empty() && !template.is_empty() {
-                            s.lowers_to.insert(target, template);
+                            match item {
+                                Item::Construct(c) => { c.lowers_to.insert(target, template); }
+                                Item::Statement(s) => { s.lowers_to.insert(target, template); }
+                            }
                         }
                     }
                 }
@@ -3296,6 +3786,15 @@ pub fn parse_layer_file(content: &str, layer_name: &str) -> Result<RawLayer, Str
                         c.dg = v.trim().to_string();
                     } else if trimmed == "au" {
                         c.au = true;
+                    } else if let Some(v) = trimmed.strip_prefix("has ") {
+                        // `has field_name: TypeName` — layer-required field declaration.
+                        if let Some((name, ty)) = v.split_once(':') {
+                            let name = name.trim().to_string();
+                            let ty = ty.trim().to_string();
+                            if !name.is_empty() && !ty.is_empty() {
+                                c.required_fields.push((name, ty));
+                            }
+                        }
                     } else if let Some(v) = trimmed.strip_prefix("role ") {
                         for role in parse_construct_roles(v) {
                             if !c.roles.iter().any(|r| r == &role) {
@@ -3363,6 +3862,16 @@ pub fn parse_layer_file(content: &str, layer_name: &str) -> Result<RawLayer, Str
         codegen_templates.push(template);
     }
 
+    // Flush any trailing shared_emit block
+    if in_shared_emit && !shared_emit_lines.is_empty() {
+        shared_emit.push((shared_emit_target.clone(), shared_emit_lines.join("\n")));
+    }
+
+    // Flush any trailing harness_template block
+    if in_harness_template && !harness_template_lines.is_empty() {
+        harness_render_templates.insert(harness_template_target.clone(), harness_template_lines.join("\n"));
+    }
+
     // Flush any trailing prompt content
     let prompt = if !prompt_lines.is_empty() {
         while prompt_lines.last().map(|l| l.is_empty()).unwrap_or(false) {
@@ -3384,6 +3893,9 @@ pub fn parse_layer_file(content: &str, layer_name: &str) -> Result<RawLayer, Str
         declarations,
         prompt,
         codegen_templates,
+        method_lowers_to,
+        shared_emit,
+        harness_render_templates,
     })
 }
 
@@ -4068,6 +4580,58 @@ pub fn parse_auth_policy(content: &str) -> Option<AuthPolicy> {
     }
 }
 
+/// Parse optional `error_model` block from layer content:
+/// ```text
+/// error_model DomainError
+///   external External
+///   not_found NotFound
+///   validation Validation
+/// ```
+/// The first word after `error_model` is the type name. Indented lines are
+/// `role VariantName` pairs. A layer may declare any number of variants.
+pub fn parse_error_model(content: &str) -> Option<ErrorModelPolicy> {
+    let mut in_block = false;
+    let mut type_name = String::new();
+    let mut variants: Vec<(String, String)> = Vec::new();
+    let mut found = false;
+    let mut header_indent: usize = 0;
+    for line in content.lines() {
+        let t = line.trim();
+        if t.is_empty() || t.starts_with('#') {
+            continue;
+        }
+        if let Some(rest) = t.strip_prefix("error_model ") {
+            let name = rest.trim();
+            if !name.is_empty() {
+                type_name = name.to_string();
+                in_block = true;
+                found = true;
+                // Track the indentation of the header line
+                header_indent = line.len() - line.trim_start().len();
+            }
+            continue;
+        }
+        if !in_block {
+            continue;
+        }
+        // End of block: line at same or less indentation than header
+        let line_indent = line.len() - line.trim_start().len();
+        if line_indent <= header_indent {
+            break;
+        }
+        // Parse "role VariantName" lines
+        let parts: Vec<&str> = t.splitn(2, ' ').collect();
+        if parts.len() == 2 {
+            variants.push((parts[0].to_string(), parts[1].trim().to_string()));
+        }
+    }
+    if found {
+        Some(ErrorModelPolicy { type_name, variants })
+    } else {
+        None
+    }
+}
+
 /// Parse optional `http_name_policy` block for name-derived REST.
 pub fn parse_http_name_policy(content: &str) -> Option<HttpNamePolicy> {
     let mut in_block = false;
@@ -4299,6 +4863,72 @@ pkg wf v1
     }
 
     #[test]
+    fn bus_layer_provides_invoke_dispatch_request_and_routing_trait() {
+        let mut reg = LayerRegistry::builtin();
+        reg.load_content("bus", include_str!("../../../layers/bus.layer"))
+            .expect("bus layer should load");
+        // Bus layer declares all three verbs.
+        for kw in ["invoke", "dispatch", "request"] {
+            let stmt = reg.statement(kw).unwrap_or_else(|| panic!("bus must declare {kw}"));
+            assert_eq!(stmt.port_target.as_deref(), Some("Bus"), "{kw} port_target");
+            assert!(!stmt.lowers_to.is_empty(), "{kw} must have lowers_to");
+            assert!(stmt.lowers_to.contains_key("rust"), "{kw} must have rust template");
+        }
+        // "Bus" becomes a routing trait via port_target.
+        let routing = reg.routing_traits();
+        assert!(routing.contains(&"Bus".to_string()), "Bus must be a routing trait");
+        // Declare block provides Bus trait.
+        assert!(
+            !reg.declarations.is_empty(),
+            "bus.layer must provide declare block"
+        );
+        let decl_joined = reg.declarations.join("\n");
+        assert!(
+            decl_joined.contains("trait Bus"),
+            "declare must contain Bus trait: {decl_joined}"
+        );
+        // method_lowers_to should be populated from statement port_target+lowers_to.
+        assert!(
+            reg.method_lowers_to_template("Bus", "invoke", "rust").is_some(),
+            "Bus.invoke must have rust method_lowers_to"
+        );
+        assert!(
+            reg.method_lowers_to_template("Bus", "dispatch", "rust").is_some(),
+            "Bus.dispatch must have rust method_lowers_to"
+        );
+        assert!(
+            reg.method_lowers_to_template("Bus", "request", "rust").is_some(),
+            "Bus.request must have rust method_lowers_to"
+        );
+    }
+
+    #[test]
+    fn ddd_fullstack_with_bus_has_routing_traits_and_verbs() {
+        let mut reg = LayerRegistry::builtin();
+        reg.load_content("ddd", include_str!("../../../layers/ddd.layer"))
+            .expect("ddd");
+        reg.load_content("bus", include_str!("../../../layers/bus.layer"))
+            .expect("bus");
+        reg.load_content("bus_handle", include_str!("../../../layers/bus_handle.layer"))
+            .expect("bus_handle");
+        // After loading bus.layer, routing traits are present.
+        let routing = reg.routing_traits();
+        assert!(
+            routing.contains(&"Bus".to_string()),
+            "Bus must be routing trait when bus.layer loaded"
+        );
+        // Bus verbs available.
+        for kw in ["invoke", "dispatch", "request"] {
+            assert!(
+                reg.statement(kw).is_some(),
+                "{kw} must be available with bus.layer"
+            );
+        }
+        // bus_handle strip policy still works.
+        assert_eq!(reg.bus_message_name("HandleCreateUser"), "CreateUser");
+    }
+
+    #[test]
     fn layer_annotations_parse_and_reach_palette() {
         let mut reg = LayerRegistry::builtin();
         reg.load_content("ddd", include_str!("../../../layers/ddd.layer"))
@@ -4498,8 +5128,19 @@ pkg bad v1
     #[test]
     fn annotation_roles_from_ddd_and_di() {
         let mut reg = LayerRegistry::builtin();
-        reg.load_content("ddd", include_str!("../../../layers/ddd.layer")).unwrap();
+        reg.load_content("base", include_str!("../../../layers/base.layer")).unwrap();
+        reg.load_content("rust", include_str!("../../../layers/rust.layer")).unwrap();
+        reg.load_content("tokio", include_str!("../../../layers/tokio.layer")).unwrap();
         reg.load_content("di", include_str!("../../../layers/di.layer")).unwrap();
+        reg.load_content("rest_english", include_str!("../../../layers/rest_english.layer")).unwrap();
+        reg.load_content("bus_handle", include_str!("../../../layers/bus_handle.layer")).unwrap();
+        reg.load_content("auth_local", include_str!("../../../layers/auth_local.layer")).unwrap();
+        reg.load_content("harness", include_str!("../../../layers/harness.layer")).unwrap();
+        reg.load_content("deploy", include_str!("../../../layers/deploy.layer")).unwrap();
+        reg.load_content("bus", include_str!("../../../layers/bus.layer")).unwrap();
+        reg.load_content("ddd", include_str!("../../../layers/ddd.layer")).unwrap();
+        reg.load_content("tokio_ddd", include_str!("../../../layers/tokio_ddd.layer")).unwrap();
+        reg.load_content("ddd_fullstack", include_str!("../../../layers/ddd_fullstack.layer")).unwrap();
         assert!(reg.is_runtime_strategy_annotation("strategy"), "strategy role");
         assert!(
             !reg.is_http_route_annotation("route"),
@@ -4529,18 +5170,26 @@ pkg bad v1
             "declare block empty — policy lines may have broken layer parse"
         );
         let decl = reg.declarations.join("\n");
-        assert!(
-            !decl.contains("trait Bus"),
-            "DDD must not inject a Bus — messaging is user-land: {decl}"
-        );
+        // Bus trait comes from bus.layer (not ddd) — this is correct.
         assert!(decl.contains("run_saga"), "run_saga missing: {decl}");
     }
 
     #[test]
     fn rest_english_and_bus_handle_packs_load_via_ddd_use() {
         let mut reg = LayerRegistry::builtin();
-        reg.load_content("ddd", include_str!("../../../layers/ddd.layer"))
-            .expect("ddd");
+        reg.load_content("base", include_str!("../../../layers/base.layer")).unwrap();
+        reg.load_content("rust", include_str!("../../../layers/rust.layer")).unwrap();
+        reg.load_content("tokio", include_str!("../../../layers/tokio.layer")).unwrap();
+        reg.load_content("di", include_str!("../../../layers/di.layer")).unwrap();
+        reg.load_content("rest_english", include_str!("../../../layers/rest_english.layer")).unwrap();
+        reg.load_content("bus_handle", include_str!("../../../layers/bus_handle.layer")).unwrap();
+        reg.load_content("auth_local", include_str!("../../../layers/auth_local.layer")).unwrap();
+        reg.load_content("harness", include_str!("../../../layers/harness.layer")).unwrap();
+        reg.load_content("deploy", include_str!("../../../layers/deploy.layer")).unwrap();
+        reg.load_content("bus", include_str!("../../../layers/bus.layer")).unwrap();
+        reg.load_content("ddd", include_str!("../../../layers/ddd.layer")).unwrap();
+        reg.load_content("tokio_ddd", include_str!("../../../layers/tokio_ddd.layer")).unwrap();
+        reg.load_content("ddd_fullstack", include_str!("../../../layers/ddd_fullstack.layer")).unwrap();
         assert!(
             reg.layers.iter().any(|l| l == "rest_english"),
             "ddd must pull rest_english: {:?}",
@@ -4746,12 +5395,23 @@ http_list_prefix = "Fetch"
 "#,
         )
         .unwrap();
-        std::fs::write(dir.join("main.veil"), "pkg app\n  use ddd\n").unwrap();
+        std::fs::write(dir.join("main.veil"), "pkg app\n  use ddd_fullstack\n").unwrap();
 
         // Load ddd policies then apply project overrides (mirrors for_veil_file tail).
         let mut reg = LayerRegistry::builtin();
-        reg.load_content("ddd", include_str!("../../../layers/ddd.layer"))
-            .unwrap();
+        reg.load_content("base", include_str!("../../../layers/base.layer")).unwrap();
+        reg.load_content("rust", include_str!("../../../layers/rust.layer")).unwrap();
+        reg.load_content("tokio", include_str!("../../../layers/tokio.layer")).unwrap();
+        reg.load_content("di", include_str!("../../../layers/di.layer")).unwrap();
+        reg.load_content("rest_english", include_str!("../../../layers/rest_english.layer")).unwrap();
+        reg.load_content("bus_handle", include_str!("../../../layers/bus_handle.layer")).unwrap();
+        reg.load_content("auth_local", include_str!("../../../layers/auth_local.layer")).unwrap();
+        reg.load_content("harness", include_str!("../../../layers/harness.layer")).unwrap();
+        reg.load_content("deploy", include_str!("../../../layers/deploy.layer")).unwrap();
+        reg.load_content("bus", include_str!("../../../layers/bus.layer")).unwrap();
+        reg.load_content("ddd", include_str!("../../../layers/ddd.layer")).unwrap();
+        reg.load_content("tokio_ddd", include_str!("../../../layers/tokio_ddd.layer")).unwrap();
+        reg.load_content("ddd_fullstack", include_str!("../../../layers/ddd_fullstack.layer")).unwrap();
         let o = crate::deps::load_codegen_overrides(&dir)
             .unwrap()
             .expect("codegen");
@@ -4856,6 +5516,23 @@ item_repo = "PgItemRepo"
         // Unset keys keep layer/defaults
         assert_eq!(reg.harness_policy.profile.as_deref(), Some("axum_http"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn harness_render_template_parsed_from_layer() {
+        let mut reg = LayerRegistry::builtin();
+        reg.load_content("harness", include_str!("../../../layers/harness.layer")).unwrap();
+        assert!(reg.harness_render_templates.contains_key("rust_bin"),
+            "harness.layer should declare harness_template rust_bin");
+        let tpl = &reg.harness_render_templates["rust_bin"];
+        assert!(tpl.contains("{{package_name}}"), "template should contain package_name variable");
+        assert!(tpl.contains("{{for endpoint in endpoints}}"), "template should contain endpoint loop");
+        assert!(tpl.contains("axum"), "template should contain axum framework code");
+        // Also check rust_bin_cargo
+        assert!(reg.harness_render_templates.contains_key("rust_bin_cargo"),
+            "harness.layer should declare harness_template rust_bin_cargo");
+        let cargo = &reg.harness_render_templates["rust_bin_cargo"];
+        assert!(cargo.contains("axum"), "cargo deps should reference axum");
     }
 
     #[test]
@@ -5128,5 +5805,190 @@ types_module types
         assert_eq!(blob.module_path.as_deref(), Some("primitives"));
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&sys);
+    }
+
+    #[test]
+    fn construct_lowers_to_parses_multiline_and_single_line() {
+        let src = r#"
+pkg test v1
+  construct ValueObject
+    kw val
+    mt struct
+    lowers_to
+      rust: """
+        #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+        pub struct {{name}} {
+            {{for field in fields}}pub {{field.name}}: {{field.type}},
+            {{end}}
+        }
+      """
+      typescript: "export interface {{name}} {}"
+"#;
+        let mut reg = LayerRegistry::builtin();
+        reg.load_content("test", src).expect("layer should load");
+        let spec = reg.construct("val").expect("val construct");
+        // Multi-line template
+        let rust_tpl = spec.lowers_to.get("rust").expect("rust template");
+        assert!(
+            rust_tpl.contains("#[derive(Debug, Clone, PartialEq, Eq, Hash)]"),
+            "multi-line template should preserve derives: {}",
+            rust_tpl
+        );
+        assert!(
+            rust_tpl.contains("pub struct {{name}}"),
+            "multi-line template should preserve placeholders: {}",
+            rust_tpl
+        );
+        assert!(
+            rust_tpl.contains("{{for field in fields}}"),
+            "multi-line template should preserve loop: {}",
+            rust_tpl
+        );
+        // Single-line template
+        let ts_tpl = spec.lowers_to.get("typescript").expect("typescript template");
+        assert_eq!(ts_tpl, "export interface {{name}} {}");
+    }
+
+    #[test]
+    fn parse_inline_has_field_requirement() {
+        let src = r#"pkg test v1
+  construct Entity
+    kw ent
+    mt struct
+    has id: Id
+    has tenant_id: Id
+"#;
+        let mut reg = LayerRegistry::builtin();
+        reg.load_content("test", src).expect("layer should load");
+        let spec = reg.construct("ent").expect("Entity spec");
+        assert_eq!(spec.required_fields.len(), 2);
+        assert_eq!(spec.required_fields[0], ("id".to_string(), "Id".to_string()));
+        assert_eq!(spec.required_fields[1], ("tenant_id".to_string(), "Id".to_string()));
+    }
+
+    #[test]
+    fn has_block_does_not_become_required_field() {
+        // `has` alone (block syntax) should NOT create required_fields.
+        // Indent construct inside `pkg` so that `has` block contents are > indent 4.
+        let src = r#"pkg test v1
+  construct Aggregate
+    kw agg
+    mt struct
+    has
+      root: struct
+      fn[]
+"#;
+        let mut reg = LayerRegistry::builtin();
+        reg.load_content("test", src).expect("layer should load");
+        let spec = reg.construct("agg").expect("Aggregate spec");
+        assert!(spec.required_fields.is_empty(), "block `has` should not produce required_fields");
+        assert!(spec.contains.iter().any(|c| c.starts_with("root")), "root should be in contains: {:?}", spec.contains);
+    }
+
+    #[test]
+    fn declare_method_lowers_to_parses_templates() {
+        let src = r#"pkg test v1
+  declare
+    trait ApiClient
+      fetch(endpoint: Str, params: Json) -> Res!<Json>
+        lowers_to
+          typescript: "(async () => { const __r = await fetch({arg0}); return __r.json(); })()"
+      mutate(endpoint: Str, body: Json) -> Res!<Json>
+        lowers_to
+          typescript: "(async () => { const __r = await fetch({arg0}, { method: 'POST', body: JSON.stringify({arg1}) }); return __r.json(); })()"
+
+    struct LocalStorage
+      fn get_or(key: Str, default: Str) -> Str
+        lowers_to
+          typescript: "(localStorage.getItem({arg0}) ?? {arg1})"
+
+    fn goto(url: Str) -> Res!
+      lowers_to
+        typescript: "window.location.href = {arg0}"
+      ret Ok
+"#;
+        let mut reg = LayerRegistry::builtin();
+        reg.load_content("test", src).expect("layer should load");
+
+        // Trait method: (ApiClient, fetch)
+        let tmpl = reg.method_lowers_to_template("ApiClient", "fetch", "typescript");
+        assert!(tmpl.is_some(), "ApiClient.fetch should have lowers_to template");
+        let tmpl_str = tmpl.unwrap();
+        assert!(tmpl_str.contains("await fetch({arg0})"), "template should contain fetch call, got: {}", tmpl_str);
+
+        // Trait method: (ApiClient, mutate)
+        let tmpl = reg.method_lowers_to_template("ApiClient", "mutate", "typescript");
+        assert!(tmpl.is_some(), "ApiClient.mutate should have lowers_to template");
+        assert!(tmpl.unwrap().contains("method: 'POST'"), "template should contain POST");
+
+        // Struct method: (LocalStorage, get_or)
+        let tmpl = reg.method_lowers_to_template("LocalStorage", "get_or", "typescript");
+        assert!(tmpl.is_some(), "LocalStorage.get_or should have lowers_to template");
+        assert!(tmpl.unwrap().contains("localStorage.getItem"), "template should use localStorage");
+
+        // Free function: (goto, "") — called as CallExpr { target: "goto", method: "" }
+        let tmpl = reg.method_lowers_to_template("goto", "", "typescript");
+        assert!(tmpl.is_some(), "goto should have lowers_to template, got {:?}", reg.method_lowers_to);
+        assert!(tmpl.unwrap().contains("window.location.href"), "template should use window.location");
+    }
+
+    #[test]
+    fn parse_error_model_basic() {
+        let content = r#"
+error_model DomainError
+  external External
+  not_found NotFound
+  validation Validation
+"#;
+        let em = super::parse_error_model(content).unwrap();
+        assert_eq!(em.type_name, "DomainError");
+        assert_eq!(em.variants.len(), 3);
+        assert_eq!(em.variant("external"), Some("External"));
+        assert_eq!(em.variant("not_found"), Some("NotFound"));
+        assert_eq!(em.variant("validation"), Some("Validation"));
+    }
+
+    #[test]
+    fn parse_error_model_custom() {
+        let content = r#"
+error_model AppError
+  external Upstream
+  not_found Missing
+  validation BadInput
+  timeout Timeout
+"#;
+        let em = super::parse_error_model(content).unwrap();
+        assert_eq!(em.type_name, "AppError");
+        assert_eq!(em.variants.len(), 4);
+        assert_eq!(em.variant("external"), Some("Upstream"));
+        assert_eq!(em.variant("not_found"), Some("Missing"));
+        assert_eq!(em.variant("validation"), Some("BadInput"));
+        assert_eq!(em.variant("timeout"), Some("Timeout"));
+        // Full path generation
+        assert_eq!(em.variant_path("external"), Some("AppError::Upstream".to_string()));
+    }
+
+    #[test]
+    fn parse_error_model_nested_in_layer() {
+        // Simulates ddd.layer where error_model is indented inside pkg block
+        let content = r#"pkg ddd v1
+  desc "test"
+  error_model DomainError
+    external External
+    not_found NotFound
+    validation Validation
+  construct Context
+    kw ctx
+"#;
+        let em = super::parse_error_model(content).unwrap();
+        assert_eq!(em.type_name, "DomainError");
+        assert_eq!(em.variants.len(), 3);
+        assert_eq!(em.variant("external"), Some("External"));
+    }
+
+    #[test]
+    fn parse_error_model_absent() {
+        let content = "construct Foo\n  kw foo\n";
+        assert!(super::parse_error_model(content).is_none());
     }
 }

@@ -1563,11 +1563,14 @@ fn context_crates_from_veil_file(path: &Path) -> Option<Vec<String>> {
     let mut reg = veil_ir::LayerRegistry::builtin();
     // Best-effort layers from project; builtins still parse ddd keywords if loaded
     // via ambient registry when serve is running — for smoke path use builtin + common.
+    let _ = reg.load_content("base", include_str!("../../../layers/base.layer"));
+    let _ = reg.load_content("tokio", include_str!("../../../layers/tokio.layer"));
+    let _ = reg.load_content("di", include_str!("../../../layers/di.layer"));
     let _ = reg.load_content(
         "ddd",
         include_str!("../../../layers/ddd.layer"),
     );
-    let _ = reg.load_content("di", include_str!("../../../layers/di.layer"));
+    let _ = reg.load_content("harness", include_str!("../../../layers/harness.layer"));
     let sol = veil_parser::parse_with_registry(&tokens, reg).ok()?;
     let mut names = Vec::new();
     for item in &sol.items {

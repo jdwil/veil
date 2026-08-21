@@ -417,15 +417,18 @@ works **without** engine or viewer code changes.
 The invariant **holds** for the parser, IR builder, and viewer. It does
 **NOT** hold for codegen today:
 
-- `rust.rs` branches on `is_a("DomainService")`, `is_a("ApplicationService")`,
-  `keyword == "handler"`, `keyword == "svc"` — hardcoded DDD knowledge.
-- Layer `emit_to` sections: **derives** and **trait_attrs** are now consumed
+- The generation dispatch (`generate.rs`) does NOT branch on subkind or
+  `is_a` strings — it routes by structural role (group, construct, field).
+  DDD-specific handling lives in `application.rs` where ApplicationService
+  and DomainService flows are generated, but this is driven by construct
+  roles not string matching on keywords.
+- Layer `emit_to` sections: **derives** and **trait_attrs** are consumed
   by the backend (wired through `gen_module_crate`). **fn_attrs** is declared
   in `rust.layer` (emits "async") but not consumed because the backend
   hardcodes `pub async fn` directly — documented, not a functional gap since
   all fn-shaped constructs are async today.
 - Layer constraints (`immutable`, `no_identity`, `equality_by_value`) are
-  validated but **partially consulted during code emission** — immutable
+  validated and **partially consulted during code emission** — immutable
   constructs get `&self` methods (not `&mut self`). Full constraint-driven
   emission (e.g., suppressing Clone on immutable types) is incomplete.
 - Custom roles declared by new layers have no effect unless the backend
@@ -548,24 +551,25 @@ template DSL into a third programming language. Details:
 
 ### Layer codegen gap (current state)
 
-The design above is correct. The implementation is incomplete:
+The design above is correct. The implementation is partially wired:
 
-- **`emit_to` sections** are populated by `template.rs` but never read by
-  `rust.rs`. Layer-declared derives, attributes, and modifiers have no
-  effect on output. The backend hardcodes its own.
-- **Construct-level `lowers_to`** does not exist. Only statements can
-  declare target-specific lowering templates. Constructs cannot.
-- **Template output** goes to separate generated files, not inline
-  augmentation of the primary struct/trait/fn emission.
+- **`emit_to` sections** are consumed by the Rust backend —
+  `derives`, `trait_attrs`, `fn_attrs`, and constraints are extracted and
+  applied to generated structs/traits.
+- **Construct-level `lowers_to`** is consumed for Rust type/function
+  templates (`construct_lowers_to`). Statement `lowers_to` interpolates
+  through a `LayerTemplate` IR node whose bindings are lowered expressions,
+  not pre-rendered strings.
+- **Role bindings** — custom roles declared by new layers have no codegen
+  effect unless the backend has explicit handling. This is the primary
+  remaining gap for "any layer works without engine changes."
 - **Condition language** for template matching is limited to `has_role()`,
   `has_annotation()`, and `subkind ==`. No constraint-based, type-based,
   or compound conditions.
 
-Until these are wired up, **layers cannot meaningfully influence code
-generation** — they can only add vocabulary, visuals, and validation.
-The codegen remains a monolithic backend with hardcoded DDD knowledge.
-This is the primary blocker for the "any layer works without engine changes"
-promise.
+Until role bindings are generic, **layers cannot define wholly novel
+construct shapes** without some engine recognition of roles — they can add
+vocabulary, validation, and `lowers_to`/`emit_to` to existing shapes.
 
 ### Multi-target
 
@@ -739,23 +743,21 @@ Implementation map (summary):
 
 ### Codegen architecture debt (resolve before multi-target)
 
-- **Expression emission is IR-based** — `expr_to_rust` routes through a
-  typed `RustExpr` intermediate (`lower_to_rust → emit`). The legacy
-  1200-line string-interpolation path has been deleted. All expression types
-  produce structured IR nodes; ownership analysis operates on these nodes.
-  String-based heuristics for type inference have been removed.
+- **Expression emission is IR-based** — `expr_to_rust` is
+  `emit(apply_ownership(lower_to_rust(expr)))`. There is no `Raw`/`Statement`
+  escape hatch. Match/if/for/while/assign/closure/calls lower to structured
+  `RustExpr` nodes. `emit` is the only stage that produces target text.
+  Async/fallible call finish is `(Type, method)` stub metadata applied as
+  `Await`/`Try`/`MapErr` nodes — not concatenated `.await`/`.map_err` suffixes
+  and not hardcoded method names (`send`, `put_item`, …).
 - **Per-target reimplementation** — Rust and TypeScript share zero lowering
-  infrastructure. Adding a third target means writing a third standalone
-  implementation of the full expression language.
-- **Hardcoded module/method lists** — known crate names, async method names,
-  and error type variants are string constants in the backend. Stubs should
-  declare these; the backend should read them.
-- **DDD special-casing in dispatch** — handler registration, deps injection,
-  and routing patterns branch on hardcoded subkind/keyword strings rather
-  than layer-declared policies.
-- **calls.rs bulk** — ~2400 lines of call translation logic (receiver
-  dispatch, argument cloning, suffix application). Target for reduction to
-  <200 lines of shared helpers once structured RustExpr handles calls natively.
+  infrastructure. TypeScript is still in development. Adding a third target
+  means writing a third standalone implementation until a shared semantic IR
+  exists.
+- **Language-primitive special cases remain** — List `.get`/`.len`, Json
+  extractors, Option unwrap, etc. live in the Rust backend because they are
+  VEIL language, not product vocabulary. Product/SDK names must stay in
+  `.stub` / `.layer` files.
 
 ## Strategic Sequencing
 

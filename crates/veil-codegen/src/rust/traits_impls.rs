@@ -11,6 +11,7 @@ pub fn gen_shared_crate(
     registry: &LayerRegistry,
     links: &[crate::links::ResolvedLink],
     handler_names: &[String],
+    layer_fn_attrs: Option<&str>,
 ) -> Vec<GeneratedFile> {
     use crate::expr::{build_ctx_from_solution, stmt_to_rust};
     let mut files = Vec::new();
@@ -41,40 +42,49 @@ futures = "0.3"
         content: shared_cargo,
     });
 
-    // CAP-003: always emit register_handlers module (may be empty list).
-    files.push(GeneratedFile {
-        path: "crates/veil_shared/src/register_handlers.rs".into(),
-        content: gen_register_handlers_module(handler_names),
-    });
-
     let mut lib = String::new();
     lib.push_str("//! Shared types across all context crates — common errors and\n");
     lib.push_str("//! layer-provided infrastructure traits (routing ports, etc.).\n\n");
     lib.push_str("#![allow(unused_imports)]\n\n");
-    lib.push_str("pub mod register_handlers;\n");
-    lib.push_str("pub use register_handlers::{handler_count, register_all, HANDLER_NAMES};\n\n");
     lib.push_str("use async_trait::async_trait;\nuse uuid::Uuid;\n\n");
-    lib.push_str("/// Domain error type.\n#[derive(Debug, thiserror::Error)]\npub enum DomainError {\n");
-    lib.push_str("    #[error(\"Not found\")]\n    NotFound,\n");
-    lib.push_str("    #[error(\"Validation failed: {0}\")]\n    Validation(String),\n");
-    lib.push_str("    #[error(\"External service error: {0}\")]\n    External(String),\n");
+
+    // ── Error model: generate from registry (layer-declared) ────────────
+    // If no error model is declared, use sentinel values. The check pipeline
+    // blocks user projects from reaching this point, but test fixtures that
+    // exercise non-error-model features may legitimately lack one.
+    let (err_type, err_not_found, err_validation, err_external) = if let Some(em) = &registry.error_model {
+        let nf = em.variant("not_found").expect("error_model must declare variant 'not_found'").to_string();
+        let val = em.variant("validation").expect("error_model must declare variant 'validation'").to_string();
+        let ext = em.variant("external").expect("error_model must declare variant 'external'").to_string();
+        (em.type_name.clone(), nf, val, ext)
+    } else {
+        ("__VEIL_NO_ERROR_MODEL__".to_string(), "__NO_NOT_FOUND__".to_string(), "__NO_VALIDATION__".to_string(), "__NO_EXTERNAL__".to_string())
+    };
+    lib.push_str(&format!("/// Domain error type.\n#[derive(Debug, thiserror::Error)]\npub enum {} {{\n", err_type));
+    lib.push_str(&format!("    #[error(\"Not found\")]\n    {},\n", err_not_found));
+    lib.push_str(&format!("    #[error(\"Validation failed: {{0}}\")]\n    {}(String),\n", err_validation));
+    lib.push_str(&format!("    #[error(\"External service error: {{0}}\")]\n    {}(String),\n", err_external));
+    // Emit any additional variants declared by the layer.
+    if let Some(em) = &registry.error_model {
+        for (role, variant) in &em.variants {
+            if role != "not_found" && role != "validation" && role != "external" {
+                // Additional variants get String payload by default.
+                lib.push_str(&format!("    #[error(\"{role}: {{0}}\")]\n    {variant}(String),\n"));
+            }
+        }
+    }
     lib.push_str("}\n\n");
-    lib.push_str("/// Validation error type.\n#[derive(Debug, thiserror::Error)]\n#[error(\"Validation error: {0}\")]\npub struct ValidationError(pub String);\n\nimpl From<ValidationError> for DomainError {\n    fn from(e: ValidationError) -> Self {\n        DomainError::Validation(e.0)\n    }\n}\n\n");
-    lib.push_str("impl From<serde_json::Error> for DomainError {\n    fn from(e: serde_json::Error) -> Self {\n        DomainError::External(e.to_string())\n    }\n}\n\n");
-    lib.push_str("impl From<String> for DomainError {\n    fn from(e: String) -> Self {\n        DomainError::External(e)\n    }\n}\n\n");
+    lib.push_str(&format!("/// Validation error type.\n#[derive(Debug, thiserror::Error)]\n#[error(\"Validation error: {{0}}\")]\npub struct ValidationError(pub String);\n\nimpl From<ValidationError> for {err_type} {{\n    fn from(e: ValidationError) -> Self {{\n        {err_type}::{err_validation}(e.0)\n    }}\n}}\n\n"));
+    lib.push_str(&format!("impl From<serde_json::Error> for {err_type} {{\n    fn from(e: serde_json::Error) -> Self {{\n        {err_type}::{err_external}(e.to_string())\n    }}\n}}\n\n"));
+    lib.push_str(&format!("impl From<String> for {err_type} {{\n    fn from(e: String) -> Self {{\n        {err_type}::{err_external}(e)\n    }}\n}}\n\n"));
 
     // Trait names in scope — used to box value-position references (List<Trait>).
     let trait_names: std::collections::HashSet<String> =
         traits.iter().map(|t| t.name.clone()).collect();
 
-    // Local harness impls: routing trait(s) + auth trait from layer policy.
-    let routing = registry.routing_traits();
-    let mut routing_trait: Option<&Construct> = None;
+    // Local harness impls: auth trait from layer policy.
     let mut auth_trait: Option<&Construct> = None;
     for t in traits {
-        if routing.iter().any(|r| r == &t.name) && routing_trait.is_none() {
-            routing_trait = Some(t);
-        }
         if registry.is_auth_service_trait(&t.name) {
             auth_trait = Some(t);
         }
@@ -100,12 +110,12 @@ futures = "0.3"
             let params = method
                 .params
                 .iter()
-                .map(|p| format!("{}: {}", to_snake(&p.name), param_type_to_rust(&p.type_expr, &trait_names)))
+                .map(|p| format!("{}: {}", to_snake(&p.name), param_type_to_rust(&p.type_expr, &trait_names, &err_type)))
                 .collect::<Vec<_>>()
                 .join(", ");
             let sep = if params.is_empty() { "" } else { ", " };
             let ret = match &method.return_type {
-                Some(t) => format!(" -> {}", type_to_rust_with_traits(t, &trait_names)),
+                Some(t) => format!(" -> {}", type_to_rust_with_traits(t, &trait_names, &err_type)),
                 None => String::new(),
             };
             lib.push_str(&format!("    async fn {}(&self{}{}){ret};\n", to_snake(&method.name), sep, params));
@@ -113,13 +123,30 @@ futures = "0.3"
         lib.push_str("}\n\n");
     }
 
-    // RT-001 / RT-004: InProcessBus methods from the routing trait surface only.
-    if let Some(rt) = routing_trait {
-        lib.push_str(&gen_inprocess_bus_impl(rt, &trait_names));
+    // Layer-provided shared_emit blocks (e.g. InProcessBus + handler registry from bus.layer).
+    // Substitute {error_type}, {not_found_variant}, {handler_names_entries} placeholders.
+    let err_type_name = registry.error_model.as_ref().map(|em| em.type_name.as_str()).unwrap_or("__VEIL_NO_ERROR_MODEL__");
+    let not_found_variant = registry.error_model.as_ref()
+        .and_then(|em| em.variant("not_found"))
+        .unwrap_or("__NO_NOT_FOUND__");
+    let handler_entries: String = handler_names.iter()
+        .map(|n| format!("    \"{n}\","))
+        .collect::<Vec<_>>()
+        .join("\n");
+    for (target, code) in &registry.shared_emit {
+        if target == "rust" {
+            let substituted = code
+                .replace("{error_type}", err_type_name)
+                .replace("{not_found_variant}", not_found_variant)
+                .replace("{handler_names_entries}", &handler_entries);
+            lib.push_str(&substituted);
+            lib.push('\n');
+        }
     }
+
     // RT-008: AllowAllAuth methods from the configured auth trait + Principal-like struct.
     if let Some(at) = auth_trait {
-        lib.push_str(&gen_allow_all_auth_impl(at, structs, &trait_names));
+        lib.push_str(&gen_allow_all_auth_impl(at, structs, &trait_names, registry));
     }
 
     // Emit layer-provided structs (e.g. Principal) so traits can reference them.
@@ -152,24 +179,25 @@ futures = "0.3"
         for p in &f.params {
             ctx.locals.insert(p.name.clone());
             // Track the trait name (unboxed) so method calls resolve to .await?.
-            ctx.local_types.insert(p.name.clone(), local_type_for_param(&p.type_expr, &trait_names));
+            ctx.types.local_types.insert(p.name.clone(), local_type_for_param(&p.type_expr, &trait_names, &err_type));
         }
-        ctx.mut_locals = crate::expr::analyze_mut_locals(&f.body);
-        ctx.ident_uses = crate::expr::count_ident_uses(&f.body);
+        ctx.ownership.mut_locals = crate::expr::analyze_mut_locals(&f.body);
+        ctx.ownership.ident_uses = crate::expr::count_ident_uses(&f.body);
 
         let params = f
             .params
             .iter()
-            .map(|p| format!("{}: {}", to_snake(&p.name), param_type_to_rust(&p.type_expr, &trait_names)))
+            .map(|p| format!("{}: {}", to_snake(&p.name), param_type_to_rust(&p.type_expr, &trait_names, &err_type)))
             .collect::<Vec<_>>()
             .join(", ");
         let ret = match &f.return_type {
-            Some(t) => type_to_rust_with_traits(t, &trait_names),
-            None => "Result<(), DomainError>".to_string(),
+            Some(t) => type_to_rust_with_traits_and_error(t, &trait_names, &err_type),
+            None => format!("Result<(), {}>", err_type),
         };
         ctx.expected_return_rust = Some(ret.clone());
+        let fn_mod = layer_fn_attrs.unwrap_or("pub");
         lib.push_str(&format!(
-            "/// Layer-declared coordinator.\npub async fn {}({}) -> {} {{\n",
+            "/// Layer-declared coordinator.\n{fn_mod} fn {}({}) -> {} {{\n",
             to_snake(&f.name),
             params,
             ret,
@@ -214,15 +242,17 @@ pub fn gen_traits(
     solution: &Solution,
     registry: &LayerRegistry,
     layer_trait_attrs: Option<&str>,
+    template_output: &crate::template::TemplateOutput,
 ) -> GeneratedFile {
     let mut out = String::new();
+    let err_type = registry.error_model.as_ref().map(|em| em.type_name.as_str()).unwrap_or("__VEIL_NO_ERROR_MODEL__");
     out.push_str("//! Trait definitions (async traits).\n\n");
     out.push_str("#![allow(unused_imports)]\n\n");
     out.push_str("use async_trait::async_trait;\nuse uuid::Uuid;\n\n");
     out.push_str("use crate::domain::types::*;\n");
     // Common error types live in veil_shared. Layer-declared names are
     // re-exported unless the product defined the same name locally.
-    out.push_str("pub use veil_shared::{DomainError, ValidationError};\n");
+    out.push_str(&format!("pub use veil_shared::{{{}, ValidationError}};\n", err_type));
     let product_trait_names: std::collections::HashSet<&str> =
         contents.traits.iter().map(|t| t.name.as_str()).collect();
     let declared_types = layer_declared_type_names(registry);
@@ -242,17 +272,23 @@ pub fn gen_traits(
             let rust = to_snake(&fn_name);
             out.push_str(&format!("pub use veil_shared::{rust};\n"));
         }
-        if !registry.routing_traits().is_empty() {
-            out.push_str("pub use veil_shared::InProcessBus;\n");
-        }
-        out.push_str(
-            "pub use veil_shared::{register_all, handler_count, HANDLER_NAMES};\n\n",
-        );
+        // Layer shared_emit items (bus impl, handler registry, etc.) are
+        // covered by the glob when no conflict, or by the selective imports
+        // of declared type names above. No explicit bus-specific re-exports.
+        out.push('\n');
     } else {
         out.push_str("pub use veil_shared::*;\n\n");
     }
 
     for t in &contents.traits {
+        // ─── Construct lowers_to: template takes full control ──────────────
+        if let Some(template) = registry.construct_lowers_to(t, "rust") {
+            let rendered = crate::rust::interpolate_construct_template(template, t, registry);
+            out.push_str(&rendered);
+            out.push_str("\n\n");
+            continue;
+        }
+
         let tp = generic_params_rust(&t.type_params);
         // Generic ports get Send+Sync on type params used as entity payloads.
         let where_bounds = if t.type_params.is_empty() {
@@ -279,11 +315,11 @@ pub fn gen_traits(
             let params = method
                 .params
                 .iter()
-                .map(|p| format!("{}: {}", to_snake(&p.name), type_to_rust(&p.type_expr)))
+                .map(|p| format!("{}: {}", to_snake(&p.name), type_to_rust_with_error(&p.type_expr, err_type)))
                 .collect::<Vec<_>>()
                 .join(", ");
             let ret = match &method.return_type {
-                Some(t) => format!(" -> {}", type_to_rust(t)),
+                Some(t) => format!(" -> {}", type_to_rust_with_error(t, err_type)),
                 None => String::new(),
             };
             let sep = if params.is_empty() { "" } else { ", " };
@@ -294,6 +330,11 @@ pub fn gen_traits(
             ));
         }
         out.push_str("}\n\n");
+        // Append inline template contributions for this trait (emit without emit_to/emit_file).
+        if let Some(inline) = crate::template::compose_inline(template_output, &t.name) {
+            out.push_str(&inline);
+            out.push_str("\n\n");
+        }
     }
 
     // Type aliases: `type WearTestRepo = EntityRepo<WearTest>`
@@ -337,9 +378,14 @@ pub fn gen_impls(
 ) -> GeneratedFile {
     use crate::expr::{build_ctx_from_solution, expr_to_rust, GenCtx};
 
+    let err_type = registry.error_model.as_ref().map(|em| em.type_name.as_str()).unwrap_or("__VEIL_NO_ERROR_MODEL__");
+    let err_external_path = registry.error_model.as_ref()
+        .and_then(|em| em.variant_path("external"))
+        .unwrap_or_else(|| "__VEIL_NO_ERROR_MODEL__::__NO_EXTERNAL__".to_string());
+
     let mut out = String::new();
     out.push_str("//! Implementations of traits.\n\n");
-    out.push_str("#![allow(unused_imports, unused_variables, dead_code)]\n\n");
+    out.push_str("#![allow(unused_imports, unused_variables)]\n\n");
     out.push_str("use async_trait::async_trait;\nuse crate::ports::*;\nuse crate::domain::types::*;\nuse std::collections::HashMap;\nuse uuid::Uuid;\nuse chrono::Utc;\n");
 
     // Stub-declared `codegen_imports` when any registered stub provides them.
@@ -457,7 +503,7 @@ pub fn gen_impls(
                             let fname = fname.trim().to_string();
                             let ftype = ftype.trim();
                             let qualified_type = if let Some((crate_name, original_name)) =
-                                seeded.stub_type_crate.get(ftype)
+                                seeded.stubs.stub_type_crate.get(ftype)
                             {
                                 format!("{}::{}", crate_name, original_name)
                             } else if let Some((crate_name, path)) =
@@ -653,29 +699,29 @@ pub fn gen_impls(
                             .iter()
                             .map(|p| {
                                 let ty = monomorphize_type(&p.type_expr, c, t);
-                                format!("{}: {}", to_snake(&p.name), type_to_rust(&ty))
+                                format!("{}: {}", to_snake(&p.name), type_to_rust_with_error(&ty, err_type))
                             })
                             .collect::<Vec<_>>()
                             .join(", ");
                         let ret = m
                             .return_type
                             .as_ref()
-                            .map(|rt| type_to_rust(&monomorphize_type(rt, c, t)))
-                            .unwrap_or_else(|| "Result<(), DomainError>".to_string());
+                            .map(|rt| type_to_rust_with_error(&monomorphize_type(rt, c, t), err_type))
+                            .unwrap_or_else(|| format!("Result<(), {}>", err_type));
                         (params, ret)
                     }
                     (Some(m), None) => {
                         let params = m
                             .params
                             .iter()
-                            .map(|p| format!("{}: {}", to_snake(&p.name), type_to_rust(&p.type_expr)))
+                            .map(|p| format!("{}: {}", to_snake(&p.name), type_to_rust_with_error(&p.type_expr, err_type)))
                             .collect::<Vec<_>>()
                             .join(", ");
                         let ret = m
                             .return_type
                             .as_ref()
-                            .map(type_to_rust)
-                            .unwrap_or_else(|| "Result<(), DomainError>".to_string());
+                            .map(|t| type_to_rust_with_error(t, err_type))
+                            .unwrap_or_else(|| format!("Result<(), {}>", err_type));
                         (params, ret)
                     }
                     _ => {
@@ -686,7 +732,7 @@ pub fn gen_impls(
                             .map(|p| format!("{}: ()", to_snake(p)))
                             .collect::<Vec<_>>()
                             .join(", ");
-                        (params, "Result<(), DomainError>".to_string())
+                        (params, format!("Result<(), {}>", err_type))
                     }
                 };
 
@@ -712,13 +758,13 @@ pub fn gen_impls(
                             Some(t) => monomorphize_type(&p.type_expr, c, t),
                             None => p.type_expr.clone(),
                         };
-                        ctx.local_types
+                        ctx.types.local_types
                             .insert(to_snake(&p.name), type_to_rust(&ty));
                         ctx.locals.insert(to_snake(&p.name));
                     }
                 }
-                ctx.mut_locals = crate::expr::analyze_mut_locals(&mimpl.body);
-                ctx.ident_uses = crate::expr::count_ident_uses(&mimpl.body);
+                ctx.ownership.mut_locals = crate::expr::analyze_mut_locals(&mimpl.body);
+                ctx.ownership.ident_uses = crate::expr::count_ident_uses(&mimpl.body);
                 // @env annotation fields are available as self.field in the body.
                 ctx.in_method = true;
                 for ann in &c.annotations {
@@ -783,21 +829,19 @@ pub fn gen_impls(
                 }
                 // Seed name→shape and method returns from stubs too.
                 let seeded = build_ctx_from_solution(solution, name_to_shape.clone(), registry);
-                ctx.method_returns = seeded.method_returns;
-                ctx.method_params = seeded.method_params;
-                ctx.struct_fields = seeded.struct_fields;
-                ctx.stub_type_crate = seeded.stub_type_crate;
-                ctx.fallible_methods = seeded.fallible_methods;
-                ctx.non_fallible_methods = seeded.non_fallible_methods;
-                ctx.type_fallible_methods = seeded.type_fallible_methods;
-                ctx.async_fallible_methods = seeded.async_fallible_methods;
-                ctx.stub_pkg_crate = seeded.stub_pkg_crate;
-                ctx.stub_free_fns = seeded.stub_free_fns;
+                ctx.types.method_returns = seeded.types.method_returns;
+                ctx.types.method_params = seeded.types.method_params;
+                ctx.types.struct_fields = seeded.types.struct_fields;
+                ctx.stubs.stub_type_crate = seeded.stubs.stub_type_crate;
+                ctx.stubs.stub_pkg_crate = seeded.stubs.stub_pkg_crate;
+                ctx.stubs.stub_free_fns = seeded.stubs.stub_free_fns;
                 ctx.async_fns = seeded.async_fns;
-                ctx.ref_params = seeded.ref_params;
+                ctx.types.ref_params = seeded.types.ref_params;
                 ctx.name_to_shape = seeded.name_to_shape;
                 ctx.enum_variants = seeded.enum_variants;
                 ctx.unit_enums = seeded.unit_enums;
+                ctx.error_model = seeded.error_model;
+                ctx.method_lowers_to = seeded.method_lowers_to;
                 ctx.expected_return_rust = Some(ret_rust.clone());
 
                 // Cloud SDK types from .stub files: we can *parse* VEIL that
@@ -810,14 +854,14 @@ pub fn gen_impls(
                 let uses_stub_sdk = mimpl
                     .body
                     .iter()
-                    .any(|e| expr_refs_stub_type(e, &ctx.stub_type_crate));
+                    .any(|e| expr_refs_stub_type(e, &ctx.stubs.stub_type_crate));
 
                 // Only short-circuit empty bodies that *would* be cloud SDKs with
                 // no authored lines. Non-empty bodies always try expr_to_rust —
                 // that is the real adapter path (GEN-002 / RT cloud).
                 if uses_stub_sdk && mimpl.body.is_empty() {
                     out.push_str(&format!(
-                        "        Err(DomainError::External(\
+                        "        Err({err_external_path}(\
                          \"cloud adapter {}::{} not configured (pure-runtime uses local ports)\"\
                          .into()))\n",
                         c.name, mimpl.method_name
@@ -854,9 +898,9 @@ pub fn gen_impls(
                                 // Infer type for local variables so downstream calls
                                 // (e.g. `blob_id.detach()`) resolve the receiver type.
                                 if let Some(ty) = ty_ann {
-                                    ctx.local_types.insert(name.clone(), crate::rust::type_to_rust(ty));
+                                    ctx.types.local_types.insert(name.clone(), crate::rust::type_to_rust(ty));
                                 } else if let Some(t) = crate::expr::infer_expr_type_pub(rhs, &ctx) {
-                                    ctx.local_types.insert(name.clone(), t);
+                                    ctx.types.local_types.insert(name.clone(), t);
                                 }
                             }
                         if is_last {
@@ -871,7 +915,7 @@ pub fn gen_impls(
                                 || rust_expr.trim_start().starts_with('{');
                             if is_return || rust_expr.contains("todo!") {
                                 out.push_str(&format!("        {rust_expr}\n"));
-                            } else if ret_rust == "Result<(), DomainError>" {
+                            } else if ret_rust == format!("Result<(), {}>", err_type) {
                                 out.push_str(&format!("        {rust_expr};\n"));
                                 out.push_str("        Ok(())\n");
                             } else if ret_rust.starts_with("Result<") {
@@ -882,7 +926,7 @@ pub fn gen_impls(
                                     out.push_str(&format!("        Ok({rust_expr})\n"));
                                 } else if rust_expr.contains(".await") && !is_ctrl {
                                     out.push_str(&format!(
-                                        "        Ok({rust_expr}.map_err(|e| DomainError::External(e.to_string()))?)\n"
+                                        "        Ok({rust_expr}.map_err(|e| {err_external_path}(e.to_string()))?)\n"
                                     ));
                                 } else {
                                     out.push_str(&format!("        Ok({rust_expr})\n"));
@@ -913,7 +957,7 @@ pub fn gen_impls(
                         .iter()
                         .map(|p| {
                             let ty = monomorphize_type(&p.type_expr, c, t);
-                            format!("{}: {}", to_snake(&p.name), type_to_rust(&ty))
+                            format!("{}: {}", to_snake(&p.name), type_to_rust_with_error(&ty, err_type))
                         })
                         .collect::<Vec<_>>()
                         .join(", ");
@@ -923,8 +967,8 @@ pub fn gen_impls(
                         .map(|rt| monomorphize_type(rt, c, t));
                     let ret = ret_te
                         .as_ref()
-                        .map(type_to_rust)
-                        .unwrap_or_else(|| "Result<(), DomainError>".to_string());
+                        .map(|t| type_to_rust_with_error(t, err_type))
+                        .unwrap_or_else(|| format!("Result<(), {}>", err_type));
                     out.push_str(&format!(
                         "    async fn {}(&self{}{}) -> {} {{\n        {} // TODO: implement\n    }}\n\n",
                         to_snake(&m.name),
@@ -941,7 +985,7 @@ pub fn gen_impls(
     }
 
     // Local/dev fallback: HashMap adapters for product ports with no authored impl.
-    out.push_str(&gen_in_memory_adapters(traits, impls, solution));
+    out.push_str(&gen_in_memory_adapters(traits, impls, solution, registry));
 
     // Product free functions (non-layer) live next to adapters so they can use
     // domain types. Layer free fns stay in veil_shared.
@@ -959,11 +1003,11 @@ pub fn gen_impls(
             let mut ctx = build_ctx_from_solution(solution, name_to_shape.clone(), registry);
             for p in &f.params {
                 ctx.locals.insert(p.name.clone());
-                ctx.local_types
+                ctx.types.local_types
                     .insert(p.name.clone(), type_to_rust(&p.type_expr));
             }
-            ctx.mut_locals = crate::expr::analyze_mut_locals(&f.body);
-            ctx.ident_uses = crate::expr::count_ident_uses(&f.body);
+            ctx.ownership.mut_locals = crate::expr::analyze_mut_locals(&f.body);
+            ctx.ownership.ident_uses = crate::expr::count_ident_uses(&f.body);
             let params = f
                 .params
                 .iter()
@@ -1079,7 +1123,9 @@ pub fn gen_in_memory_adapters(
     traits: &[&Construct],
     impls: &[&Construct],
     sol: &Solution,
+    registry: &LayerRegistry,
 ) -> String {
+    let err_type = registry.error_model.as_ref().map(|em| em.type_name.as_str()).unwrap_or("__VEIL_NO_ERROR_MODEL__");
     let mut out = String::new();
     for t in traits {
         if t.layer_provided {
@@ -1122,8 +1168,8 @@ pub fn gen_in_memory_adapters(
             let ret = m
                 .return_type
                 .as_ref()
-                .map(type_to_rust)
-                .unwrap_or_else(|| "Result<(), DomainError>".to_string());
+                .map(|t| type_to_rust_with_error(t, err_type))
+                .unwrap_or_else(|| format!("Result<(), {}>", err_type));
             let sep = if params.is_empty() { "" } else { ", " };
             let body = in_memory_method_body(&mname, m, &entity, &fields, &ret);
             out.push_str(&format!(

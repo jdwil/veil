@@ -517,6 +517,26 @@ fn validate_construct(
             }
         }
 
+        // `required_fields` — layer declares `has field: Type`; validate presence.
+        for (req_name, req_type) in &spec.required_fields {
+            let all_fields: Vec<&str> = c.fields.iter()
+                .map(|f| f.name.as_str())
+                .chain(c.blocks.iter().flat_map(|b| b.fields.iter().map(|f| f.name.as_str())))
+                .collect();
+            if !all_fields.iter().any(|f| *f == req_name.as_str()) {
+                errors.push(ValidationError::new(
+                    "required_field",
+                    format!(
+                        "{} '{}' is missing required field '{}: {}' declared by layer",
+                        spec.name, c.name, req_name, req_type
+                    ),
+                    c.name.clone(),
+                    parent_name.to_string(),
+                    Some(format!("Add a '{}: {}' field to the construct", req_name, req_type)),
+                ));
+            }
+        }
+
         // `contains` allow-list
         if !spec.contains.is_empty() {
             for child in &effective {

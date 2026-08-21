@@ -41,44 +41,11 @@ chrono.workspace = true
 tokio = { workspace = true }
 futures = "0.3"
 
-// ===== crates/veil_shared/src/register_handlers.rs =====
-//! CAP-003: generated Bus handler registry.
-//! Host calls `register_all` once to wire names → dispatch.
-
-/// All Bus message types exported by this workspace.
-pub const HANDLER_NAMES: &[&str] = &[
-    "CreateGreeting",
-    "ListGreetings",
-    "run_saga",
-    "unwind",
-];
-
-/// Register every generated handler name with a host-supplied registrar.
-///
-/// The host provides the actual dispatch (ports / platform). This module
-/// only owns the name list so trampoline code never hardcodes it.
-pub fn register_all<F>(mut register: F)
-where
-F: FnMut(&'static str),
-{
-for name in HANDLER_NAMES {
-register(name);
-}
-}
-
-/// Number of handlers in this workspace.
-pub fn handler_count() -> usize {
-HANDLER_NAMES.len()
-}
-
 // ===== crates/veil_shared/src/lib.rs =====
 //! Shared types across all context crates — common errors and
 //! layer-provided infrastructure traits (routing ports, etc.).
 
 #![allow(unused_imports)]
-
-pub mod register_handlers;
-pub use register_handlers::{handler_count, register_all, HANDLER_NAMES};
 
 use async_trait::async_trait;
 use uuid::Uuid;
@@ -117,30 +84,6 @@ impl From<String> for DomainError {
     }
 }
 
-/// trait: HttpHost
-#[async_trait]
-pub trait HttpHost: Send + Sync {
-    async fn mount_ide(&self) -> Result<(), DomainError>;
-    async fn serve_dir(&self, path: String) -> Result<(), DomainError>;
-    async fn mount_bus(&self) -> Result<(), DomainError>;
-    async fn listen(&self, port: i64) -> Result<(), DomainError>;
-}
-
-/// trait: FileSystem
-#[async_trait]
-pub trait FileSystem: Send + Sync {
-    async fn read(&self, path: String) -> Result<String, DomainError>;
-    async fn write(&self, path: String, content: String) -> Result<(), DomainError>;
-    async fn list(&self, prefix: String) -> Result<Vec<String>, DomainError>;
-}
-
-/// trait: GitRepo
-#[async_trait]
-pub trait GitRepo: Send + Sync {
-    async fn branches(&self, repo: String) -> Result<Vec<String>, DomainError>;
-    async fn log(&self, repo: String, limit: i64) -> Result<Vec<String>, DomainError>;
-}
-
 /// trait: EntityRepo
 #[async_trait]
 pub trait EntityRepo<T>: Send + Sync
@@ -166,51 +109,28 @@ pub trait SagaStep: Send + Sync {
     async fn compensate(&self, state: serde_json::Value) -> Result<(), DomainError>;
 }
 
-/// Dev/local AuthService — allows all tokens and permissions (RT-008).
-/// Host harnesses replace this with Cognito/Auth0/etc. via `provided_by: runtime`.
-pub struct AllowAllAuth;
-
+/// trait: HttpHost
 #[async_trait]
-impl AuthService for AllowAllAuth {
-    async fn validate_token(&self, token: String) -> Result<Principal, DomainError> {
-        Ok(Principal {
-            id: if token.is_empty() { "anonymous".into() } else { token },
-            roles: vec!["local".into()],
-            claims: std::collections::HashMap::new(),
-        })
-    }
-
-    async fn check_permission(&self, _principal: Principal, _permission: String) -> Result<bool, DomainError> {
-        Ok(true)
-    }
-
-}
-/// Layer-provided struct: DeployedAnnotation
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct DeployedAnnotation {
-    pub name: String,
-    pub args: Vec<String>,
-    pub roles: Vec<String>,
+pub trait HttpHost: Send + Sync {
+    async fn mount_ide(&self) -> Result<(), DomainError>;
+    async fn serve_dir(&self, path: String) -> Result<(), DomainError>;
+    async fn mount_bus(&self) -> Result<(), DomainError>;
+    async fn listen(&self, port: i64) -> Result<(), DomainError>;
 }
 
-/// Layer-provided struct: DeployedConstruct
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct DeployedConstruct {
-    pub name: String,
-    pub keyword: String,
-    pub package: String,
-    pub annotations: Vec<DeployedAnnotation>,
+/// trait: FileSystem
+#[async_trait]
+pub trait FileSystem: Send + Sync {
+    async fn read(&self, path: String) -> Result<String, DomainError>;
+    async fn write(&self, path: String, content: String) -> Result<(), DomainError>;
+    async fn list(&self, prefix: String) -> Result<Vec<String>, DomainError>;
 }
 
-/// Layer-provided struct: DeployContext
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct DeployContext {
-    pub service_name: String,
-    pub environment: String,
-    pub resource_prefix: String,
-    pub stack: serde_json::Value,
-    pub units: serde_json::Value,
-    pub constructs: Vec<DeployedConstruct>,
+/// trait: GitRepo
+#[async_trait]
+pub trait GitRepo: Send + Sync {
+    async fn branches(&self, repo: String) -> Result<Vec<String>, DomainError>;
+    async fn log(&self, repo: String, limit: i64) -> Result<Vec<String>, DomainError>;
 }
 
 /// Layer-provided struct: Principal
@@ -225,9 +145,9 @@ pub struct Principal {
 pub async fn unwind(steps: &[Box<dyn SagaStep + Send + Sync>], upto: i64, state: serde_json::Value) -> Result<(), DomainError> {
     let mut i = upto;
     while i > 0 {
-            i -= 1;
-            steps.get(i as usize).ok_or(DomainError::NotFound)?.compensate(state.clone()).await?;
-        }
+        i -= 1;
+        steps.get(i as usize).ok_or(DomainError::NotFound)?.compensate(state.clone()).await?;
+    }
     Ok(())
 }
 
@@ -235,18 +155,18 @@ pub async fn unwind(steps: &[Box<dyn SagaStep + Send + Sync>], upto: i64, state:
 pub async fn run_saga(steps: &[Box<dyn SagaStep + Send + Sync>]) -> Result<(), DomainError> {
     let mut state = serde_json::json!({});
     let mut i = 0;
-    while i < (steps.len() as i64) {
-            match steps.get(i as usize).ok_or(DomainError::NotFound)?.action(state.clone()).await {
-            Ok(next) => {
-            state = next;
-            i += 1
-        },
-            Err(e) => {
-            unwind(steps, i, state.clone()).await?;
-            return Err(e)
-        },
-        };
-        }
+    while i < steps.len() as i64 {
+        match steps.get(i as usize).ok_or(DomainError::NotFound)?.action(state.clone()).await {
+                Ok(next) => {
+                    state = next.clone();
+                    i += 1
+                },
+                Err(e) => {
+                    unwind(steps, i, state.clone()).await?;
+                    return Err(e)
+                },
+            }
+    }
     Ok(())
 }
 
@@ -285,7 +205,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
-use crate::ports::{ValidationError, DomainError};
+use crate::ports::*;
 use crate::domain::messages::*;
 
 /// Aggregate: Greeting
@@ -332,7 +252,7 @@ pub use veil_shared::{DomainError, ValidationError};
 pub use veil_shared::*;
 
 /// Port: GreetingRepo
-#[async_trait]
+#[async_trait::async_trait]
 pub trait GreetingRepo: Send + Sync {
     async fn list_all(&self) -> Result<Vec<Greeting>, DomainError>;
     async fn save(&self, greeting: Greeting) -> Result<(), DomainError>;
@@ -342,7 +262,7 @@ pub trait GreetingRepo: Send + Sync {
 // ===== crates/greet/src/adapters/mod.rs =====
 //! Implementations of traits.
 
-#![allow(unused_imports, unused_variables, dead_code)]
+#![allow(unused_imports, unused_variables)]
 
 use async_trait::async_trait;
 use crate::ports::*;
@@ -371,7 +291,7 @@ impl GreetingRepo for MemGreetingRepo {
 // ===== crates/greet/src/application/mod.rs =====
 //! Application services and flow functions.
 
-#![allow(unused_imports, unused_variables, dead_code)]
+#![allow(unused_imports, unused_variables)]
 
 use crate::ports::*;
 use crate::domain::types::*;
@@ -503,30 +423,28 @@ greet = { path = "../greet" }
 
 use std::sync::Arc;
 use axum::{Router, Json, extract::State, routing::{get}, http::{HeaderMap, StatusCode}, middleware::{from_fn, Next}, response::Response, extract::Request};
-use tower_http::cors::{{Any, CorsLayer}};
+use tower_http::cors::{Any, CorsLayer};
 use uuid::Uuid;
 use serde_json::Value;
 use veil_shared::*;
 use greet::application::{self as greet_app, GreetDeps as greet_Deps};
-
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let port: u16 = std::env::var("PORT").ok().and_then(|s| s.parse().ok()).unwrap_or(3000);
-
     // ── context Greet ──
-    let mem_greeting_repo_inst: Arc<dyn greet::ports::GreetingRepo + Send + Sync> = Arc::new(greet::adapters::MemGreetingRepo{});
-    let greet_deps = Arc::new(greet_Deps {
-        greeting_repo: mem_greeting_repo_inst.clone(),
-    });
+    let mem_greeting_repo_inst: Arc<dyn greet::ports::GreetingRepo + Send + Sync> = Arc::new(greet::adapters::MemGreetingRepo{});    let greet_deps = Arc::new(greet_Deps {
+        greeting_repo: mem_greeting_repo_inst.clone(),    });
+
 
     let greet_router = Router::new()
-        .route("/api/greetings", get(greet_list_greetings_handler).post(greet_create_greeting_handler))
-        .layer(from_fn(veil_api_key_middleware))
+        .route("/api/greetings", get(greet_list_greetings_handler).post(greet_create_greeting_handler))        .layer(from_fn(veil_api_key_middleware))
         .layer(veil_cors_layer())
         .with_state(greet_deps.clone());
 
+
     let app = greet_router
         .route("/health", get(|| async { "ok" }));
+
     println!("veil_bin: profile=axum_http endpoints=2");
     println!("veil_bin: listening on :{}", port);
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", port)).await?;
@@ -534,104 +452,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-async fn greet_list_greetings_handler(
-    State(deps): State<Arc<greet_Deps>>,
-) -> Result<Json<Value>, StatusCode> {
-    match greet_app::list_greetings(&deps).await {
+async fn greet_list_greetings_handler(    State(deps): State<Arc<greet_Deps>>,) -> Result<Json<Value>, StatusCode> {    match greet_app::list_greetings(&deps).await {
         Ok(result) => Ok(Json(veil_json_public(&result))),
+
         Err(e) => Err(veil_domain_error_status(e)),
     }
 }
 
-async fn greet_create_greeting_handler(
-    State(deps): State<Arc<greet_Deps>>,
-    Json(body): Json<Value>,
+async fn greet_create_greeting_handler(    State(deps): State<Arc<greet_Deps>>,    Json(body): Json<Value>,
+
 ) -> Result<Json<Value>, StatusCode> {
-    let message = body.get("message").and_then(|v| v.as_str()).unwrap_or_default().to_string();
-    match greet_app::create_greeting(&deps, message).await {
+    let message = body.get("message").and_then(|v| v.as_str()).unwrap_or_default().to_string();    match greet_app::create_greeting(&deps, message).await {
         Ok(result) => Ok(Json(veil_json_public(&result))),
+
         Err(e) => Err(veil_domain_error_status(e)),
     }
 }
 
-
-/// Serialize for HTTP JSON, omitting fields annotated role:secret.
-/// Persistence (repos) uses full `Serialize` — secrets still round-trip to storage.
-pub fn veil_json_public<T: serde::Serialize>(value: &T) -> serde_json::Value {
-    let mut v = serde_json::to_value(value).unwrap_or_default();
-    veil_redact_secrets(&mut v);
-    v
-}
-
-pub fn veil_redact_secrets(v: &mut serde_json::Value) {
-    // Scalar secret fields from role:secret annotations (INV-001).
-    const SECRET_KEYS: &[&str] = &[];
-    // Header maps/lists often carry API keys — redact values, keep names.
-    const HEADER_CONTAINERS: &[&str] = &["headers"];
-    match v {
-        serde_json::Value::Object(map) => {
-            for k in SECRET_KEYS {
-                map.remove(*k);
-            }
-            for hk in HEADER_CONTAINERS {
-                if let Some(headers) = map.get_mut(*hk) {
-                    veil_redact_header_values(headers);
-                }
-            }
-            for (_k, child) in map.iter_mut() {
-                veil_redact_secrets(child);
-            }
-        }
-        serde_json::Value::Array(items) => {
-            for item in items.iter_mut() {
-                veil_redact_secrets(item);
-            }
-        }
-        _ => {}
-    }
-}
-
-pub fn veil_redact_header_values(v: &mut serde_json::Value) {
-    match v {
-        serde_json::Value::Array(items) => {
-            for item in items.iter_mut() {
-                if let serde_json::Value::Object(h) = item {
-                    if h.contains_key("value") {
-                        h.insert("value".into(), serde_json::Value::String(String::new()));
-                    }
-                    if h.contains_key("Value") {
-                        h.insert("Value".into(), serde_json::Value::String(String::new()));
-                    }
-                }
-            }
-        }
-        serde_json::Value::Object(map) => {
-            // Map-shaped headers: redact all values
-            for (_k, val) in map.iter_mut() {
-                *val = serde_json::Value::String(String::new());
-            }
-        }
-        _ => {}
-    }
-}
-
-pub fn veil_domain_error_status(e: DomainError) -> StatusCode {
-    match &e {
-        DomainError::NotFound => {
-            eprintln!("warn: not found: {e}");
-            StatusCode::NOT_FOUND
-        }
-        DomainError::Validation(msg) => {
-            eprintln!("warn: validation: {msg}");
-            StatusCode::BAD_REQUEST
-        }
-        DomainError::External(msg) => {
-            eprintln!("error: upstream: {msg}");
-            StatusCode::BAD_GATEWAY
-        }
-    }
-}
-
+/// HTTP 400 Bad Request status — used in field extraction for parse errors.
+pub fn veil_bad_request_status() -> StatusCode { StatusCode::BAD_REQUEST }
 /// Production-oriented auth:
 /// - `/health` + OPTIONS always open
 /// - `VEIL_DEV=1` → open (local dual-loop only)
@@ -658,24 +497,19 @@ async fn veil_api_key_middleware(
                 .and_then(|v| v.to_str().ok())
                 .and_then(|s| s.strip_prefix("Bearer ").map(|t| t.to_string()))
         });
-
     if dev && !require && admin_key.is_none() {
         return Ok(next.run(request).await);
     }
-
     let Some(presented) = presented else {
         eprintln!("error: missing X-Api-Key / Authorization Bearer");
         return Err(StatusCode::UNAUTHORIZED);
     };
-
     if admin_key.as_deref() != Some(presented.as_str()) {
         eprintln!("warn: unauthorized — key not recognized");
         return Err(StatusCode::UNAUTHORIZED);
     }
-
     Ok(next.run(request).await)
 }
-
 /// Restrict CORS: `CORS_ORIGINS=http://a,http://b` or localhost defaults (not *).
 pub fn veil_cors_layer() -> CorsLayer {
     use axum::http::{HeaderValue, Method};
@@ -719,7 +553,79 @@ pub fn veil_cors_layer() -> CorsLayer {
         ])
         .allow_headers(Any)
 }
-
+pub fn veil_domain_error_status(e: DomainError) -> StatusCode {
+    match &e {
+        DomainError::NotFound => {
+            eprintln!("warn: not found: {e}");
+            StatusCode::NOT_FOUND
+        }
+        DomainError::Validation(msg) => {
+            eprintln!("warn: validation: {msg}");
+            StatusCode::BAD_REQUEST
+        }
+        DomainError::External(msg) => {
+            eprintln!("error: upstream: {msg}");
+            StatusCode::BAD_GATEWAY
+        }
+    }
+}
+/// Serialize for HTTP JSON, omitting fields annotated role:secret.
+/// Persistence (repos) uses full `Serialize` — secrets still round-trip to storage.
+pub fn veil_json_public<T: serde::Serialize>(value: &T) -> serde_json::Value {
+    let mut v = serde_json::to_value(value).unwrap_or_default();
+    veil_redact_secrets(&mut v);
+    v
+}
+pub fn veil_redact_secrets(v: &mut serde_json::Value) {
+    // Scalar secret fields from role:secret annotations (INV-001).
+    const SECRET_KEYS: &[&str] = &[];
+    // Header maps/lists often carry API keys — redact values, keep names.
+    const HEADER_CONTAINERS: &[&str] = &["headers"];
+    match v {
+        serde_json::Value::Object(map) => {
+            for k in SECRET_KEYS {
+                map.remove(*k);
+            }
+            for hk in HEADER_CONTAINERS {
+                if let Some(headers) = map.get_mut(*hk) {
+                    veil_redact_header_values(headers);
+                }
+            }
+            for (_k, child) in map.iter_mut() {
+                veil_redact_secrets(child);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items.iter_mut() {
+                veil_redact_secrets(item);
+            }
+        }
+        _ => {}
+    }
+}
+pub fn veil_redact_header_values(v: &mut serde_json::Value) {
+    match v {
+        serde_json::Value::Array(items) => {
+            for item in items.iter_mut() {
+                if let serde_json::Value::Object(h) = item {
+                    if h.contains_key("value") {
+                        h.insert("value".into(), serde_json::Value::String(String::new()));
+                    }
+                    if h.contains_key("Value") {
+                        h.insert("Value".into(), serde_json::Value::String(String::new()));
+                    }
+                }
+            }
+        }
+        serde_json::Value::Object(map) => {
+            // Map-shaped headers: redact all values
+            for (_k, val) in map.iter_mut() {
+                *val = serde_json::Value::String(String::new());
+            }
+        }
+        _ => {}
+    }
+}
 /// HTML `<input type="date">` and form empties → JSON values chrono/serde accept.
 /// `""` → null; bare `YYYY-MM-DD` → `YYYY-MM-DDT00:00:00Z`.
 pub fn veil_normalize_body_dt(v: Value) -> Value {

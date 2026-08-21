@@ -16,26 +16,26 @@
 //! Supports multiple target languages via `CodegenTarget`.
 
 pub mod capabilities;
+pub mod css;
 pub mod expr;
+pub mod html;
 pub mod kotlin;
 pub mod links;
-pub mod migrate_harness;
 pub mod emit_hooks;
 pub mod rust;
 pub mod swift;
 pub mod template;
 pub mod testing;
-pub mod typescript;
+pub mod ts;
 
 pub use links::{cargo_dep_line, resolve_link, resolve_links, ResolvedLink};
 
 pub use capabilities::{
     check_multi_target_debt, check_target_capabilities, target_capability_summary, Feature,
 };
-pub use migrate_harness::{migrate_harness, MigrateReport};
 pub use rust::{generate, list_rest_routes_from_solution, rest_route_for_service, IrRestRoute};
 pub use template::execute_templates;
-pub use typescript::generate_ts;
+pub use ts::generate_ts_ir;
 
 use veil_ir::ast::Solution;
 use veil_ir::layer::LayerRegistry;
@@ -83,7 +83,7 @@ pub fn generate_for_target(
                 .collect()
         }
         CodegenTarget::TypeScript => {
-            let project = typescript::generate_ts(solution, registry);
+            let project = ts::generate::generate_ts_ir(solution, registry);
             project.files.into_iter()
                 .map(|f| GeneratedFile { path: f.path, content: f.content })
                 .collect()
@@ -119,7 +119,11 @@ pub fn generate_for_target_with_packages(
                 .collect()
         }
         CodegenTarget::TypeScript => {
-            let project = typescript::generate_ts_with_packages(solution, registry, used_packages);
+            let mut project = ts::generate::generate_ts_ir(solution, registry);
+            // Generate typed API clients for any used packages with expose blocks
+            for (pkg_name, expose) in used_packages {
+                project.files.extend(ts::api_client::generate_api_client(pkg_name, expose));
+            }
             project.files.into_iter()
                 .map(|f| GeneratedFile { path: f.path, content: f.content })
                 .collect()

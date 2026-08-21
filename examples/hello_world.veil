@@ -1,5 +1,5 @@
 pkg HelloWorld
-  use ddd
+  use ddd_fullstack
   use harness
 
   lang

@@ -96,6 +96,8 @@ fn ty_from_type_expr(te: &TypeExpr) -> Ty {
                 Box::new(args.get(1).map(ty_from_type_expr).unwrap_or(Ty::Unknown)),
             ),
             "Res" | "Result" => Ty::Res(args.first().map(|a| Box::new(ty_from_type_expr(a)))),
+            // BoxFuture<T> is an async wrapper — unwrap to the inner type for type checking.
+            "BoxFuture" => args.first().map(ty_from_type_expr).unwrap_or(Ty::Unknown),
             other => {
                 // User generic Type<A,B>
                 let _ = other;
@@ -1962,6 +1964,7 @@ pub fn unwrap_bang_return_transitional(ty: Ty) -> Ty {
 /// ACS-010 portable law (current default): bang = try/Res only. Opt stays Opt.
 /// Force-present is a separate construct (`require` / `.unwrap()` / layer policy) — not `!`.
 /// Res!<Opt<T>> → Opt<T>, Res!<T> → T, Opt<T> → Opt<T>.
+/// BoxFuture<Res!<T>> is already unwrapped at parse time (ty_from_type_expr).
 pub fn unwrap_bang_return_portable(ty: Ty) -> Ty {
     match ty {
         Ty::Res(Some(t)) => *t,
@@ -2615,6 +2618,8 @@ mod tests {
             presentation: Default::default(),
             roles: Vec::new(),
             config_keys: Vec::new(),
+            lowers_to: std::collections::HashMap::new(),
+            required_fields: Vec::new(),
         }
     }
 

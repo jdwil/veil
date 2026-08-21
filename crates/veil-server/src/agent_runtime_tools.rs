@@ -815,8 +815,11 @@ mod tests {
     fn list_routes_from_ir_fixture_l1() {
         let src = include_str!("../../../fixtures/ladder/l1/crud.veil");
         let mut reg = veil_ir::LayerRegistry::builtin();
-        let _ = reg.load_content("ddd", include_str!("../../../layers/ddd.layer"));
+        let _ = reg.load_content("base", include_str!("../../../layers/base.layer"));
+        let _ = reg.load_content("tokio", include_str!("../../../layers/tokio.layer"));
         let _ = reg.load_content("di", include_str!("../../../layers/di.layer"));
+        let _ = reg.load_content("ddd", include_str!("../../../layers/ddd.layer"));
+        let _ = reg.load_content("harness", include_str!("../../../layers/harness.layer"));
         let out = list_routes_from_ir(Some(src), Some(&reg)).expect("ir routes");
         assert!(out.contains("/api/items"), "{out}");
         assert!(out.contains("\"source\": \"ir\""), "{out}");

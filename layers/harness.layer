@@ -3,6 +3,7 @@ pkg harness v1
   author "VEIL"
   use base
   use di
+  use tokio
 
   harness_policy
     profile axum_http
@@ -112,3 +113,337 @@ pkg harness v1
     - You MUST NOT rely on eternal handwritten bootstrap for new apps
     - You SHOULD keep `@main` thin: wire + one demo invoke
     - For dual-loop REST APIs, declare `deps` / `compose` / `endpoint`
+
+  shared_emit rust_bin
+    /// HTTP 400 Bad Request status — used in field extraction for parse errors.
+    #[inline]
+    pub fn veil_bad_request_status() -> StatusCode { StatusCode::BAD_REQUEST }
+
+    /// Production-oriented auth:
+    /// - `/health` + OPTIONS always open
+    /// - `VEIL_DEV=1` → open (local dual-loop only)
+    /// - else require a key: `VEIL_API_KEY`
+    /// - Present key via `X-Api-Key` or `Authorization: Bearer <key>`
+    async fn veil_api_key_middleware(
+        headers: HeaderMap,
+        request: Request,
+        next: Next,
+    ) -> Result<Response, StatusCode> {
+        if request.uri().path() == "/health" || request.method() == axum::http::Method::OPTIONS {
+            return Ok(next.run(request).await);
+        }
+        let dev = std::env::var("VEIL_DEV").ok().as_deref() == Some("1");
+        let require = std::env::var("VEIL_REQUIRE_AUTH").ok().as_deref() == Some("1");
+        let admin_key = std::env::var("VEIL_API_KEY").ok().filter(|s| !s.is_empty());
+        let presented = headers
+            .get("x-api-key")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string())
+            .or_else(|| {
+                headers
+                    .get("authorization")
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|s| s.strip_prefix("Bearer ").map(|t| t.to_string()))
+            });
+
+        if dev && !require && admin_key.is_none() {
+            return Ok(next.run(request).await);
+        }
+
+        let Some(presented) = presented else {
+            eprintln!("error: missing X-Api-Key / Authorization Bearer");
+            return Err(StatusCode::UNAUTHORIZED);
+        };
+
+        if admin_key.as_deref() != Some(presented.as_str()) {
+            eprintln!("warn: unauthorized — key not recognized");
+            return Err(StatusCode::UNAUTHORIZED);
+        }
+
+        Ok(next.run(request).await)
+    }
+
+    /// Restrict CORS: `CORS_ORIGINS=http://a,http://b` or localhost defaults (not *).
+    pub fn veil_cors_layer() -> CorsLayer {
+        use axum::http::{HeaderValue, Method};
+        if let Ok(raw) = std::env::var("CORS_ORIGINS") {
+            let origins: Vec<HeaderValue> = raw
+                .split(',')
+                .filter_map(|s| s.trim().parse().ok())
+                .collect();
+            if !origins.is_empty() {
+                return CorsLayer::new()
+                    .allow_origin(origins)
+                    .allow_methods([
+                        Method::GET,
+                        Method::POST,
+                        Method::PUT,
+                        Method::PATCH,
+                        Method::DELETE,
+                        Method::OPTIONS,
+                    ])
+                    .allow_headers(Any);
+            }
+        }
+        let local = [
+            "http://localhost:5173",
+            "http://127.0.0.1:5173",
+            "http://localhost:5174",
+            "http://127.0.0.1:5174",
+            "http://localhost:3000",
+            "http://127.0.0.1:3000",
+        ];
+        let origins: Vec<HeaderValue> = local.iter().filter_map(|s| s.parse().ok()).collect();
+        CorsLayer::new()
+            .allow_origin(origins)
+            .allow_methods([
+                Method::GET,
+                Method::POST,
+                Method::PUT,
+                Method::PATCH,
+                Method::DELETE,
+                Method::OPTIONS,
+            ])
+            .allow_headers(Any)
+    }
+
+    pub fn veil_domain_error_status(e: {error_type}) -> StatusCode {
+        match &e {
+            {error_type}::{not_found_variant} => {
+                eprintln!("warn: not found: {e}");
+                StatusCode::NOT_FOUND
+            }
+            {error_type}::{validation_variant}(msg) => {
+                eprintln!("warn: validation: {msg}");
+                StatusCode::BAD_REQUEST
+            }
+            {error_type}::{external_variant}(msg) => {
+                eprintln!("error: upstream: {msg}");
+                StatusCode::BAD_GATEWAY
+            }
+        }
+    }
+
+    /// Serialize for HTTP JSON, omitting fields annotated role:secret.
+    /// Persistence (repos) uses full `Serialize` — secrets still round-trip to storage.
+    pub fn veil_json_public<T: serde::Serialize>(value: &T) -> serde_json::Value {
+        let mut v = serde_json::to_value(value).unwrap_or_default();
+        veil_redact_secrets(&mut v);
+        v
+    }
+
+    pub fn veil_redact_secrets(v: &mut serde_json::Value) {
+        // Scalar secret fields from role:secret annotations (INV-001).
+        const SECRET_KEYS: &[&str] = &[{secret_keys}];
+        // Header maps/lists often carry API keys — redact values, keep names.
+        const HEADER_CONTAINERS: &[&str] = &["headers"];
+        match v {
+            serde_json::Value::Object(map) => {
+                for k in SECRET_KEYS {
+                    map.remove(*k);
+                }
+                for hk in HEADER_CONTAINERS {
+                    if let Some(headers) = map.get_mut(*hk) {
+                        veil_redact_header_values(headers);
+                    }
+                }
+                for (_k, child) in map.iter_mut() {
+                    veil_redact_secrets(child);
+                }
+            }
+            serde_json::Value::Array(items) => {
+                for item in items.iter_mut() {
+                    veil_redact_secrets(item);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    pub fn veil_redact_header_values(v: &mut serde_json::Value) {
+        match v {
+            serde_json::Value::Array(items) => {
+                for item in items.iter_mut() {
+                    if let serde_json::Value::Object(h) = item {
+                        if h.contains_key("value") {
+                            h.insert("value".into(), serde_json::Value::String(String::new()));
+                        }
+                        if h.contains_key("Value") {
+                            h.insert("Value".into(), serde_json::Value::String(String::new()));
+                        }
+                    }
+                }
+            }
+            serde_json::Value::Object(map) => {
+                // Map-shaped headers: redact all values
+                for (_k, val) in map.iter_mut() {
+                    *val = serde_json::Value::String(String::new());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// HTML `<input type="date">` and form empties → JSON values chrono/serde accept.
+    /// `""` → null; bare `YYYY-MM-DD` → `YYYY-MM-DDT00:00:00Z`.
+    pub fn veil_normalize_body_dt(v: Value) -> Value {
+        match v {
+            Value::String(s) if s.is_empty() => Value::Null,
+            Value::String(s)
+                if s.len() == 10
+                    && s.as_bytes().get(4) == Some(&b'-')
+                    && s.as_bytes().get(7) == Some(&b'-')
+                    && !s.contains('T') =>
+            {
+                Value::String(format!("{s}T00:00:00Z"))
+            }
+            other => other,
+        }
+    }
+
+  harness_template rust_bin
+    //! HTTP harness for package `{{package_name}}` (RT-001 / RT-003).
+    //! Wires adapters + exposes services as REST endpoints.
+    //! `cargo run -p veil_bin` from the generated workspace root.
+
+    #![allow(unused_imports)]
+
+    use std::sync::Arc;
+    use axum::{Router, Json, extract::State, {{query_import}}routing::{{{routing_imports}}}, http::{HeaderMap, StatusCode}, middleware::{from_fn, Next}, response::Response, extract::Request};
+    use tower_http::cors::{Any, CorsLayer};
+    use uuid::Uuid;
+    use serde_json::Value;
+    use veil_shared::*;
+    {{for use_statement in use_statements}}
+    {{use_statement}}
+    {{end_for}}
+
+    #[tokio::main]
+    async fn main() -> Result<(), Box<dyn std::error::Error>> {
+        let port: u16 = std::env::var("{{port_env}}").ok().and_then(|s| s.parse().ok()).unwrap_or({{port_default}});
+
+    {{if has_bus}}
+        let bus = veil_shared::{{bus_type}}::new();
+
+    {{end_if}}
+    {{for wiring in wirings}}
+        // ── context {{wiring.module_name}} ──
+    {{for stub_let in stub_lets}}
+    {{stub_let}}
+    {{end_for}}
+    {{if wiring.has_stub_lets}}
+
+    {{end_if}}
+    {{for adapter_inst in adapter_insts}}
+    {{adapter_inst}}
+    {{end_for}}
+    {{if wiring.has_deps}}
+        let {{wiring.crate_name}}_deps = Arc::new({{wiring.deps_type_alias}} {
+    {{for deps_field in deps_fields}}
+            {{deps_field.name}}: {{deps_field.value}},
+    {{end_for}}
+        });
+
+    {{end_if}}
+    {{if wiring.has_router}}
+        let {{wiring.router.crate_name}}_router = Router::new()
+    {{for route in routes}}
+            .route("{{route.path}}", {{route.chained}})
+    {{end_for}}
+            .layer(from_fn(veil_api_key_middleware))
+            .layer(veil_cors_layer())
+    {{if wiring.router.has_deps}}
+            .with_state({{wiring.crate_name}}_deps.clone());
+    {{else}}
+            .with_state(());
+    {{end_if}}
+
+    {{end_if}}
+    {{end_for}}
+    {{if has_bus_registrations}}
+        // ── bus handlers (cross-context invoke / request) ──
+    {{for bus_registration in bus_registrations}}
+    {{bus_registration}}
+    {{end_for}}
+
+    {{end_if}}
+    {{if has_routers}}
+        let app = {{first_router}}{{merge_routers}}
+            .route("{{health_path}}", get(|| async { "ok" }));
+    {{else}}
+        let app = Router::new().route("{{health_path}}", get(|| async { "ok" }));
+    {{end_if}}
+        println!("veil_bin: profile={{profile}} endpoints={{endpoint_count}}");
+        println!("veil_bin: listening on :{}", port);
+        let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", port)).await?;
+        axum::serve(listener, app.into_make_service()).await?;
+        Ok(())
+    }
+
+    {{for endpoint in endpoints}}
+    async fn {{endpoint.fn_name}}_handler({{if endpoint.has_deps}}
+        State(deps): State<Arc<{{endpoint.deps_type}}>>,{{end_if}}{{if endpoint.has_single_path_param}}
+        axum::extract::Path({{endpoint.path_param}}): axum::extract::Path<String>,{{end_if}}{{if endpoint.has_multi_path_params}}
+        axum::extract::Path(({{endpoint.path_param_names}})): axum::extract::Path<({{endpoint.path_param_types}})>,{{end_if}}{{if endpoint.needs_query}}
+        Query(q): Query<std::collections::HashMap<String, String>>,{{end_if}}{{if endpoint.needs_body}}
+        Json(body): Json<Value>,{{end_if}}
+    ) -> Result<Json<Value>, StatusCode> {
+    {{for extraction in extractions}}
+    {{extraction}}
+    {{end_for}}
+        match {{endpoint.crate_name}}_app::{{endpoint.app_fn_name}}({{endpoint.call_args}}).await {
+    {{if endpoint.is_delete}}
+            Ok(_) => Ok(Json(serde_json::json!({"ok": true}))),
+    {{else}}
+            Ok(result) => Ok(Json(veil_json_public(&result))),
+    {{end_if}}
+            Err(e) => Err(veil_domain_error_status(e)),
+        }
+    }
+
+    {{end_for}}
+    {{layer_helpers}}
+
+  harness_template rust_bin_cargo
+    axum = "0.8"
+    tower-http = { version = "0.6", features = ["cors"] }
+
+  harness_template product_host
+    //! Generated product host for package `{{package_name}}` (CAP-002/006).
+    //! Uses `veil_server::ProductHost` for IDE multi + SPA + config.
+    //! `cargo run -p veil_bin` from the generated workspace root.
+
+    use veil_server::{resolve_static_dir, ProductHost};{{use_register}}
+
+    #[tokio::main]
+    async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        tracing_subscriber::fmt()
+            .with_env_filter(
+                tracing_subscriber::EnvFilter::try_from_default_env()
+                    .unwrap_or_else(|_| "info".into()),
+            )
+            .init();
+
+        let port: u16 = std::env::var("VEIL_PORT")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(8080);
+        let non_interactive = std::env::var_os("CI").is_some()
+            || std::env::var_os("VEIL_NONINTERACTIVE").is_some();
+        let static_dir = resolve_static_dir(None);
+    {{register_block}}
+        ProductHost::new()
+            .port(port)
+            .static_dir(static_dir)
+            .ensure_config(non_interactive)?
+            .listen()
+            .await?;
+        Ok(())
+    }
+
+  harness_template rust_bin_main_wrapper
+    #[tokio::main]
+    async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    {body}
+        Ok(())
+    }

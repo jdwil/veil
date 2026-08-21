@@ -6,6 +6,8 @@ fn generate_with_stub(stub_src: &str, app_src: &str) -> String {
     let mut reg = LayerRegistry::builtin();
     reg.load_content("ddd", include_str!("../../../layers/ddd.layer"))
         .expect("ddd");
+    reg.load_content("harness", include_str!("../../../layers/harness.layer"))
+        .expect("harness");
     if let Some(stub) = veil_ir::parse_stub_file(stub_src) {
         reg.stubs.push(stub);
     }
@@ -40,7 +42,7 @@ harness_field Client """
   struct PutItemFluentBuilder
     fn table_name(input: Str) -> Self
     fn item(k: Str, v: AttributeValue) -> Self
-    fn send() -> Res!<PutItemOutput>
+    fn send() -> BoxFuture<Res!<PutItemOutput>>
 
   struct PutItemOutput
 
@@ -85,9 +87,23 @@ pkg SdkApp
         out.contains("self.client.put_item()"),
         "self.client must lower to field access"
     );
+    let save_body: String = {
+        let lines: Vec<&str> = out.lines().collect();
+        let start = lines
+            .iter()
+            .position(|l| l.contains("impl ThingRepo for") || l.contains("SdkThingRepo"))
+            .and_then(|i| {
+                lines[i..].iter().position(|l| l.contains("async fn save(")).map(|j| i + j)
+            })
+            .or_else(|| {
+                lines.iter().rposition(|l| l.contains("async fn save(") && l.contains("id:"))
+            })
+            .unwrap_or(0);
+        lines[start..start.saturating_add(25).min(lines.len())].join("\n")
+    };
     assert!(
-        out.contains(".send().await") && out.contains("map_err"),
-        "send must be async+fallible"
+        save_body.contains(".send().await"),
+        "stub async_methods on this type must await the call:\n{save_body}"
     );
     assert!(
         out.contains("pub client: example_sdk::Client"),
@@ -410,7 +426,7 @@ harness_field Client """
   struct PublishFluentBuilder
     fn topic_arn(input: Str) -> Self
     fn message(input: Str) -> Self
-    fn send() -> Res!
+    fn send() -> BoxFuture<Res!<()>>
 "#;
 
 const DDB_STUB: &str = r#"
@@ -425,7 +441,7 @@ harness_field Client """
 
   struct PutItemFluentBuilder
     fn table_name(input: Str) -> Self
-    fn send() -> Res!
+    fn send() -> BoxFuture<Res!<()>>
 "#;
 
 #[test]
@@ -786,7 +802,7 @@ root_types Client
     fn publish() -> PublishFluentBuilder
 
   struct PublishFluentBuilder
-    fn send() -> Res!<PublishOutput>
+    fn send() -> BoxFuture<Res!<PublishOutput>>
 
   struct PublishOutput
 "#;
@@ -834,6 +850,7 @@ stub example-sdk 1.0.0
 types_module types
 root_types Client
 
+
   struct Blob
     path primitives
     fn new(data: Bytes) -> Self
@@ -843,7 +860,7 @@ root_types Client
 
   struct InvokeFluentBuilder
     fn payload(input: Blob) -> Self
-    fn send() -> Res!<InvokeOutput>
+    fn send() -> BoxFuture<Res!<InvokeOutput>>
 
   struct InvokeOutput
     fn payload() -> Opt<Blob>
@@ -887,6 +904,7 @@ stub example-sdk 1.0.0
 types_module types
 root_types Client
 
+
   struct Blob
     path primitives
     fn new(data: Bytes) -> Self
@@ -896,7 +914,7 @@ root_types Client
 
   struct InvokeFluentBuilder
     fn payload(input: Blob) -> Self
-    fn send() -> Res!<InvokeOutput>
+    fn send() -> BoxFuture<Res!<InvokeOutput>>
 
   struct InvokeOutput
     fn payload() -> Opt<Blob>
@@ -957,6 +975,7 @@ stub example-sdk 1.0.0
 types_module types
 root_types Client
 
+
   struct Blob
     path primitives
     fn new(data: Bytes) -> Self
@@ -966,7 +985,7 @@ root_types Client
 
   struct InvokeFluentBuilder
     fn payload(input: Blob) -> Self
-    fn send() -> Res!<InvokeOutput>
+    fn send() -> BoxFuture<Res!<InvokeOutput>>
 
   struct InvokeOutput
     fn payload() -> Opt<Blob>
@@ -1009,8 +1028,9 @@ stub example-sdk 1.0.0
 types_module types
 root_types Client
 
+
   struct Client
-    fn send() -> Res!
+    fn send() -> BoxFuture<Res!<()>>
 "#;
     let app = r#"
 pkg FnApp
@@ -1070,11 +1090,12 @@ stub example-sdk 1.0.0
 types_module types
 root_types Client
 
+
   struct Client
     fn get_item() -> GetItemFluentBuilder
 
   struct GetItemFluentBuilder
-    fn send() -> Res!<GetItemOutput>
+    fn send() -> BoxFuture<Res!<GetItemOutput>>
 
   struct GetItemOutput
     fn item() -> Opt<HashMap<Str, AttributeValue>>
@@ -1127,11 +1148,12 @@ stub example-sdk 1.0.0
 types_module types
 root_types Client
 
+
   struct Client
     fn get_item() -> GetItemFluentBuilder
 
   struct GetItemFluentBuilder
-    fn send() -> Res!<GetItemOutput>
+    fn send() -> BoxFuture<Res!<GetItemOutput>>
 
   struct GetItemOutput
     fn item() -> Opt<HashMap<Str, AttributeValue>>
@@ -1377,6 +1399,7 @@ stub example-sdk 1.0.0
 types_module types
 root_types Client
 
+
   struct Blob
     path primitives
     fn new(data: Bytes) -> Self
@@ -1387,7 +1410,7 @@ root_types Client
 
   struct InvokeFluentBuilder
     fn payload(input: Blob) -> Self
-    fn send() -> Res!<InvokeOutput>
+    fn send() -> BoxFuture<Res!<InvokeOutput>>
 
   struct InvokeOutput
     fn payload() -> Opt<Blob>
@@ -1475,7 +1498,7 @@ stub example-http 1.0.0
     fn post(url: U) -> RequestBuilder
   struct RequestBuilder
     fn body(body: T) -> Self
-    fn send() -> Res!<Response>
+    fn send() -> BoxFuture<Res!<Response>>
   struct Response
     fn text() -> Res!<Str>
 "#;
@@ -1540,5 +1563,57 @@ pkg SdkApp
     assert!(
         !out.contains("unstubbed external"),
         "must not treat Int.now_unix as an external stub:\n{out}"
+    );
+}
+
+#[test]
+fn stub_lowers_to_template_produces_correct_output() {
+    // This stub uses explicit lowers_to blocks — the engine should use the template
+    // directly instead of heuristic suffix detection.
+    let stub = r#"
+stub example-http 1.0.0
+  struct Client
+    fn post(url: U) -> RequestBuilder
+      lowers_to
+        rust: "{{self}}.post({{url}})"
+  struct RequestBuilder
+    fn body(body: T) -> Self
+      lowers_to
+        rust: "{{self}}.body({{body}})"
+    fn send() -> BoxFuture<Res!<Response>>
+      lowers_to
+        rust: "{{self}}.send().await.map_err(|e| {{error_model.external}}(format!(\"{e:?}\")))?"""
+  struct Response
+    fn text() -> BoxFuture<Res!<Str>>
+      lowers_to
+        rust: "{{self}}.text().await.map_err(|e| {{error_model.external}}(format!(\"{e:?}\")))?"""
+"#;
+    let app = r#"
+pkg SdkApp
+  use ddd
+  use example_http
+
+  ctx Store
+    group domain
+      port Http
+        post!(url: Str, body: Str) -> Str
+    group infrastructure
+      adapter Req for Http
+        @field(http: example_http.Client)
+        impl post(url, body)
+          resp = self.http.post(url).body(body).send!()
+          ret resp.text!()
+"#;
+    let out = generate_with_stub(stub, app);
+    // Template-based lowering: send() uses the template directly
+    assert!(
+        out.contains(".send().await.map_err"),
+        "send() should use template with .await.map_err:\n{}",
+        out.lines().filter(|l| l.contains("send") || l.contains("text")).collect::<Vec<_>>().join("\n")
+    );
+    assert!(
+        out.contains(".text().await.map_err"),
+        "text() should use template with .await.map_err:\n{}",
+        out.lines().filter(|l| l.contains("text")).collect::<Vec<_>>().join("\n")
     );
 }
