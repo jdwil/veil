@@ -97,6 +97,7 @@ fn lower_trait_dep_call(call: &CallExpr, ctx: &GenCtx) -> TsExpr {
 }
 
 /// Lower a routing/bus call: `invoke Target{fields}` → `await deps.bus.invoke("Target", {fields})`
+#[allow(dead_code)]
 fn lower_routing_call(call: &CallExpr, ctx: &GenCtx) -> TsExpr {
     let method = if call.method.is_empty() { "invoke" } else { &call.method };
     let method_clean = method.trim_end_matches(['!', '?']);
