@@ -1199,14 +1199,19 @@ pub fn emit_runtime_delegated(
     out.push_str("    ];\n");
     // Coordinator args: if the step trait's `action` method has a trait-typed
     // first param (e.g. `bus: Bus`), pass it from deps. Otherwise just pass steps.
+    // Detect statement-target traits: types that layer statements declare as their
+    // port_target (e.g., Bus from `mt Bus.invoke`). Generic — no bus-specific knowledge.
     let coord = to_snake(&rt.coordinator);
-    let layer_routing_traits: std::collections::HashSet<String> = registry.routing_traits().into_iter().collect();
+    let layer_statement_targets: std::collections::HashSet<String> = registry.statements.iter()
+        .filter_map(|s| s.port_target.as_ref())
+        .cloned()
+        .collect();
     let routing_param = lookup_method("action")
         .or_else(|| step_trait_construct.and_then(|t| t.methods.first()))
         .and_then(|m| {
             m.params.iter().find_map(|p| {
                 if let TypeExpr::Named(ty) = &p.type_expr
-                    && layer_routing_traits.contains(ty) {
+                    && layer_statement_targets.contains(ty) {
                         return Some(to_snake(&p.name));
                     }
                 None
