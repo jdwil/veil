@@ -1205,7 +1205,7 @@ fn lower_require_null_check() {
     let output = emit_ts(&ts);
     // Should contain null check throw pattern
     assert!(output.contains("throw"), "require should produce throw: {}", output);
-    assert!(output.contains("NotFound"), "require should mention NotFound: {}", output);
+    assert!(output.contains("__NO_NOT_FOUND__"), "require should mention error_model.not_found variant: {}", output);
 }
 
 #[test]

@@ -294,7 +294,7 @@ fn pattern_name(pat: &Pattern) -> String {
 // ─── Batch 5: Require ───────────────────────────────────────────────────────
 
 fn lower_require(inner: &Expr, ctx: &GenCtx) -> TsExpr {
-    // `require expr` → null-check IIFE: `(expr) ?? (() => { throw new Error("NotFound"); })()`
+    // `require expr` → null-check IIFE: `(expr) ?? (() => { throw new Error("<not_found_variant>"); })()`
     // Structurally: NullishCoalesce { left: inner, right: throw-IIFE }
     let value = lower_to_ts(inner, ctx);
     let throw_iife = TsExpr::FnCall {
@@ -304,7 +304,7 @@ fn lower_require(inner: &Expr, ctx: &GenCtx) -> TsExpr {
             body: vec![TsExpr::Throw {
                 message: Box::new(TsExpr::NewCall {
                     class: "Error".to_string(),
-                    args: vec![TsExpr::StringLit("NotFound".to_string())],
+                    args: vec![TsExpr::StringLit(ctx.error_model.not_found.clone())],
                     ty: None,
                 }),
             }],
