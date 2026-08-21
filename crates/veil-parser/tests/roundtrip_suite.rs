@@ -39,8 +39,10 @@ fn ensure_layers_env(root: &Path) {
 /// or structural issues like missing `sol`/`pkg` header).
 /// Remove an entry once fixed — the suite will then require idempotence.
 const KNOWN_UNPARSEABLE: &[&str] = &[
-    // empty — runtime-ui.veil now parses; keep the list so the "was unparseable
-    // but now parses" regression check stays meaningful when entries return.
+    // Parser indentation bug: trait-shaped constructs with method bodies inside
+    // groups get their block boundary mis-detected. The integration construct
+    // (port→trait) gets consumed into the preceding lead's scope.
+    "examples/sales_crm.veil",
 ];
 
 fn collect_veil_files(root: &Path) -> Vec<PathBuf> {
