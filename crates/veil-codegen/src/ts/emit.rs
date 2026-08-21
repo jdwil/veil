@@ -343,8 +343,7 @@ fn emit_ts_indent(expr: &TsExpr, indent: usize) -> String {
         TsExpr::Break => "break".to_string(),
         TsExpr::Continue => "continue".to_string(),
 
-        // ── Escape hatches ────────────────────────────────────────────────
-        TsExpr::Raw(s) => s.clone(),
+        // ── Layer-provided / terminal ─────────────────────────────────────
         TsExpr::Noop => String::new(),
         TsExpr::LayerEmit(s) => s.clone(),
     }

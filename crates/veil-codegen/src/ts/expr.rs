@@ -367,11 +367,11 @@ pub enum TsExpr {
     /// `continue;`
     Continue,
 
-    // ── Escape hatches (transitional) ─────────────────────────────────────
+    // ── Layer-provided / terminal ─────────────────────────────────────────
 
-    /// Pre-rendered TypeScript string — used during migration from old codegen.
-    Raw(String),
+    /// No-op: emits nothing (e.g., `noop` in VEIL).
+    Noop,
 
-    /// Layer template interpolation result.
+    /// Layer template interpolation result — opaque content from lowers_to templates.
     LayerEmit(String),
 }

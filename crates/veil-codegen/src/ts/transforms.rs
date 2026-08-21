@@ -244,7 +244,6 @@ fn collect_imports_from_expr(expr: &TsExpr, names: &mut BTreeSet<String>) {
         | TsExpr::Break
         | TsExpr::Continue
         | TsExpr::Noop
-        | TsExpr::Raw(_)
         | TsExpr::LayerEmit(_) => {}
     }
 }
@@ -367,7 +366,6 @@ fn has_await(expr: &TsExpr) -> bool {
         | TsExpr::Break
         | TsExpr::Continue
         | TsExpr::Noop
-        | TsExpr::Raw(_)
         | TsExpr::LayerEmit(_) => false,
     }
 }
