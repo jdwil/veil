@@ -5,7 +5,6 @@
 use veil_ir::ast::{ActionExpr, CallExpr, Expr};
 use veil_ir::layer::StmtShape;
 use crate::expr::GenCtx;
-use crate::ts::legacy::expr_to_ts;
 use super::super::expr::{TsBinOp, TsExpr, TsType};
 use super::{lower_to_ts, to_camel_case};
 
@@ -58,8 +57,19 @@ pub(super) fn lower_call(call: &CallExpr, ctx: &GenCtx) -> TsExpr {
         };
     }
 
-    // Fallback
-    TsExpr::Raw(expr_to_ts(&Expr::Call(call.clone()), 0))
+    // ── 7. Bare method call (target empty, no receiver) ─────────────────
+    if !call.method.is_empty() {
+        let args: Vec<TsExpr> = call.args.iter().map(|a| lower_to_ts(a, ctx)).collect();
+        return TsExpr::FnCall {
+            name: to_camel_case(&call.method),
+            args,
+            ty: None,
+        };
+    }
+
+    // Unreachable in practice: target empty, method empty, no receiver.
+    // Emit as undefined with a TODO comment for visibility.
+    TsExpr::LayerEmit("/* TODO: empty call expression */ undefined".to_string())
 }
 
 /// Lower a trait dependency call: `Target.method!(args)` → `await deps.field.method(args)`
