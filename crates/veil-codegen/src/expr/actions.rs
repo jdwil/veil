@@ -53,9 +53,18 @@ fn negate_guard_condition(cond: &Expr, ctx: &GenCtx) -> RustExpr {
     }
 }
 
-/// Classify a `guard` failure message → DomainError variant.
+/// Semantic tag for guard failure classification.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GuardErrorKind {
+    /// Access/existence failures → maps to error_model.not_found
+    NotFound,
+    /// Input/validation failures → maps to error_model.validation
+    Validation,
+}
+
+/// Classify a `guard` failure message → error kind.
 /// Real input validation stays Validation (400).
-pub fn guard_error_variant(msg: &str) -> &'static str {
+pub fn guard_error_variant(msg: &str) -> GuardErrorKind {
     let lower = msg.to_ascii_lowercase();
     if lower.contains("not found")
         || lower.contains("access denied")
@@ -63,9 +72,9 @@ pub fn guard_error_variant(msg: &str) -> &'static str {
         || lower.contains("unauthorized")
         || (lower.contains("denied") && !lower.contains("validation"))
     {
-        "NotFound"
+        GuardErrorKind::NotFound
     } else {
-        "Validation"
+        GuardErrorKind::Validation
     }
 }
 
@@ -297,7 +306,7 @@ pub fn translate_action(a: &ActionExpr, ctx: &GenCtx) -> RustExpr {
         StmtShape::If => {
             let msg = a.message.as_deref().unwrap_or("precondition failed");
             let err_var = guard_error_variant(msg);
-            let err_node = if err_var == "NotFound" {
+            let err_node = if err_var == GuardErrorKind::NotFound {
                 not_found_err(ctx)
             } else {
                 validation_err(msg, ctx)
