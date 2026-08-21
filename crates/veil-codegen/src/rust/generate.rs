@@ -199,7 +199,8 @@ pub fn generate(solution: &Solution, registry: &LayerRegistry) -> GeneratedProje
         let main_body = if wants_product_host {
             gen_product_host_main(solution, &handler_names, registry)
         } else if !modules.is_empty() {
-            gen_local_harness_main(solution, &modules, registry, &harness_ir)
+            let tpl_data = compute_harness_template_data(solution, &modules, registry, &harness_ir);
+            render_harness_from_template_data(&tpl_data)
         } else if let Some(body) = crate::template::compose_main_section(&template_output, "rust")
         {
             body

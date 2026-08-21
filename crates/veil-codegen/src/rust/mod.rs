@@ -18,6 +18,7 @@
 
 mod generate;
 mod harness;
+mod harness_template;
 mod workspace;
 mod types;
 mod shared;
@@ -28,6 +29,7 @@ mod type_convert;
 // Re-export everything so `crate::rust::X` paths continue to work unchanged.
 pub use generate::*;
 pub use harness::*;
+pub use harness_template::*;
 pub use workspace::*;
 pub use types::*;
 pub use shared::*;

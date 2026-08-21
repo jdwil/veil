@@ -1,5 +1,6 @@
 ---
 source: crates/veil-codegen/tests/snapshot_tests.rs
+assertion_line: 60
 expression: out
 ---
 // ===== Cargo.toml =====
@@ -452,7 +453,7 @@ storefront = { path = "../storefront" }
 
 use std::sync::Arc;
 use axum::{Router, Json, extract::State, routing::{get}, http::{HeaderMap, StatusCode}, middleware::{from_fn, Next}, response::Response, extract::Request};
-use tower_http::cors::{{Any, CorsLayer}};
+use tower_http::cors::{Any, CorsLayer};
 use uuid::Uuid;
 use serde_json::Value;
 use veil_shared::*;
