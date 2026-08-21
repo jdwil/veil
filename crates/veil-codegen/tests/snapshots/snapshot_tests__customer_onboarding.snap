@@ -1,5 +1,6 @@
 ---
 source: crates/veil-codegen/tests/snapshot_tests.rs
+assertion_line: 66
 expression: out
 ---
 // ===== Cargo.toml =====
@@ -854,8 +855,8 @@ chrono.workspace = true
 tracing.workspace = true
 serde_json.workspace = true
 veil_shared = { path = "../veil_shared" }
-billing = { path = "../billing" }
 identity = { path = "../identity" }
+billing = { path = "../billing" }
 
 // ===== crates/onboarding/src/lib.rs =====
 //! Onboarding — Orchestrator.

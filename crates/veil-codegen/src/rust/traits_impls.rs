@@ -845,6 +845,8 @@ pub fn gen_impls(
                 ctx.name_to_shape = seeded.name_to_shape;
                 ctx.enum_variants = seeded.enum_variants;
                 ctx.unit_enums = seeded.unit_enums;
+                ctx.error_model = seeded.error_model;
+                ctx.method_lowers_to = seeded.method_lowers_to;
                 ctx.expected_return_rust = Some(ret_rust.clone());
 
                 // Cloud SDK types from .stub files: we can *parse* VEIL that
