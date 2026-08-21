@@ -1343,7 +1343,9 @@ pub fn detect_sibling_refs(module: &Construct, solution: &Solution) -> Vec<Strin
         }
     }
     scan_refs(module, &module_names, &mut needed);
-    needed.into_iter().collect()
+    let mut result: Vec<String> = needed.into_iter().collect();
+    result.sort();
+    result
 }
 // ─── Helper functions ─────────────────────────────────────────────────────
 
