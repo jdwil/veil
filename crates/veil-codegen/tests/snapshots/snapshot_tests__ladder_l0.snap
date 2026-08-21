@@ -1,6 +1,5 @@
 ---
 source: crates/veil-codegen/tests/snapshot_tests.rs
-assertion_line: 48
 expression: out
 ---
 // ===== Cargo.toml =====
@@ -429,25 +428,23 @@ use uuid::Uuid;
 use serde_json::Value;
 use veil_shared::*;
 use greet::application::{self as greet_app, GreetDeps as greet_Deps};
-
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let port: u16 = std::env::var("PORT").ok().and_then(|s| s.parse().ok()).unwrap_or(3000);
-
     // ── context Greet ──
-    let mem_greeting_repo_inst: Arc<dyn greet::ports::GreetingRepo + Send + Sync> = Arc::new(greet::adapters::MemGreetingRepo{});
-    let greet_deps = Arc::new(greet_Deps {
-        greeting_repo: mem_greeting_repo_inst.clone(),
-    });
+    let mem_greeting_repo_inst: Arc<dyn greet::ports::GreetingRepo + Send + Sync> = Arc::new(greet::adapters::MemGreetingRepo{});    let greet_deps = Arc::new(greet_Deps {
+        greeting_repo: mem_greeting_repo_inst.clone(),    });
+
 
     let greet_router = Router::new()
-        .route("/api/greetings", get(greet_list_greetings_handler).post(greet_create_greeting_handler))
-        .layer(from_fn(veil_api_key_middleware))
+        .route("/api/greetings", get(greet_list_greetings_handler).post(greet_create_greeting_handler))        .layer(from_fn(veil_api_key_middleware))
         .layer(veil_cors_layer())
         .with_state(greet_deps.clone());
 
+
     let app = greet_router
         .route("/health", get(|| async { "ok" }));
+
     println!("veil_bin: profile=axum_http endpoints=2");
     println!("veil_bin: listening on :{}", port);
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", port)).await?;
@@ -455,27 +452,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-async fn greet_list_greetings_handler(
-    State(deps): State<Arc<greet_Deps>>,
-) -> Result<Json<Value>, StatusCode> {
-    match greet_app::list_greetings(&deps).await {
+async fn greet_list_greetings_handler(    State(deps): State<Arc<greet_Deps>>,) -> Result<Json<Value>, StatusCode> {    match greet_app::list_greetings(&deps).await {
         Ok(result) => Ok(Json(veil_json_public(&result))),
+
         Err(e) => Err(veil_domain_error_status(e)),
     }
 }
 
-async fn greet_create_greeting_handler(
-    State(deps): State<Arc<greet_Deps>>,
-    Json(body): Json<Value>,
+async fn greet_create_greeting_handler(    State(deps): State<Arc<greet_Deps>>,    Json(body): Json<Value>,
+
 ) -> Result<Json<Value>, StatusCode> {
-    let message = body.get("message").and_then(|v| v.as_str()).unwrap_or_default().to_string();
-    match greet_app::create_greeting(&deps, message).await {
+    let message = body.get("message").and_then(|v| v.as_str()).unwrap_or_default().to_string();    match greet_app::create_greeting(&deps, message).await {
         Ok(result) => Ok(Json(veil_json_public(&result))),
+
         Err(e) => Err(veil_domain_error_status(e)),
     }
 }
 
-
+/// HTTP 400 Bad Request status — used in field extraction for parse errors.
+pub fn veil_bad_request_status() -> StatusCode { StatusCode::BAD_REQUEST }
 /// Production-oriented auth:
 /// - `/health` + OPTIONS always open
 /// - `VEIL_DEV=1` → open (local dual-loop only)

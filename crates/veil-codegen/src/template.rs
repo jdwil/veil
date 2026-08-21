@@ -159,7 +159,7 @@ pub fn execute_templates(
 }
 
 /// Compose the "main" section into a complete main function (target-specific).
-pub fn compose_main_section(output: &TemplateOutput, target: &str) -> Option<String> {
+pub fn compose_main_section(output: &TemplateOutput, target: &str, registry: Option<&veil_ir::layer::LayerRegistry>) -> Option<String> {
     let contributions = output.sections.get("main")?;
     if contributions.is_empty() {
         return None;
@@ -172,10 +172,18 @@ pub fn compose_main_section(output: &TemplateOutput, target: &str) -> Option<Str
         .join("\n");
 
     match target {
-        "rust" => Some(format!(
-            "#[tokio::main]\nasync fn main() -> Result<(), Box<dyn std::error::Error>> {{\n{}\n    Ok(())\n}}",
-            body
-        )),
+        "rust" => {
+            // Use layer-provided main wrapper if available
+            if let Some(reg) = registry {
+                if let Some(tpl) = reg.harness_render_templates.get("rust_bin_main_wrapper") {
+                    return Some(tpl.replace("{body}", &body));
+                }
+            }
+            Some(format!(
+                "fn main() {{\n{}\n}}",
+                body
+            ))
+        },
         "typescript" => Some(format!(
             "async function main() {{\n{}\n}}\n\nmain().catch(console.error);",
             body
@@ -1721,7 +1729,7 @@ mod tests {
 
     #[test]
     fn conditional_has_children_true() {
-        let mut c = empty_construct("Router");
+        let mut c = empty_construct("Widget");
         c.children.push(empty_construct("Endpoint"));
         let result = render(&c, "{{if has_children}}has kids{{end}}");
         assert_eq!(result, "has kids");
@@ -1729,7 +1737,7 @@ mod tests {
 
     #[test]
     fn conditional_has_children_false() {
-        let c = empty_construct("Router");
+        let c = empty_construct("Widget");
         let result = render(&c, "{{if has_children}}has kids{{end}}");
         assert_eq!(result, "");
     }
@@ -1752,7 +1760,7 @@ mod tests {
 
     #[test]
     fn for_child_basic() {
-        let mut c = empty_construct("Router");
+        let mut c = empty_construct("Widget");
         c.children.push(empty_construct("Alpha"));
         c.children.push(empty_construct("Beta"));
         let result = render(&c, "{{for child in children}}{{child.name}},{{end}}");
@@ -1761,7 +1769,7 @@ mod tests {
 
     #[test]
     fn for_child_name_snake() {
-        let mut c = empty_construct("Router");
+        let mut c = empty_construct("Widget");
         c.children.push(empty_construct("GetOrders"));
         let result = render(&c, "{{for child in children}}{{child.name_snake}}{{end}}");
         assert_eq!(result, "get_orders");
@@ -1769,7 +1777,7 @@ mod tests {
 
     #[test]
     fn for_child_where_keyword() {
-        let mut c = empty_construct("Router");
+        let mut c = empty_construct("Widget");
         let mut ep = empty_construct("ListItems");
         ep.keyword = "endpoint".into();
         c.children.push(ep);
@@ -1785,7 +1793,7 @@ mod tests {
 
     #[test]
     fn for_child_annotation_value() {
-        let mut c = empty_construct("Router");
+        let mut c = empty_construct("Widget");
         let mut ep = empty_construct("GetOrder");
         ep.annotations.push(Annotation {
             name: "route".into(),
@@ -1967,7 +1975,7 @@ mod tests {
 
     #[test]
     fn helper_count_children() {
-        let mut c = empty_construct("Router");
+        let mut c = empty_construct("Widget");
         c.children.push(empty_construct("A"));
         c.children.push(empty_construct("B"));
         c.children.push(empty_construct("C"));
@@ -2047,7 +2055,7 @@ mod tests {
             lowers_to,
         });
 
-        let mut parent = empty_construct("Router");
+        let mut parent = empty_construct("Widget");
         let mut child = empty_construct("GetItems");
         child.keyword = "endpoint".into();
         child.subkind = "Endpoint".into();
@@ -2062,7 +2070,7 @@ mod tests {
 
     #[test]
     fn combined_conditional_and_child_loop() {
-        let mut c = empty_construct("Router");
+        let mut c = empty_construct("Widget");
         c.children.push(empty_construct("A"));
         c.children.push(empty_construct("B"));
         let tpl = "{{if has_children}}routes:\n{{for child in children}}- {{child.name_snake}}\n{{end}}{{end}}";

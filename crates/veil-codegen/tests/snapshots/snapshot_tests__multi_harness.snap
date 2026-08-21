@@ -1,6 +1,5 @@
 ---
 source: crates/veil-codegen/tests/snapshot_tests.rs
-assertion_line: 60
 expression: out
 ---
 // ===== Cargo.toml =====
@@ -458,26 +457,24 @@ use uuid::Uuid;
 use serde_json::Value;
 use veil_shared::*;
 use storefront::application::{self as storefront_app, StorefrontDeps as storefront_Deps};
-
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let port: u16 = std::env::var("PORT").ok().and_then(|s| s.parse().ok()).unwrap_or(3000);
-
     // ── context Storefront ──
-    let mem_widget_repo_inst: Arc<dyn storefront::ports::WidgetRepo + Send + Sync> = Arc::new(storefront::adapters::MemWidgetRepo{});
-    let storefront_deps = Arc::new(storefront_Deps {
-        widget_repo: mem_widget_repo_inst.clone(),
-    });
+    let mem_widget_repo_inst: Arc<dyn storefront::ports::WidgetRepo + Send + Sync> = Arc::new(storefront::adapters::MemWidgetRepo{});    let storefront_deps = Arc::new(storefront_Deps {
+        widget_repo: mem_widget_repo_inst.clone(),    });
+
 
     let storefront_router = Router::new()
         .route("/api/widgets", get(storefront_list_widgets_handler).post(storefront_create_widget_handler))
-        .route("/api/widgets/{id}", get(storefront_get_widget_handler))
-        .layer(from_fn(veil_api_key_middleware))
+        .route("/api/widgets/{id}", get(storefront_get_widget_handler))        .layer(from_fn(veil_api_key_middleware))
         .layer(veil_cors_layer())
         .with_state(storefront_deps.clone());
 
+
     let app = storefront_router
         .route("/health", get(|| async { "ok" }));
+
     println!("veil_bin: profile=axum_http endpoints=3");
     println!("veil_bin: listening on :{}", port);
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", port)).await?;
@@ -485,38 +482,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-async fn storefront_list_widgets_handler(
-    State(deps): State<Arc<storefront_Deps>>,
-) -> Result<Json<Value>, StatusCode> {
-    match storefront_app::list_widgets(&deps).await {
+async fn storefront_list_widgets_handler(    State(deps): State<Arc<storefront_Deps>>,) -> Result<Json<Value>, StatusCode> {    match storefront_app::list_widgets(&deps).await {
         Ok(result) => Ok(Json(veil_json_public(&result))),
+
         Err(e) => Err(veil_domain_error_status(e)),
     }
 }
 
-async fn storefront_get_widget_handler(
-    State(deps): State<Arc<storefront_Deps>>,
-    axum::extract::Path(id): axum::extract::Path<String>,
-) -> Result<Json<Value>, StatusCode> {
-    let id = id.parse::<Uuid>().map_err(|_| StatusCode::BAD_REQUEST)?;
-    match storefront_app::get_widget(&deps, id).await {
+async fn storefront_get_widget_handler(    State(deps): State<Arc<storefront_Deps>>,
+    axum::extract::Path(id): axum::extract::Path<String>,) -> Result<Json<Value>, StatusCode> {
+    let id = id.parse::<Uuid>().map_err(|_| veil_bad_request_status())?;    match storefront_app::get_widget(&deps, id).await {
         Ok(result) => Ok(Json(veil_json_public(&result))),
+
         Err(e) => Err(veil_domain_error_status(e)),
     }
 }
 
-async fn storefront_create_widget_handler(
-    State(deps): State<Arc<storefront_Deps>>,
-    Json(body): Json<Value>,
+async fn storefront_create_widget_handler(    State(deps): State<Arc<storefront_Deps>>,    Json(body): Json<Value>,
+
 ) -> Result<Json<Value>, StatusCode> {
-    let name = body.get("name").and_then(|v| v.as_str()).unwrap_or_default().to_string();
-    match storefront_app::create_widget(&deps, name).await {
+    let name = body.get("name").and_then(|v| v.as_str()).unwrap_or_default().to_string();    match storefront_app::create_widget(&deps, name).await {
         Ok(result) => Ok(Json(veil_json_public(&result))),
+
         Err(e) => Err(veil_domain_error_status(e)),
     }
 }
 
-
+/// HTTP 400 Bad Request status — used in field extraction for parse errors.
+pub fn veil_bad_request_status() -> StatusCode { StatusCode::BAD_REQUEST }
 /// Production-oriented auth:
 /// - `/health` + OPTIONS always open
 /// - `VEIL_DEV=1` → open (local dual-loop only)

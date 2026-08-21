@@ -52,8 +52,18 @@ pub fn gen_bin_crate(
     registry: &LayerRegistry,
 ) -> Vec<GeneratedFile> {
     let mut deps = String::from(
-        "tokio = { workspace = true }\nuuid = { workspace = true }\nserde = { workspace = true }\nserde_json = { workspace = true }\nveil_shared = { path = \"../veil_shared\" }\naxum = \"0.8\"\ntower-http = { version = \"0.6\", features = [\"cors\"] }\n",
+        "tokio = { workspace = true }\nuuid = { workspace = true }\nserde = { workspace = true }\nserde_json = { workspace = true }\nveil_shared = { path = \"../veil_shared\" }\n",
     );
+    // Framework-specific bin deps from layer (e.g. axum, tower-http).
+    if let Some(cargo_deps) = registry.harness_render_templates.get("rust_bin_cargo") {
+        for line in cargo_deps.lines() {
+            let trimmed = line.trim();
+            if !trimmed.is_empty() {
+                deps.push_str(trimmed);
+                deps.push('\n');
+            }
+        }
+    }
     for c in module_crates {
         deps.push_str(&format!("{c} = {{ path = \"../{c}\" }}\n"));
     }
@@ -108,19 +118,20 @@ path = "src/main.rs"
 {deps}"#
     );
     // Harness main already includes uses + #[tokio::main]; don't double-wrap.
-    let main_rs = if main_body.contains("#[tokio::main]") || main_body.contains("fn main") {
+    let main_rs = if main_body.contains("#[tokio::") || main_body.contains("fn main") {
         main_body.to_string()
     } else {
+        // Layer-provided async main wrapper
+        let wrapper = registry.harness_render_templates.get("rust_bin_main_wrapper")
+            .map(|t| t.as_str())
+            .unwrap_or("fn main() {\n{body}\n}\n");
         format!(
             "//! Generated entrypoint for package `{}` (@main contributors).\n\
              //! Run: `cargo run -p veil_bin` from the generated workspace root.\n\
              {uses}\n\
-             #[tokio::main]\n\
-             async fn main() -> Result<(), Box<dyn std::error::Error>> {{\n\
-             {main_body}\n\
-                 Ok(())\n\
-             }}\n",
-            sol.name
+             {}\n",
+            sol.name,
+            wrapper.replace("{body}", main_body)
         )
     };
     vec![

@@ -594,6 +594,11 @@ pub struct LayerRegistry {
     /// Each entry is `(target, code_template)`. Templates support `{error_type}` substitution.
     /// Populated from `shared_emit <target>` blocks in layer files.
     pub shared_emit: Vec<(String, String)>,
+    /// Harness render templates per target. The engine interpolates HarnessTemplateData
+    /// into these templates to produce framework-specific main.rs code.
+    /// Populated from `harness_template <target>` blocks in layer files.
+    /// Key: target (e.g. "rust_bin"), Value: template string.
+    pub harness_render_templates: HashMap<String, String>,
 }
 
 /// Layer-declared bus message naming (no hard-coded `Handle` in the engine).
@@ -698,6 +703,7 @@ impl Default for LayerRegistry {
             codegen_http_from_toml: false,
             method_lowers_to: HashMap::new(),
             shared_emit: Vec::new(),
+            harness_render_templates: HashMap::new(),
         }
     }
 }
@@ -729,6 +735,7 @@ impl Clone for LayerRegistry {
             codegen_http_from_toml: self.codegen_http_from_toml,
             method_lowers_to: self.method_lowers_to.clone(),
             shared_emit: self.shared_emit.clone(),
+            harness_render_templates: self.harness_render_templates.clone(),
         }
     }
 }
@@ -1915,6 +1922,11 @@ impl LayerRegistry {
             self.shared_emit.push(entry);
         }
 
+        // Accumulate harness_render_templates from layers (last loaded wins for same target).
+        for (target, template) in raw.harness_render_templates {
+            self.harness_render_templates.insert(target, template);
+        }
+
         // Validate presentation construct-name refs + enums (LAY-002).
         let known: std::collections::HashSet<String> =
             self.constructs.iter().map(|c| c.name.clone()).collect();
@@ -2931,6 +2943,9 @@ pub struct RawLayer {
     /// Each entry is `(target, code_template)`. Templates support `{error_type}` substitution.
     /// Populated from `shared_emit <target>` blocks in layer files.
     pub shared_emit: Vec<(String, String)>,
+    /// Harness render templates per target (e.g. "rust_bin" → template string).
+    /// Populated from `harness_template <target>` blocks in layer files.
+    pub harness_render_templates: HashMap<String, String>,
 }
 
 /// Pkg-level `use` names in a layer body (`use deploy`, `use harness`, …).
@@ -2997,6 +3012,12 @@ pub fn parse_layer_file(content: &str, layer_name: &str) -> Result<RawLayer, Str
     let mut shared_emit_target: String = String::new();
     let mut shared_emit_base_indent: usize = 0;
     let mut shared_emit_lines: Vec<String> = Vec::new();
+    // harness_template block parsing state
+    let mut harness_render_templates: HashMap<String, String> = HashMap::new();
+    let mut in_harness_template = false;
+    let mut harness_template_target: String = String::new();
+    let mut harness_template_base_indent: usize = 0;
+    let mut harness_template_lines: Vec<String> = Vec::new();
     // In-progress `view` under `present` (flushed on next view / role / section).
     let mut present_view: Option<crate::presentation::ViewSpec> = None;
     let mut errors: Vec<String> = Vec::new();
@@ -3036,6 +3057,19 @@ pub fn parse_layer_file(content: &str, layer_name: &str) -> Result<RawLayer, Str
                         trimmed
                     };
                     codegen_lines.push(dedented.to_string());
+                }
+            }
+            // Inside harness_template blocks, blank lines and #-lines are code content.
+            if in_harness_template {
+                if trimmed.is_empty() {
+                    harness_template_lines.push(String::new());
+                } else {
+                    let dedented = if line.len() > harness_template_base_indent {
+                        &line[harness_template_base_indent..]
+                    } else {
+                        trimmed
+                    };
+                    harness_template_lines.push(dedented.to_string());
                 }
             }
             continue;
@@ -3285,6 +3319,43 @@ pub fn parse_layer_file(content: &str, layer_name: &str) -> Result<RawLayer, Str
             continue;
         }
 
+        // Handle `harness_template <target>` blocks: template for harness main.rs generation
+        if trimmed.starts_with("harness_template ") && indent <= 2 {
+            // Flush any in-progress sections
+            if in_harness_template && !harness_template_lines.is_empty() {
+                harness_render_templates.insert(harness_template_target.clone(), harness_template_lines.join("\n"));
+                harness_template_lines.clear();
+            }
+            if in_shared_emit && !shared_emit_lines.is_empty() {
+                shared_emit.push((shared_emit_target.clone(), shared_emit_lines.join("\n")));
+                shared_emit_lines.clear();
+            }
+            if in_declare && !current_decl_lines.is_empty() {
+                while current_decl_lines.last().map(|l| l.is_empty()).unwrap_or(false) {
+                    current_decl_lines.pop();
+                }
+                declarations.push(current_decl_lines.join("\n"));
+                current_decl_lines.clear();
+            }
+            if in_codegen && !codegen_lines.is_empty() {
+                let template = parse_codegen_block(&codegen_target, &codegen_lines, layer_name);
+                codegen_templates.push(template);
+                codegen_lines.clear();
+            }
+            if let Some(item) = current.take() {
+                items.push(item);
+            }
+            in_declare = false;
+            in_prompt = false;
+            in_codegen = false;
+            in_shared_emit = false;
+            harness_template_target = trimmed.strip_prefix("harness_template ").unwrap().trim().to_string();
+            in_harness_template = true;
+            harness_template_base_indent = indent + 2;
+            section = Section::None;
+            continue;
+        }
+
         if in_shared_emit {
             if indent <= 2 && !trimmed.is_empty() {
                 // Leaving shared_emit — flush
@@ -3304,6 +3375,29 @@ pub fn parse_layer_file(content: &str, layer_name: &str) -> Result<RawLayer, Str
                     trimmed
                 };
                 shared_emit_lines.push(dedented.to_string());
+                continue;
+            }
+        }
+
+        if in_harness_template {
+            if indent <= 2 && !trimmed.is_empty() {
+                // Leaving harness_template — flush
+                if !harness_template_lines.is_empty() {
+                    harness_render_templates.insert(harness_template_target.clone(), harness_template_lines.join("\n"));
+                    harness_template_lines.clear();
+                }
+                in_harness_template = false;
+                // Fall through to normal parsing of this line
+            } else {
+                // Accumulate raw template lines (dedented)
+                let dedented = if line.len() > harness_template_base_indent {
+                    &line[harness_template_base_indent..]
+                } else if trimmed.is_empty() {
+                    ""
+                } else {
+                    trimmed
+                };
+                harness_template_lines.push(dedented.to_string());
                 continue;
             }
         }
@@ -3773,6 +3867,11 @@ pub fn parse_layer_file(content: &str, layer_name: &str) -> Result<RawLayer, Str
         shared_emit.push((shared_emit_target.clone(), shared_emit_lines.join("\n")));
     }
 
+    // Flush any trailing harness_template block
+    if in_harness_template && !harness_template_lines.is_empty() {
+        harness_render_templates.insert(harness_template_target.clone(), harness_template_lines.join("\n"));
+    }
+
     // Flush any trailing prompt content
     let prompt = if !prompt_lines.is_empty() {
         while prompt_lines.last().map(|l| l.is_empty()).unwrap_or(false) {
@@ -3796,6 +3895,7 @@ pub fn parse_layer_file(content: &str, layer_name: &str) -> Result<RawLayer, Str
         codegen_templates,
         method_lowers_to,
         shared_emit,
+        harness_render_templates,
     })
 }
 
@@ -5416,6 +5516,23 @@ item_repo = "PgItemRepo"
         // Unset keys keep layer/defaults
         assert_eq!(reg.harness_policy.profile.as_deref(), Some("axum_http"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn harness_render_template_parsed_from_layer() {
+        let mut reg = LayerRegistry::builtin();
+        reg.load_content("harness", include_str!("../../../layers/harness.layer")).unwrap();
+        assert!(reg.harness_render_templates.contains_key("rust_bin"),
+            "harness.layer should declare harness_template rust_bin");
+        let tpl = &reg.harness_render_templates["rust_bin"];
+        assert!(tpl.contains("{{package_name}}"), "template should contain package_name variable");
+        assert!(tpl.contains("{{for endpoint in endpoints}}"), "template should contain endpoint loop");
+        assert!(tpl.contains("axum"), "template should contain axum framework code");
+        // Also check rust_bin_cargo
+        assert!(reg.harness_render_templates.contains_key("rust_bin_cargo"),
+            "harness.layer should declare harness_template rust_bin_cargo");
+        let cargo = &reg.harness_render_templates["rust_bin_cargo"];
+        assert!(cargo.contains("axum"), "cargo deps should reference axum");
     }
 
     #[test]

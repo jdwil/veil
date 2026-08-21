@@ -6,6 +6,8 @@ fn generate_with_stub(stub_src: &str, app_src: &str) -> String {
     let mut reg = LayerRegistry::builtin();
     reg.load_content("ddd", include_str!("../../../layers/ddd.layer"))
         .expect("ddd");
+    reg.load_content("harness", include_str!("../../../layers/harness.layer"))
+        .expect("harness");
     if let Some(stub) = veil_ir::parse_stub_file(stub_src) {
         reg.stubs.push(stub);
     }

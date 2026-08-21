@@ -173,7 +173,7 @@ pub fn generate(solution: &Solution, registry: &LayerRegistry) -> GeneratedProje
     let emit_blocked = harness_ir.emit_bin == veil_ir::EmitBin::Never && !wants_product_host;
     let has_compose = harness_ir.contexts.iter().any(|c| c.compose.is_some());
     let has_declared_endpoints = package_has_declared_endpoints(solution, registry);
-    let has_entry = crate::template::compose_main_section(&template_output, "rust").is_some()
+    let has_entry = crate::template::compose_main_section(&template_output, "rust", Some(registry)).is_some()
         || package_has_main_annotation(solution, registry)
         || wants_product_host
         || has_compose
@@ -200,14 +200,23 @@ pub fn generate(solution: &Solution, registry: &LayerRegistry) -> GeneratedProje
             gen_product_host_main(solution, &handler_names, registry)
         } else if !modules.is_empty() {
             let tpl_data = compute_harness_template_data(solution, &modules, registry, &harness_ir);
-            render_harness_from_template_data(&tpl_data)
-        } else if let Some(body) = crate::template::compose_main_section(&template_output, "rust")
+            if let Some(layer_tpl) = registry.harness_render_templates.get("rust_bin") {
+                render_harness_from_layer_template(layer_tpl, &tpl_data)
+            } else {
+                // Fallback: harness.layer not loaded (should not happen in practice)
+                format!("fn main() {{\n    eprintln!(\"veil_bin: harness layer not loaded\");\n}}\n")
+            }
+        } else if let Some(body) = crate::template::compose_main_section(&template_output, "rust", Some(registry))
         {
             body
         } else {
-            String::from(
-                "#[tokio::main]\nasync fn main() -> Result<(), Box<dyn std::error::Error>> {\n    println!(\"veil_bin: no modules to run\");\n    Ok(())\n}\n",
-            )
+            // Fallback: empty main wrapper from layer (or inline default)
+            let wrapper = registry.harness_render_templates.get("rust_bin_main_wrapper")
+                .map(|t| t.replace("{body}", "    println!(\"veil_bin: no modules to run\");\n"))
+                .unwrap_or_else(|| String::from(
+                    "fn main() {\n    println!(\"veil_bin: no modules to run\");\n}\n"
+                ));
+            wrapper
         };
         files.extend(gen_bin_crate(
             solution,

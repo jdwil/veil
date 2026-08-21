@@ -115,6 +115,10 @@ pkg harness v1
     - For dual-loop REST APIs, declare `deps` / `compose` / `endpoint`
 
   shared_emit rust_bin
+    /// HTTP 400 Bad Request status — used in field extraction for parse errors.
+    #[inline]
+    pub fn veil_bad_request_status() -> StatusCode { StatusCode::BAD_REQUEST }
+
     /// Production-oriented auth:
     /// - `/health` + OPTIONS always open
     /// - `VEIL_DEV=1` → open (local dual-loop only)
@@ -295,4 +299,151 @@ pkg harness v1
             }
             other => other,
         }
+    }
+
+  harness_template rust_bin
+    //! HTTP harness for package `{{package_name}}` (RT-001 / RT-003).
+    //! Wires adapters + exposes services as REST endpoints.
+    //! `cargo run -p veil_bin` from the generated workspace root.
+
+    #![allow(unused_imports)]
+
+    use std::sync::Arc;
+    use axum::{Router, Json, extract::State, {{query_import}}routing::{{{routing_imports}}}, http::{HeaderMap, StatusCode}, middleware::{from_fn, Next}, response::Response, extract::Request};
+    use tower_http::cors::{Any, CorsLayer};
+    use uuid::Uuid;
+    use serde_json::Value;
+    use veil_shared::*;
+    {{for use_statement in use_statements}}
+    {{use_statement}}
+    {{end_for}}
+
+    #[tokio::main]
+    async fn main() -> Result<(), Box<dyn std::error::Error>> {
+        let port: u16 = std::env::var("{{port_env}}").ok().and_then(|s| s.parse().ok()).unwrap_or({{port_default}});
+
+    {{if has_bus}}
+        let bus = veil_shared::{{bus_type}}::new();
+
+    {{end_if}}
+    {{for wiring in wirings}}
+        // ── context {{wiring.module_name}} ──
+    {{for stub_let in stub_lets}}
+    {{stub_let}}
+    {{end_for}}
+    {{if wiring.has_stub_lets}}
+
+    {{end_if}}
+    {{for adapter_inst in adapter_insts}}
+    {{adapter_inst}}
+    {{end_for}}
+    {{if wiring.has_deps}}
+        let {{wiring.crate_name}}_deps = Arc::new({{wiring.deps_type_alias}} {
+    {{for deps_field in deps_fields}}
+            {{deps_field.name}}: {{deps_field.value}},
+    {{end_for}}
+        });
+
+    {{end_if}}
+    {{if wiring.has_router}}
+        let {{wiring.router.crate_name}}_router = Router::new()
+    {{for route in routes}}
+            .route("{{route.path}}", {{route.chained}})
+    {{end_for}}
+            .layer(from_fn(veil_api_key_middleware))
+            .layer(veil_cors_layer())
+    {{if wiring.router.has_deps}}
+            .with_state({{wiring.crate_name}}_deps.clone());
+    {{else}}
+            .with_state(());
+    {{end_if}}
+
+    {{end_if}}
+    {{end_for}}
+    {{if has_bus_registrations}}
+        // ── bus handlers (cross-context invoke / request) ──
+    {{for bus_registration in bus_registrations}}
+    {{bus_registration}}
+    {{end_for}}
+
+    {{end_if}}
+    {{if has_routers}}
+        let app = {{first_router}}{{merge_routers}}
+            .route("{{health_path}}", get(|| async { "ok" }));
+    {{else}}
+        let app = Router::new().route("{{health_path}}", get(|| async { "ok" }));
+    {{end_if}}
+        println!("veil_bin: profile={{profile}} endpoints={{endpoint_count}}");
+        println!("veil_bin: listening on :{}", port);
+        let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", port)).await?;
+        axum::serve(listener, app.into_make_service()).await?;
+        Ok(())
+    }
+
+    {{for endpoint in endpoints}}
+    async fn {{endpoint.fn_name}}_handler({{if endpoint.has_deps}}
+        State(deps): State<Arc<{{endpoint.deps_type}}>>,{{end_if}}{{if endpoint.has_single_path_param}}
+        axum::extract::Path({{endpoint.path_param}}): axum::extract::Path<String>,{{end_if}}{{if endpoint.has_multi_path_params}}
+        axum::extract::Path(({{endpoint.path_param_names}})): axum::extract::Path<({{endpoint.path_param_types}})>,{{end_if}}{{if endpoint.needs_query}}
+        Query(q): Query<std::collections::HashMap<String, String>>,{{end_if}}{{if endpoint.needs_body}}
+        Json(body): Json<Value>,{{end_if}}
+    ) -> Result<Json<Value>, StatusCode> {
+    {{for extraction in extractions}}
+    {{extraction}}
+    {{end_for}}
+        match {{endpoint.crate_name}}_app::{{endpoint.app_fn_name}}({{endpoint.call_args}}).await {
+    {{if endpoint.is_delete}}
+            Ok(_) => Ok(Json(serde_json::json!({"ok": true}))),
+    {{else}}
+            Ok(result) => Ok(Json(veil_json_public(&result))),
+    {{end_if}}
+            Err(e) => Err(veil_domain_error_status(e)),
+        }
+    }
+
+    {{end_for}}
+    {{layer_helpers}}
+
+  harness_template rust_bin_cargo
+    axum = "0.8"
+    tower-http = { version = "0.6", features = ["cors"] }
+
+  harness_template product_host
+    //! Generated product host for package `{{package_name}}` (CAP-002/006).
+    //! Uses `veil_server::ProductHost` for IDE multi + SPA + config.
+    //! `cargo run -p veil_bin` from the generated workspace root.
+
+    use veil_server::{resolve_static_dir, ProductHost};{{use_register}}
+
+    #[tokio::main]
+    async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        tracing_subscriber::fmt()
+            .with_env_filter(
+                tracing_subscriber::EnvFilter::try_from_default_env()
+                    .unwrap_or_else(|_| "info".into()),
+            )
+            .init();
+
+        let port: u16 = std::env::var("VEIL_PORT")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(8080);
+        let non_interactive = std::env::var_os("CI").is_some()
+            || std::env::var_os("VEIL_NONINTERACTIVE").is_some();
+        let static_dir = resolve_static_dir(None);
+    {{register_block}}
+        ProductHost::new()
+            .port(port)
+            .static_dir(static_dir)
+            .ensure_config(non_interactive)?
+            .listen()
+            .await?;
+        Ok(())
+    }
+
+  harness_template rust_bin_main_wrapper
+    #[tokio::main]
+    async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    {body}
+        Ok(())
     }

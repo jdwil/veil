@@ -943,6 +943,8 @@ pkg HostApp
         .expect("ddd");
     reg.load_content("di", include_str!("../../../layers/di.layer"))
         .expect("di");
+    reg.load_content("harness", include_str!("../../../layers/harness.layer"))
+        .expect("harness");
     reg.harness_policy.emit_bin = Some(veil_ir::EmitBin::Never);
     let tokens = veil_parser::lex(src);
     let sol = veil_parser::parse_with_registry(&tokens, reg.clone()).expect("parse");

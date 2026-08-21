@@ -149,42 +149,19 @@ pub fn gen_product_host_main(sol: &Solution, handler_names: &[String], registry:
     } else {
         String::new()
     };
+
+    // Try layer-provided template first
+    if let Some(tpl) = registry.harness_render_templates.get("product_host") {
+        return tpl
+            .replace("{{package_name}}", &sol.name)
+            .replace("{{use_register}}", &use_register)
+            .replace("{{register_block}}", &register_block);
+    }
+
+    // Fallback: harness.layer not loaded (should not happen in practice)
     format!(
-        r#"//! Generated product host for package `{pkg}` (CAP-002/006).
-//! Uses `veil_server::ProductHost` for IDE multi + SPA + config.
-//! `cargo run -p veil_bin` from the generated workspace root.
-
-use veil_server::{{resolve_static_dir, ProductHost}};{use_register}
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {{
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info".into()),
-        )
-        .init();
-
-    let port: u16 = std::env::var("VEIL_PORT")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(8080);
-    let non_interactive = std::env::var_os("CI").is_some()
-        || std::env::var_os("VEIL_NONINTERACTIVE").is_some();
-    let static_dir = resolve_static_dir(None);
-{register_block}
-    ProductHost::new()
-        .port(port)
-        .static_dir(static_dir)
-        .ensure_config(non_interactive)?
-        .listen()
-        .await?;
-    Ok(())
-}}
-"#,
+        "//! Product host for package `{pkg}` — harness.layer not loaded.\nfn main() {{ eprintln!(\"harness.layer required for product host\"); }}\n",
         pkg = sol.name,
-        use_register = use_register,
-        register_block = register_block,
     )
 }
 
@@ -606,125 +583,6 @@ pub fn veil_redact_header_values(v: &mut serde_json::Value) {{
             }}
         }}
         _ => {{}}
-    }}
-}}
-"#
-    )
-}
-
-/// API key middleware + CORS policy for generated harness.
-/// FALLBACK: superseded by harness.layer shared_emit rust_bin.
-pub fn harness_auth_cors_helpers() -> &'static str {
-    r#"
-/// Production-oriented auth:
-/// - `/health` + OPTIONS always open
-/// - `VEIL_DEV=1` → open (local dual-loop only)
-/// - else require a key: `VEIL_API_KEY`
-/// - Present key via `X-Api-Key` or `Authorization: Bearer <key>`
-async fn veil_api_key_middleware(
-    headers: HeaderMap,
-    request: Request,
-    next: Next,
-) -> Result<Response, StatusCode> {
-    if request.uri().path() == "/health" || request.method() == axum::http::Method::OPTIONS {
-        return Ok(next.run(request).await);
-    }
-    let dev = std::env::var("VEIL_DEV").ok().as_deref() == Some("1");
-    let require = std::env::var("VEIL_REQUIRE_AUTH").ok().as_deref() == Some("1");
-    let admin_key = std::env::var("VEIL_API_KEY").ok().filter(|s| !s.is_empty());
-    let presented = headers
-        .get("x-api-key")
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string())
-        .or_else(|| {
-            headers
-                .get("authorization")
-                .and_then(|v| v.to_str().ok())
-                .and_then(|s| s.strip_prefix("Bearer ").map(|t| t.to_string()))
-        });
-
-    if dev && !require && admin_key.is_none() {
-        return Ok(next.run(request).await);
-    }
-
-    let Some(presented) = presented else {
-        eprintln!("error: missing X-Api-Key / Authorization Bearer");
-        return Err(StatusCode::UNAUTHORIZED);
-    };
-
-    if admin_key.as_deref() != Some(presented.as_str()) {
-        eprintln!("warn: unauthorized — key not recognized");
-        return Err(StatusCode::UNAUTHORIZED);
-    }
-
-    Ok(next.run(request).await)
-}
-
-/// Restrict CORS: `CORS_ORIGINS=http://a,http://b` or localhost defaults (not *).
-pub fn veil_cors_layer() -> CorsLayer {
-    use axum::http::{HeaderValue, Method};
-    if let Ok(raw) = std::env::var("CORS_ORIGINS") {
-        let origins: Vec<HeaderValue> = raw
-            .split(',')
-            .filter_map(|s| s.trim().parse().ok())
-            .collect();
-        if !origins.is_empty() {
-            return CorsLayer::new()
-                .allow_origin(origins)
-                .allow_methods([
-                    Method::GET,
-                    Method::POST,
-                    Method::PUT,
-                    Method::PATCH,
-                    Method::DELETE,
-                    Method::OPTIONS,
-                ])
-                .allow_headers(Any);
-        }
-    }
-    let local = [
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        "http://localhost:5174",
-        "http://127.0.0.1:5174",
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-    ];
-    let origins: Vec<HeaderValue> = local.iter().filter_map(|s| s.parse().ok()).collect();
-    CorsLayer::new()
-        .allow_origin(origins)
-        .allow_methods([
-            Method::GET,
-            Method::POST,
-            Method::PUT,
-            Method::PATCH,
-            Method::DELETE,
-            Method::OPTIONS,
-        ])
-        .allow_headers(Any)
-}
-"#
-}
-
-/// Dynamic version: generates the error→status helper using the layer-declared error model.
-/// FALLBACK: superseded by harness.layer shared_emit rust_bin.
-pub fn harness_domain_error_status_helper_dynamic(error_type: &str, not_found: &str, validation: &str, external: &str) -> String {
-    format!(
-        r#"
-pub fn veil_domain_error_status(e: {error_type}) -> StatusCode {{
-    match &e {{
-        {error_type}::{not_found} => {{
-            eprintln!("warn: not found: {{e}}");
-            StatusCode::NOT_FOUND
-        }}
-        {error_type}::{validation}(msg) => {{
-            eprintln!("warn: validation: {{msg}}");
-            StatusCode::BAD_REQUEST
-        }}
-        {error_type}::{external}(msg) => {{
-            eprintln!("error: upstream: {{msg}}");
-            StatusCode::BAD_GATEWAY
-        }}
     }}
 }}
 "#

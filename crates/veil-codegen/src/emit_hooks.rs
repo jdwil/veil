@@ -143,7 +143,17 @@ fn gen_hooks_main(
          Ok(serde_json::from_str(&raw)?)\n\
          }\n\n",
     );
-    out.push_str("#[tokio::main]\nasync fn main() -> Result<(), Box<dyn std::error::Error>> {\n");
+    // Async entry point: use layer-provided main wrapper header
+    if let Some(tpl) = registry.harness_render_templates.get("rust_bin_main_wrapper") {
+        // Extract attribute + fn signature lines from the template
+        for line in tpl.lines() {
+            let l = line.trim();
+            if l.is_empty() { continue; }
+            out.push_str(l);
+            out.push('\n');
+            if l.contains("fn main") { break; }
+        }
+    }
     out.push_str("    let context = read_context()?;\n");
     out.push_str(
         "    eprintln!(\"veil_hooks: service={} env={}\", context.service_name, context.environment);\n",

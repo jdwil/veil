@@ -47,7 +47,7 @@ pub struct EndpointTemplateData {
 
 /// Pre-computed data for a context's router registration.
 #[derive(Debug, Clone)]
-pub struct RouterTemplateData {
+pub struct HttpRoutingData {
     /// Crate name (e.g. `my_crate`)
     pub crate_name: String,
     /// Module display name
@@ -78,7 +78,7 @@ pub struct DepsWiringData {
     /// Deps type alias name (e.g. `my_crate_Deps`)
     pub deps_type_alias: String,
     /// Router data for this context (None if no services)
-    pub router: Option<RouterTemplateData>,
+    pub router: Option<HttpRoutingData>,
 }
 
 /// Complete pre-computed template data for the entire harness.
@@ -115,6 +115,85 @@ pub struct HarnessTemplateData {
     pub layer_helpers: String,
     /// Health path
     pub health_path: String,
+}
+
+/// Compute harness template data from multiple packages (multi-package devloop).
+/// Calls compute_harness_template_data per package and merges into one HarnessTemplateData.
+pub fn compute_multi_harness_template_data(
+    packages: &[(&Solution, &LayerRegistry)],
+) -> HarnessTemplateData {
+    let mut merged = HarnessTemplateData {
+        package_name: String::from("multi"),
+        port_env: String::from("PORT"),
+        port_default: 3000,
+        endpoints: Vec::new(),
+        deps_wiring: Vec::new(),
+        has_bus: false,
+        bus_type: None,
+        router_names: Vec::new(),
+        profile: String::from("http"),
+        endpoint_count: 0,
+        use_statements: Vec::new(),
+        routing_imports: Vec::new(),
+        any_query: false,
+        bus_registrations: Vec::new(),
+        layer_helpers: String::new(),
+        health_path: String::from("/health"),
+    };
+
+    let mut seen_imports: BTreeSet<String> = BTreeSet::from(["get".to_string()]);
+
+    for (sol, registry) in packages {
+        let modules: Vec<&Construct> = sol.items.iter().filter_map(|item| {
+            if let TopLevelItem::Construct(c) = item
+                && c.shape == veil_ir::layer::Shape::Mod
+            {
+                Some(c)
+            } else {
+                None
+            }
+        }).collect();
+
+        if modules.is_empty() {
+            continue;
+        }
+
+        let ir = veil_ir::lower_harness(sol, registry);
+        let per_pkg = compute_harness_template_data(sol, &modules, registry, &ir);
+
+        merged.endpoints.extend(per_pkg.endpoints);
+        merged.deps_wiring.extend(per_pkg.deps_wiring);
+        merged.has_bus = merged.has_bus || per_pkg.has_bus;
+        if per_pkg.bus_type.is_some() {
+            merged.bus_type = per_pkg.bus_type;
+        }
+        merged.router_names.extend(per_pkg.router_names);
+        merged.endpoint_count += per_pkg.endpoint_count;
+        for stmt in &per_pkg.use_statements {
+            if !merged.use_statements.contains(stmt) {
+                merged.use_statements.push(stmt.clone());
+            }
+        }
+        for imp in &per_pkg.routing_imports {
+            if seen_imports.insert(imp.clone()) {
+                merged.routing_imports.push(imp.clone());
+            }
+        }
+        merged.any_query = merged.any_query || per_pkg.any_query;
+        merged.bus_registrations.extend(per_pkg.bus_registrations);
+        if merged.layer_helpers.is_empty() {
+            merged.layer_helpers = per_pkg.layer_helpers;
+        }
+        if per_pkg.health_path != "/health" {
+            merged.health_path = per_pkg.health_path;
+        }
+    }
+
+    if !merged.routing_imports.contains(&"get".to_string()) {
+        merged.routing_imports.insert(0, "get".to_string());
+    }
+
+    merged
 }
 
 /// Compute the full harness template data from the solution + HarnessIR.
@@ -439,7 +518,7 @@ pub fn compute_harness_template_data(
                 })
                 .collect();
 
-            Some(RouterTemplateData {
+            Some(HttpRoutingData {
                 crate_name: crate_name.clone(),
                 module_name: module.name.clone(),
                 has_deps,
@@ -517,7 +596,7 @@ pub fn compute_harness_template_data(
                         // Path param
                         if rust_type == "Uuid" {
                             field_extractions.push(format!(
-                                "    let {field} = {field}.parse::<Uuid>().map_err(|_| StatusCode::BAD_REQUEST)?;"
+                                "    let {field} = {field}.parse::<Uuid>().map_err(|_| veil_bad_request_status())?;"
                             ));
                         }
                         // String: already extracted from Path
@@ -599,10 +678,9 @@ pub fn compute_harness_template_data(
         }
     }
     if !emitted_layer_helpers {
+        // Layer didn't provide shared_emit rust_bin — emit minimal stubs.
+        // The real implementations live in harness.layer's shared_emit.
         layer_helpers.push_str(&harness_json_public_helper(modules, registry));
-        layer_helpers.push_str(&harness_domain_error_status_helper_dynamic(err_type, not_found, validation, external));
-        layer_helpers.push_str(harness_auth_cors_helpers());
-        layer_helpers.push_str(harness_body_dt_helper());
     }
 
     let endpoint_count: usize = ir.contexts.iter().map(|c| c.endpoints.len()).sum();
@@ -628,184 +706,11 @@ pub fn compute_harness_template_data(
     }
 }
 
-/// Generate the complete harness main.rs from pre-computed template data.
-/// This is the axum-aware rendering step — the template format is layer-agnostic.
-pub fn render_harness_from_template_data(data: &HarnessTemplateData) -> String {
-    let mut out = String::new();
-
-    // Header
-    out.push_str(&format!(
-        "//! HTTP harness for package `{}` (RT-001 / RT-003).\n\
-         //! Wires adapters + exposes services as REST endpoints.\n\
-         //! `cargo run -p veil_bin` from the generated workspace root.\n\n",
-        data.package_name
-    ));
-    out.push_str("#![allow(unused_imports)]\n\n");
-    out.push_str("use std::sync::Arc;\n");
-
-    // Imports
-    let routing_imports = data.routing_imports.join(", ");
-    let query_import = if data.any_query { "extract::Query, " } else { "" };
-    out.push_str(&format!(
-        "use axum::{{Router, Json, extract::State, {query_import}routing::{{{routing_imports}}}, http::{{HeaderMap, StatusCode}}, middleware::{{from_fn, Next}}, response::Response, extract::Request}};\n"
-    ));
-    out.push_str("use tower_http::cors::{Any, CorsLayer};\n");
-    out.push_str("use uuid::Uuid;\n");
-    out.push_str("use serde_json::Value;\n");
-    out.push_str("use veil_shared::*;\n");
-    for stmt in &data.use_statements {
-        out.push_str(stmt);
-        out.push('\n');
-    }
-
-    // main()
-    out.push_str("\n#[tokio::main]\nasync fn main() -> Result<(), Box<dyn std::error::Error>> {\n");
-    out.push_str(&format!(
-        "    let port: u16 = std::env::var(\"{}\").ok().and_then(|s| s.parse().ok()).unwrap_or({});\n\n",
-        data.port_env, data.port_default
-    ));
-
-    // Bus
-    if data.has_bus {
-        if let Some(bus_type) = &data.bus_type {
-            out.push_str(&format!("    let bus = veil_shared::{bus_type}::new();\n\n"));
-        }
-    }
-
-    // Deps wiring + router per context (interleaved as in original)
-    for wiring in &data.deps_wiring {
-        out.push_str(&format!("    // ── context {} ──\n", wiring.module_name));
-        for s in &wiring.stub_lets {
-            out.push_str(s);
-            out.push('\n');
-        }
-        if !wiring.stub_lets.is_empty() { out.push('\n'); }
-        for s in &wiring.adapter_insts {
-            out.push_str(s);
-            out.push('\n');
-        }
-        if wiring.has_deps {
-            out.push_str(&format!("    let {}_deps = Arc::new({} {{\n", wiring.crate_name, wiring.deps_type_alias));
-            for (field, value) in &wiring.deps_fields {
-                out.push_str(&format!("        {field}: {value},\n"));
-            }
-            out.push_str("    });\n\n");
-        }
-        // Router for this context (immediately after deps)
-        if let Some(router) = &wiring.router {
-            out.push_str(&format!("    let {}_router = Router::new()\n", router.crate_name));
-            for (path, chained) in &router.routes {
-                out.push_str(&format!("        .route(\"{path}\", {chained})\n"));
-            }
-            out.push_str("        .layer(from_fn(veil_api_key_middleware))\n");
-            out.push_str("        .layer(veil_cors_layer())\n");
-            if router.has_deps {
-                out.push_str(&format!("        .with_state({}_deps.clone());\n\n", router.crate_name));
-            } else {
-                out.push_str("        .with_state(());\n\n");
-            }
-        }
-    }
-
-    // Bus registrations
-    if !data.bus_registrations.is_empty() {
-        out.push_str("    // ── bus handlers (cross-context invoke / request) ──\n");
-        for reg in &data.bus_registrations {
-            out.push_str(reg);
-        }
-        out.push('\n');
-    }
-
-    // Merge routers
-    if data.router_names.is_empty() {
-        out.push_str(&format!(
-            "    let app = Router::new().route(\"{}\", get(|| async {{ \"ok\" }}));\n",
-            data.health_path
-        ));
-    } else {
-        out.push_str(&format!("    let app = {}", data.router_names[0]));
-        for r in &data.router_names[1..] {
-            out.push_str(&format!(".merge({})", r));
-        }
-        out.push_str(&format!(
-            "\n        .route(\"{}\", get(|| async {{ \"ok\" }}));\n",
-            data.health_path
-        ));
-    }
-
-    out.push_str(&format!(
-        "    println!(\"veil_bin: profile={} endpoints={}\");\n",
-        data.profile, data.endpoint_count
-    ));
-    out.push_str("    println!(\"veil_bin: listening on :{}\", port);\n");
-    out.push_str("    let listener = tokio::net::TcpListener::bind(format!(\"0.0.0.0:{}\", port)).await?;\n");
-    out.push_str("    axum::serve(listener, app.into_make_service()).await?;\n");
-    out.push_str("    Ok(())\n}\n\n");
-
-    // Handler functions
-    for ep in &data.endpoints {
-        let state_extractor = if ep.has_deps {
-            format!("\n    State(deps): State<Arc<{}>>,", ep.deps_type)
-        } else {
-            String::new()
-        };
-        let path_extractor = match ep.path_params.len() {
-            0 => String::new(),
-            1 => format!(
-                "\n    axum::extract::Path({p}): axum::extract::Path<String>,",
-                p = ep.path_params[0]
-            ),
-            n => {
-                let names = ep.path_params.join(", ");
-                let tys = vec!["String"; n].join(", ");
-                format!("\n    axum::extract::Path(({names})): axum::extract::Path<({tys})>,")
-            }
-        };
-        let query_extractor = if ep.needs_query {
-            "\n    Query(q): Query<std::collections::HashMap<String, String>>,"
-        } else {
-            ""
-        };
-        let body_extractor = if ep.needs_body {
-            "\n    Json(body): Json<Value>,"
-        } else {
-            ""
-        };
-
-        out.push_str(&format!(
-            "async fn {}_handler({state_extractor}{path_extractor}{query_extractor}{body_extractor}\n) -> Result<Json<Value>, StatusCode> {{\n",
-            ep.fn_name
-        ));
-
-        for line in &ep.field_extractions {
-            out.push_str(line);
-            out.push('\n');
-        }
-
-        out.push_str(&format!(
-            "    match {}_app::{}({}).await {{\n",
-            ep.crate_name, ep.app_fn_name, ep.call_args.join(", ")
-        ));
-        if ep.is_delete {
-            out.push_str("        Ok(_) => Ok(Json(serde_json::json!({\"ok\": true}))),\n");
-        } else {
-            out.push_str("        Ok(result) => Ok(Json(veil_json_public(&result))),\n");
-        }
-        out.push_str("        Err(e) => Err(veil_domain_error_status(e)),\n");
-        out.push_str("    }\n}\n\n");
-    }
-
-    // Layer helpers
-    out.push_str(&data.layer_helpers);
-
-    out
-}
-
 /// Query field extraction helper — mirrors the logic in gen_local_harness_main.
 fn query_field_extraction(field: &str, rust_type: &str) -> String {
     match rust_type {
         "Uuid" => format!(
-            "    let {field} = q.get(\"{field}\").and_then(|s| s.parse::<Uuid>().ok()).ok_or(StatusCode::BAD_REQUEST)?;"
+            "    let {field} = q.get(\"{field}\").and_then(|s| s.parse::<Uuid>().ok()).ok_or(veil_bad_request_status())?;"
         ),
         "String" => format!(
             "    let {field} = q.get(\"{field}\").cloned().unwrap_or_default();"
@@ -823,13 +728,355 @@ fn query_field_extraction(field: &str, rust_type: &str) -> String {
             "    let {field} = q.get(\"{field}\").filter(|s| !s.is_empty()).and_then(|s| serde_json::from_str(s).ok());"
         ),
         "i64" => format!(
-            "    let {field} = q.get(\"{field}\").and_then(|s| s.parse::<i64>().ok()).ok_or(StatusCode::BAD_REQUEST)?;"
+            "    let {field} = q.get(\"{field}\").and_then(|s| s.parse::<i64>().ok()).ok_or(veil_bad_request_status())?;"
         ),
         "bool" => format!(
             "    let {field} = q.get(\"{field}\").map(|s| s == \"true\" || s == \"1\").unwrap_or(false);"
         ),
         _ => format!(
-            "    let {field} = q.get(\"{field}\").and_then(|s| serde_json::from_str(s).ok()).ok_or(StatusCode::BAD_REQUEST)?;"
+            "    let {field} = q.get(\"{field}\").and_then(|s| serde_json::from_str(s).ok()).ok_or(veil_bad_request_status())?;"
         ),
     }
+}
+
+/// Render the harness main.rs from a layer-provided template and pre-computed data.
+/// The template uses `{{var}}` for scalars, `{{for X in Y}}...{{end_for}}` for loops,
+/// and `{{if cond}}...{{end_if}}` / `{{if cond}}...{{else}}...{{end_if}}` for conditionals.
+///
+/// This replaces `render_harness_from_template_data` — all framework syntax now lives
+/// in the layer template, not in engine code.
+pub fn render_harness_from_layer_template(
+    template: &str,
+    data: &HarnessTemplateData,
+) -> String {
+    let mut out = template.to_string();
+
+    // --- Top-level scalar substitutions ---
+    out = out.replace("{{package_name}}", &data.package_name);
+    out = out.replace("{{port_env}}", &data.port_env);
+    out = out.replace("{{port_default}}", &data.port_default.to_string());
+    out = out.replace("{{profile}}", &data.profile);
+    out = out.replace("{{endpoint_count}}", &data.endpoint_count.to_string());
+    out = out.replace("{{health_path}}", &data.health_path);
+    out = out.replace("{{layer_helpers}}", &data.layer_helpers);
+
+    // Routing imports (e.g. "get, post, put")
+    out = out.replace("{{routing_imports}}", &data.routing_imports.join(", "));
+    // Query import conditional
+    let query_import = if data.any_query { "extract::Query, " } else { "" };
+    out = out.replace("{{query_import}}", query_import);
+
+    // Use statements (loop)
+    out = expand_harness_loop(&out, "use_statement", &data.use_statements, |body, stmt| {
+        body.replace("{{use_statement}}", stmt)
+    });
+
+    // Bus type
+    let bus_type = data.bus_type.as_deref().unwrap_or("");
+    out = out.replace("{{bus_type}}", bus_type);
+
+    // --- Top-level conditionals ---
+    out = expand_harness_if(&out, "has_bus", data.has_bus);
+    out = expand_harness_if(&out, "any_query", data.any_query);
+    out = expand_harness_if(&out, "has_routers", !data.router_names.is_empty());
+    out = expand_harness_if(&out, "has_bus_registrations", !data.bus_registrations.is_empty());
+
+    // --- Bus registrations loop ---
+    out = expand_harness_loop(&out, "bus_registration", &data.bus_registrations, |body, reg| {
+        body.replace("{{bus_registration}}", reg)
+    });
+
+    // --- Router merge ---
+    // For router_names, provide first + rest pattern
+    if !data.router_names.is_empty() {
+        out = out.replace("{{first_router}}", &data.router_names[0]);
+        let merges: String = data.router_names[1..].iter()
+            .map(|r| format!(".merge({})", r))
+            .collect::<Vec<_>>()
+            .join("");
+        out = out.replace("{{merge_routers}}", &merges);
+    } else {
+        out = out.replace("{{first_router}}", "");
+        out = out.replace("{{merge_routers}}", "");
+    }
+
+    // --- Deps wiring loop ---
+    out = expand_harness_block_loop(&out, "wiring", &data.deps_wiring, |body, wiring| {
+        let mut s = body.to_string();
+        s = s.replace("{{wiring.crate_name}}", &wiring.crate_name);
+        s = s.replace("{{wiring.module_name}}", &wiring.module_name);
+        s = s.replace("{{wiring.deps_type_alias}}", &wiring.deps_type_alias);
+        s = expand_harness_if(&s, "wiring.has_deps", wiring.has_deps);
+        s = expand_harness_if(&s, "wiring.has_stub_lets", !wiring.stub_lets.is_empty());
+        s = expand_harness_if(&s, "wiring.has_router", wiring.router.is_some());
+
+        // Stub lets
+        s = expand_harness_loop(&s, "stub_let", &wiring.stub_lets, |b, line| {
+            b.replace("{{stub_let}}", line)
+        });
+        // Adapter insts
+        s = expand_harness_loop(&s, "adapter_inst", &wiring.adapter_insts, |b, line| {
+            b.replace("{{adapter_inst}}", line)
+        });
+        // Deps fields
+        s = expand_harness_loop(&s, "deps_field", &wiring.deps_fields, |b, (field, value)| {
+            b.replace("{{deps_field.name}}", field)
+             .replace("{{deps_field.value}}", value)
+        });
+
+        // Router sub-block
+        if let Some(router) = &wiring.router {
+            s = s.replace("{{wiring.router.crate_name}}", &router.crate_name);
+            s = expand_harness_if(&s, "wiring.router.has_deps", router.has_deps);
+            s = expand_harness_loop(&s, "route", &router.routes, |b, (path, chained)| {
+                b.replace("{{route.path}}", path)
+                 .replace("{{route.chained}}", chained)
+            });
+        }
+        s
+    });
+
+    // --- Endpoint handlers loop ---
+    out = expand_harness_block_loop(&out, "endpoint", &data.endpoints, |body, ep| {
+        let mut s = body.to_string();
+        s = s.replace("{{endpoint.fn_name}}", &ep.fn_name);
+        s = s.replace("{{endpoint.app_fn_name}}", &ep.app_fn_name);
+        s = s.replace("{{endpoint.crate_name}}", &ep.crate_name);
+        s = s.replace("{{endpoint.method}}", &ep.method);
+        s = s.replace("{{endpoint.path}}", &ep.path);
+        s = s.replace("{{endpoint.deps_type}}", &ep.deps_type);
+        s = s.replace("{{endpoint.call_args}}", &ep.call_args.join(", "));
+
+        s = expand_harness_if(&s, "endpoint.has_deps", ep.has_deps);
+        s = expand_harness_if(&s, "endpoint.needs_query", ep.needs_query);
+        s = expand_harness_if(&s, "endpoint.needs_body", ep.needs_body);
+        s = expand_harness_if(&s, "endpoint.is_delete", ep.is_delete);
+
+        // Path params
+        let path_param_count = ep.path_params.len();
+        s = expand_harness_if(&s, "endpoint.has_path_params", path_param_count > 0);
+        s = expand_harness_if(&s, "endpoint.has_single_path_param", path_param_count == 1);
+        s = expand_harness_if(&s, "endpoint.has_multi_path_params", path_param_count > 1);
+
+        if path_param_count == 1 {
+            s = s.replace("{{endpoint.path_param}}", &ep.path_params[0]);
+        } else if path_param_count > 1 {
+            let names = ep.path_params.join(", ");
+            let tys = vec!["String"; path_param_count].join(", ");
+            s = s.replace("{{endpoint.path_param_names}}", &names);
+            s = s.replace("{{endpoint.path_param_types}}", &tys);
+        }
+
+        // Field extractions
+        s = expand_harness_loop(&s, "extraction", &ep.field_extractions, |b, line| {
+            b.replace("{{extraction}}", line)
+        });
+        s
+    });
+
+    // Post-processing: collapse runs of 3+ blank lines to max 2, trim trailing whitespace per line.
+    let mut result = String::new();
+    let mut consecutive_empty = 0;
+    for line in out.lines() {
+        let trimmed_end = line.trim_end();
+        if trimmed_end.is_empty() {
+            consecutive_empty += 1;
+            if consecutive_empty <= 2 {
+                result.push('\n');
+            }
+        } else {
+            consecutive_empty = 0;
+            result.push_str(trimmed_end);
+            result.push('\n');
+        }
+    }
+    result
+}
+
+/// Expand `{{if NAME}}...{{end_if}}` and `{{if NAME}}...{{else}}...{{end_if}}` blocks.
+fn expand_harness_if(input: &str, name: &str, condition: bool) -> String {
+    let open_tag = format!("{{{{if {name}}}}}");
+    let close_tag = "{{end_if}}";
+    let else_tag = "{{else}}";
+    let mut result = input.to_string();
+
+    while let Some(start) = result.find(&open_tag) {
+        let after_open = start + open_tag.len();
+        // Find matching end_if (accounting for nesting)
+        let Some(end_pos) = find_matching_end_tag(&result[after_open..], "{{if ", close_tag) else {
+            break;
+        };
+        let block = &result[after_open..after_open + end_pos];
+        let full_end = after_open + end_pos + close_tag.len();
+
+        // Check for else
+        let (then_part, else_part) = if let Some(else_offset) = find_top_level_else(block) {
+            (&block[..else_offset], &block[else_offset + else_tag.len()..])
+        } else {
+            (block, "")
+        };
+
+        let replacement = if condition { then_part } else { else_part };
+
+        // If replacement is empty, consume surrounding newlines to avoid blank lines
+        if replacement.trim().is_empty() {
+            let actual_start = if start > 0 && result.as_bytes()[start - 1] == b'\n' {
+                start - 1
+            } else {
+                start
+            };
+            let actual_end = if full_end < result.len() && result.as_bytes()[full_end] == b'\n' {
+                full_end + 1
+            } else {
+                full_end
+            };
+            result = format!("{}{}", &result[..actual_start], &result[actual_end..]);
+        } else {
+            // Strip leading/trailing newline from the selected branch
+            let replacement = replacement.strip_prefix('\n').unwrap_or(replacement);
+            let replacement = replacement.strip_suffix('\n').unwrap_or(replacement);
+            result = format!("{}{}\n{}", &result[..start], replacement, &result[full_end..]);
+        }
+    }
+    result
+}
+
+/// Expand `{{for NAME in COLLECTION}}...{{end_for}}` loops for simple string items.
+fn expand_harness_loop<T>(
+    input: &str,
+    item_name: &str,
+    items: &[T],
+    replacer: impl Fn(&str, &T) -> String,
+) -> String {
+    let open_tag = format!("{{{{for {item_name} in {item_name}s}}}}");
+    let close_tag = "{{end_for}}";
+    let mut result = input.to_string();
+
+    while let Some(start) = result.find(&open_tag) {
+        let after_open = start + open_tag.len();
+        let Some(end_pos) = find_matching_end_tag(&result[after_open..], "{{for ", close_tag) else {
+            break;
+        };
+        let body = &result[after_open..after_open + end_pos];
+        let full_end = after_open + end_pos + close_tag.len();
+
+        // Strip leading newline from body (the newline after the opening tag line)
+        let body = body.strip_prefix('\n').unwrap_or(body);
+
+        let mut expanded = String::new();
+        for item in items {
+            expanded.push_str(&replacer(body, item));
+        }
+        // Consume the line containing the opening tag and the line containing closing tag
+        // The opening tag is on its own line, so consume preceding newline
+        let actual_start = if start > 0 && result.as_bytes()[start - 1] == b'\n' {
+            start - 1
+        } else {
+            start
+        };
+        // The closing tag is on its own line, so consume its trailing newline
+        let actual_end = if full_end < result.len() && result.as_bytes()[full_end] == b'\n' {
+            full_end + 1
+        } else {
+            full_end
+        };
+        if items.is_empty() {
+            result = format!("{}{}", &result[..actual_start], &result[actual_end..]);
+        } else {
+            // Remove trailing newline from expanded to avoid double-newline at junction
+            let expanded = expanded.strip_suffix('\n').unwrap_or(&expanded);
+            result = format!("{}\n{}{}", &result[..actual_start], expanded, &result[actual_end..]);
+        }
+    }
+    result
+}
+
+/// Expand `{{for NAME in NAMEs}}...{{end_for}}` loops for structured blocks.
+fn expand_harness_block_loop<T>(
+    input: &str,
+    item_name: &str,
+    items: &[T],
+    replacer: impl Fn(&str, &T) -> String,
+) -> String {
+    let open_tag = format!("{{{{for {item_name} in {item_name}s}}}}");
+    let close_tag = "{{end_for}}";
+    let mut result = input.to_string();
+
+    while let Some(start) = result.find(&open_tag) {
+        let after_open = start + open_tag.len();
+        let Some(end_pos) = find_matching_end_tag(&result[after_open..], "{{for ", close_tag) else {
+            break;
+        };
+        let body = &result[after_open..after_open + end_pos];
+        let full_end = after_open + end_pos + close_tag.len();
+
+        // Strip leading newline from body
+        let body = body.strip_prefix('\n').unwrap_or(body);
+
+        let mut expanded = String::new();
+        for item in items {
+            expanded.push_str(&replacer(body, item));
+        }
+        let actual_start = if start > 0 && result.as_bytes()[start - 1] == b'\n' {
+            start - 1
+        } else {
+            start
+        };
+        let actual_end = if full_end < result.len() && result.as_bytes()[full_end] == b'\n' {
+            full_end + 1
+        } else {
+            full_end
+        };
+        if items.is_empty() {
+            result = format!("{}{}", &result[..actual_start], &result[actual_end..]);
+        } else {
+            let expanded = expanded.strip_suffix('\n').unwrap_or(&expanded);
+            result = format!("{}\n{}{}", &result[..actual_start], expanded, &result[actual_end..]);
+        }
+    }
+    result
+}
+
+/// Find matching end tag accounting for nesting.
+fn find_matching_end_tag(input: &str, open_prefix: &str, close_tag: &str) -> Option<usize> {
+    let mut depth = 1usize;
+    let mut pos = 0;
+    while pos < input.len() {
+        if input[pos..].starts_with(close_tag) {
+            depth -= 1;
+            if depth == 0 {
+                return Some(pos);
+            }
+            pos += close_tag.len();
+        } else if input[pos..].starts_with(open_prefix) {
+            depth += 1;
+            pos += open_prefix.len();
+        } else {
+            // Advance by one UTF-8 character
+            pos += input[pos..].chars().next().map(|c| c.len_utf8()).unwrap_or(1);
+        }
+    }
+    None
+}
+
+/// Find the position of a top-level `{{else}}` (not nested inside inner if blocks).
+fn find_top_level_else(block: &str) -> Option<usize> {
+    let else_tag = "{{else}}";
+    let mut depth = 0usize;
+    let mut pos = 0;
+    while pos < block.len() {
+        if block[pos..].starts_with("{{if ") {
+            depth += 1;
+            pos += 5;
+        } else if block[pos..].starts_with("{{end_if}}") {
+            depth = depth.saturating_sub(1);
+            pos += 10;
+        } else if depth == 0 && block[pos..].starts_with(else_tag) {
+            return Some(pos);
+        } else {
+            // Advance by one UTF-8 character
+            pos += block[pos..].chars().next().map(|c| c.len_utf8()).unwrap_or(1);
+        }
+    }
+    None
 }

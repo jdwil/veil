@@ -1,6 +1,5 @@
 ---
 source: crates/veil-codegen/tests/snapshot_tests.rs
-assertion_line: 66
 expression: out
 ---
 // ===== Cargo.toml =====
@@ -1072,49 +1071,45 @@ use veil_shared::*;
 use identity::application::{self as identity_app, Deps as identity_Deps};
 use billing::application::{self as billing_app};
 use onboarding::application::{self as onboarding_app, Deps as onboarding_Deps};
-
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let port: u16 = std::env::var("PORT").ok().and_then(|s| s.parse().ok()).unwrap_or(3000);
-
     // ── context Identity ──
     let in_memory_bus_inst: Arc<dyn identity::ports::Bus + Send + Sync> = Arc::new(identity::adapters::InMemoryBus::new());
-    let in_memory_customer_repo_inst: Arc<dyn identity::ports::CustomerRepo + Send + Sync> = Arc::new(identity::adapters::InMemoryCustomerRepo::new());
-    let identity_deps = Arc::new(identity_Deps {
+    let in_memory_customer_repo_inst: Arc<dyn identity::ports::CustomerRepo + Send + Sync> = Arc::new(identity::adapters::InMemoryCustomerRepo::new());    let identity_deps = Arc::new(identity_Deps {
         bus: in_memory_bus_inst.clone(),
-        customer_repo: in_memory_customer_repo_inst.clone(),
-    });
+        customer_repo: in_memory_customer_repo_inst.clone(),    });
+
 
     let identity_router = Router::new()
-        .route("/api/customer_services", post(identity_create_customer_service_handler))
-        .layer(from_fn(veil_api_key_middleware))
+        .route("/api/customer_services", post(identity_create_customer_service_handler))        .layer(from_fn(veil_api_key_middleware))
         .layer(veil_cors_layer())
         .with_state(identity_deps.clone());
+
 
     // ── context Billing ──
     let stripe_adapter_inst: Arc<dyn billing::ports::PaymentGateway + Send + Sync> = Arc::new(billing::adapters::StripeAdapter {
         stripe_key: std::env::var("STRIPE_KEY").unwrap_or_else(|_| "default".into()),
-    });
-    // ── context Onboarding ──
+    });    // ── context Onboarding ──
     let in_memory_bus_inst: Arc<dyn onboarding::ports::Bus + Send + Sync> = Arc::new(onboarding::adapters::InMemoryBus::new());
     let in_memory_customer_repo_inst: Arc<dyn onboarding::ports::CustomerRepo + Send + Sync> = Arc::new(onboarding::adapters::InMemoryCustomerRepo::new());
     let in_memory_k_y_c_provider_inst: Arc<dyn onboarding::ports::KYCProvider + Send + Sync> = Arc::new(onboarding::adapters::InMemoryKYCProvider::new());
-    let in_memory_payment_gateway_inst: Arc<dyn onboarding::ports::PaymentGateway + Send + Sync> = Arc::new(onboarding::adapters::InMemoryPaymentGateway::new());
-    let onboarding_deps = Arc::new(onboarding_Deps {
+    let in_memory_payment_gateway_inst: Arc<dyn onboarding::ports::PaymentGateway + Send + Sync> = Arc::new(onboarding::adapters::InMemoryPaymentGateway::new());    let onboarding_deps = Arc::new(onboarding_Deps {
         bus: in_memory_bus_inst.clone(),
         customer_repo: in_memory_customer_repo_inst.clone(),
         k_y_c_provider: in_memory_k_y_c_provider_inst.clone(),
-        payment_gateway: in_memory_payment_gateway_inst.clone(),
-    });
+        payment_gateway: in_memory_payment_gateway_inst.clone(),    });
+
 
     let onboarding_router = Router::new()
-        .route("/api/onboard", post(onboarding_onboard_handler))
-        .layer(from_fn(veil_api_key_middleware))
+        .route("/api/onboard", post(onboarding_onboard_handler))        .layer(from_fn(veil_api_key_middleware))
         .layer(veil_cors_layer())
         .with_state(onboarding_deps.clone());
 
+
     let app = identity_router.merge(onboarding_router)
         .route("/health", get(|| async { "ok" }));
+
     println!("veil_bin: profile=axum_http endpoints=2");
     println!("veil_bin: listening on :{}", port);
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", port)).await?;
@@ -1122,32 +1117,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-async fn identity_create_customer_service_handler(
-    State(deps): State<Arc<identity_Deps>>,
-    Json(body): Json<Value>,
+async fn identity_create_customer_service_handler(    State(deps): State<Arc<identity_Deps>>,    Json(body): Json<Value>,
+
 ) -> Result<Json<Value>, StatusCode> {
-    let email = serde_json::from_value(body.get("email").cloned().unwrap_or(Value::Null)).map_err(|_| StatusCode::BAD_REQUEST)?;
-    let phone = serde_json::from_value(body.get("phone").cloned().unwrap_or(Value::Null)).map_err(|_| StatusCode::BAD_REQUEST)?;
-    match identity_app::create_customer_service(&deps, email, phone).await {
+    let email = serde_json::from_value(body.get("email").cloned().unwrap_or(Value::Null)).map_err(|_| veil_bad_request_status())?;
+    let phone = serde_json::from_value(body.get("phone").cloned().unwrap_or(Value::Null)).map_err(|_| veil_bad_request_status())?;    match identity_app::create_customer_service(&deps, email, phone).await {
         Ok(result) => Ok(Json(veil_json_public(&result))),
+
         Err(e) => Err(veil_domain_error_status(e)),
     }
 }
 
-async fn onboarding_onboard_handler(
-    State(deps): State<Arc<onboarding_Deps>>,
-    Json(body): Json<Value>,
+async fn onboarding_onboard_handler(    State(deps): State<Arc<onboarding_Deps>>,    Json(body): Json<Value>,
+
 ) -> Result<Json<Value>, StatusCode> {
-    let email = serde_json::from_value(body.get("email").cloned().unwrap_or(Value::Null)).map_err(|_| StatusCode::BAD_REQUEST)?;
-    let phone = serde_json::from_value(body.get("phone").cloned().unwrap_or(Value::Null)).map_err(|_| StatusCode::BAD_REQUEST)?;
-    let name = body.get("name").and_then(|v| v.as_str()).unwrap_or_default().to_string();
-    match onboarding_app::onboard(&deps, email, phone, name).await {
+    let email = serde_json::from_value(body.get("email").cloned().unwrap_or(Value::Null)).map_err(|_| veil_bad_request_status())?;
+    let phone = serde_json::from_value(body.get("phone").cloned().unwrap_or(Value::Null)).map_err(|_| veil_bad_request_status())?;
+    let name = body.get("name").and_then(|v| v.as_str()).unwrap_or_default().to_string();    match onboarding_app::onboard(&deps, email, phone, name).await {
         Ok(result) => Ok(Json(veil_json_public(&result))),
+
         Err(e) => Err(veil_domain_error_status(e)),
     }
 }
 
-
+/// HTTP 400 Bad Request status — used in field extraction for parse errors.
+pub fn veil_bad_request_status() -> StatusCode { StatusCode::BAD_REQUEST }
 /// Production-oriented auth:
 /// - `/health` + OPTIONS always open
 /// - `VEIL_DEV=1` → open (local dual-loop only)
