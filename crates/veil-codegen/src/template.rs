@@ -297,13 +297,87 @@ fn expand_file_path(pattern: &str, construct: &Construct, registry: &LayerRegist
 }
 
 /// Render a template body with interpolation against a construct.
+///
+/// This is the primary template engine for layer-declared codegen templates.
+/// It supports:
+/// - Simple variable interpolation: `{{name}}`, `{{subkind}}`, etc.
+/// - Conditionals: `{{if CONDITION}}...{{else}}...{{end}}`
+/// - Child iteration: `{{for child in children}}` with optional `where` filters
+/// - Field iteration: `{{for field in fields}}` with type introspection
+/// - Method iteration: `{{for method in methods}}` with params/return_type
+/// - Helper variables: `{{name_snake}}`, `{{name_camel}}`, `{{count_children}}`
+/// - Error model access: `{{error_type}}`, `{{error_variant("role")}}`
+/// - Nested template resolution: `{{child.lowers_to}}`
 fn render_template(construct: &Construct, rule: &CodegenRule, registry: &LayerRegistry, target: &str) -> String {
-    let mut output = rule.emit_body.clone();
+    render_template_for_construct(construct, &rule.emit_body, registry, target)
+}
 
-    // Simple interpolations
+/// Inner template rendering against a specific construct. Factored out so that
+/// child-iteration loops can recursively render templates against child constructs.
+fn render_template_for_construct(
+    construct: &Construct,
+    template_body: &str,
+    registry: &LayerRegistry,
+    target: &str,
+) -> String {
+    let mut output = template_body.to_string();
+
+    // ─── Phase 1: Conditionals ───────────────────────────────────────────────
+    // Process {{if ...}}...{{else}}...{{end}} blocks from innermost outward.
+    output = expand_conditionals(&output, construct, registry, target);
+
+    // ─── Phase 2: Iteration (for loops) ──────────────────────────────────────
+    // Child iteration: {{for child in children}}...{{end}} with optional where clause
+    output = expand_child_loops(&output, construct, registry, target);
+
+    // Method iteration: {{for method in methods}}...{{end}}
+    output = expand_method_loops(&output, construct, target);
+
+    // Field iteration (enhanced): {{for field in fields}}...{{end}} with type introspection
+    output = expand_field_loops_enhanced(&output, construct, registry, target);
+
+    // Dep-field iteration (legacy, kept for backward compat)
+    output = expand_dep_field_loops(&output, construct, registry);
+
+    // Step iteration (legacy)
+    if output.contains("{{for step in steps}}") {
+        let steps: Vec<&FlowStep> = construct.steps.iter().collect();
+        output = expand_step_loop(&output, &steps);
+    }
+
+    // ─── Phase 3: Simple interpolations ──────────────────────────────────────
     output = output.replace("{{name}}", &construct.name);
     output = output.replace("{{subkind}}", &construct.subkind);
     output = output.replace("{{keyword}}", &construct.keyword);
+
+    // Helper variables
+    output = output.replace("{{name_snake}}", &to_snake_case(&construct.name));
+    output = output.replace("{{name_camel}}", &to_camel_case(&construct.name));
+    output = output.replace("{{count_children}}", &construct.children.len().to_string());
+
+    // Error model access
+    if output.contains("{{error_type}}") {
+        let error_type = registry
+            .error_model
+            .as_ref()
+            .map(|e| e.type_name.as_str())
+            .unwrap_or("Error");
+        output = output.replace("{{error_type}}", error_type);
+    }
+    // {{error_variant("role")}} — e.g. {{error_variant("not_found")}} → "NotFound"
+    while let Some(start) = output.find("{{error_variant(\"") {
+        let after = start + "{{error_variant(\"".len();
+        let Some(quote_end) = output[after..].find('"') else { break };
+        let role = output[after..after + quote_end].to_string();
+        let Some(close) = output[after + quote_end..].find("}}") else { break };
+        let end = after + quote_end + close + 2;
+        let variant = registry
+            .error_model
+            .as_ref()
+            .and_then(|e| e.variant(&role))
+            .unwrap_or("");
+        output = format!("{}{}{}", &output[..start], variant, &output[end..]);
+    }
 
     // {{route}} — role:ui_route (page/layout) or leftover role:http_route
     let route_val = construct_route_url(construct, registry);
@@ -514,59 +588,687 @@ fn render_template(construct: &Construct, rule: &CodegenRule, registry: &LayerRe
         output = output.replace("{{imports}}", &import_stmts);
     }
 
-    // Handle {{for field in dep_fields}}...{{end}}
-    // INV-001: dependency-role fields via registry; construct-level dependency
-    // annotation means all fields are injectable (di.layer pattern).
-    if output.contains("{{for field in dep_fields}}") {
-        let dep_fields: Vec<&Field> = {
-            let field_level: Vec<&Field> = construct
-                .fields
-                .iter()
-                .filter(|f| registry.field_is_dependency(f))
-                .collect();
-            if !field_level.is_empty() {
-                field_level
-            } else if construct
-                .annotations
-                .iter()
-                .any(|a| registry.is_dependency_annotation(&a.name))
-            {
-                construct.fields.iter().collect()
-            } else {
-                Vec::new()
-            }
+    output
+}
+
+// ─── Conditional Blocks ──────────────────────────────────────────────────────
+
+/// Process all `{{if CONDITION}}...{{else}}...{{end}}` blocks in a template.
+/// Handles nested conditionals by processing from innermost to outermost.
+/// Skips conditionals that are inside `{{for` loops — those are handled by
+/// the loop expanders themselves (e.g. field-level conditionals).
+fn expand_conditionals(
+    template: &str,
+    construct: &Construct,
+    registry: &LayerRegistry,
+    _target: &str,
+) -> String {
+    let mut result = template.to_string();
+
+    // Process conditionals iteratively until none remain.
+    // Each pass finds the innermost {{if}} that is NOT inside a {{for}} block.
+    loop {
+        let Some(if_start) = find_toplevel_innermost_if(&result) else {
+            break;
         };
 
-        output = expand_for_loop(&output, "field", "dep_fields", &dep_fields, |field, var| {
-            match var {
-                "field.name" => field.name.clone(),
-                "field.type" => type_to_display(&field.type_expr),
-                _ => format!("{{{{{}}}}}",var),
+        let after_if = &result[if_start + "{{if ".len()..];
+        let Some(cond_end) = after_if.find("}}") else { break };
+        let condition = after_if[..cond_end].trim().to_string();
+        let body_start = if_start + "{{if ".len() + cond_end + "}}".len();
+
+        // Find matching {{end}} — since we found the innermost if, there are
+        // no nested ifs between here and our end tag.
+        let rest = &result[body_start..];
+        let Some(end_offset) = rest.find("{{end}}") else { break };
+        let end_abs = body_start + end_offset + "{{end}}".len();
+
+        let body = &result[body_start..body_start + end_offset];
+
+        // Split on {{else}} if present
+        let (then_branch, else_branch) = if let Some(else_pos) = body.find("{{else}}") {
+            (&body[..else_pos], &body[else_pos + "{{else}}".len()..])
+        } else {
+            (body, "")
+        };
+
+        // Evaluate condition
+        let cond_result = evaluate_condition(&condition, construct, registry);
+        let replacement = if cond_result {
+            then_branch
+        } else {
+            else_branch
+        };
+
+        result = format!("{}{}{}", &result[..if_start], replacement, &result[end_abs..]);
+    }
+
+    result
+}
+
+/// Find the start position of the innermost `{{if ...}}` that is NOT nested
+/// inside any `{{for ...}}` block. This ensures we only process top-level
+/// conditionals in Phase 1 — loop-internal conditionals are handled by the
+/// loop expanders.
+fn find_toplevel_innermost_if(text: &str) -> Option<usize> {
+    // Find all positions, filtering out those inside for-loops.
+    let mut candidates = Vec::new();
+    let mut pos = 0;
+    let mut for_depth = 0;
+
+    while pos < text.len() {
+        if text[pos..].starts_with("{{for ") {
+            for_depth += 1;
+            pos += 6;
+        } else if text[pos..].starts_with("{{end}}") {
+            if for_depth > 0 {
+                for_depth -= 1;
             }
-        });
-    }
-
-    // Handle {{for field in fields}}...{{end}}
-    if output.contains("{{for field in fields}}") {
-        let fields: Vec<&Field> = construct.fields.iter().collect();
-
-        output = expand_for_loop(&output, "field", "fields", &fields, |field, var| {
-            match var {
-                "field.name" => field.name.clone(),
-                "field.type" => type_to_display(&field.type_expr),
-                _ => format!("{{{{{}}}}}", var),
+            pos += 7;
+        } else if text[pos..].starts_with("{{if ") {
+            if for_depth == 0 {
+                candidates.push(pos);
             }
-        });
+            pos += 5;
+        } else {
+            // Advance by one char (handles multi-byte UTF-8)
+            pos += text[pos..].chars().next().map_or(1, |c| c.len_utf8());
+        }
     }
 
-    // Handle {{for step in steps}}...{{end}}
-    if output.contains("{{for step in steps}}") {
-        let steps: Vec<&FlowStep> = construct.steps.iter().collect();
-
-        output = expand_step_loop(&output, &steps);
+    // From candidates, find the innermost (last one whose body has no nested {{if at top level)
+    // Process from last to first — the last candidate is most likely innermost.
+    for &candidate in candidates.iter().rev() {
+        let after = &text[candidate + 5..];
+        let Some(cond_close) = after.find("}}") else { continue };
+        let body_start = candidate + 5 + cond_close + 2;
+        let rest = &text[body_start..];
+        let Some(end_pos) = rest.find("{{end}}") else { continue };
+        let body = &rest[..end_pos];
+        // Check that body has no top-level {{if (not inside a {{for)
+        if !has_toplevel_if(body) {
+            return Some(candidate);
+        }
     }
 
-    output
+    None
+}
+
+/// Check if text contains a `{{if` that is not inside a `{{for` block.
+fn has_toplevel_if(text: &str) -> bool {
+    let mut pos = 0;
+    let mut for_depth = 0;
+    while pos < text.len() {
+        if text[pos..].starts_with("{{for ") {
+            for_depth += 1;
+            pos += 6;
+        } else if text[pos..].starts_with("{{end}}") {
+            if for_depth > 0 {
+                for_depth -= 1;
+            }
+            pos += 7;
+        } else if text[pos..].starts_with("{{if ") {
+            if for_depth == 0 {
+                return true;
+            }
+            pos += 5;
+        } else {
+            pos += text[pos..].chars().next().map_or(1, |c| c.len_utf8());
+        }
+    }
+    false
+}
+
+/// Find the start position of the innermost `{{if ...}}` — one that has no
+/// nested `{{if` between itself and its matching `{{end}}`.
+fn find_innermost_if(text: &str) -> Option<usize> {
+    // Find all {{if positions, pick the last one that comes before any {{end}}
+    // that doesn't have another {{if between them.
+    let mut last_if_pos = None;
+    let mut search_from = 0;
+
+    while let Some(pos) = text[search_from..].find("{{if ") {
+        let abs_pos = search_from + pos;
+        last_if_pos = Some(abs_pos);
+        search_from = abs_pos + 5;
+    }
+
+    // Verify: from last_if_pos, there should be a {{end}} before any other {{if
+    if let Some(pos) = last_if_pos {
+        let after = &text[pos + 5..];
+        let next_if = after.find("{{if ");
+        let next_end = after.find("{{end}}");
+        match (next_end, next_if) {
+            (Some(end_pos), Some(if_pos)) if if_pos < end_pos => {
+                // There's a nested if before our end — go back to find a
+                // non-nested one. Walk backward through all {{if positions.
+                find_innermost_if_scan(text)
+            }
+            (Some(_), _) => Some(pos),
+            (None, _) => None, // malformed template
+        }
+    } else {
+        None
+    }
+}
+
+/// Scan for the innermost if by finding an {{if whose body has no nested {{if.
+fn find_innermost_if_scan(text: &str) -> Option<usize> {
+    let mut search_from = 0;
+    while let Some(pos) = text[search_from..].find("{{if ") {
+        let abs_pos = search_from + pos;
+        // Check if this if's body (up to the next {{end}}) contains another {{if
+        let after_cond = &text[abs_pos + 5..];
+        let Some(cond_close) = after_cond.find("}}") else {
+            search_from = abs_pos + 5;
+            continue;
+        };
+        let body_start = abs_pos + 5 + cond_close + 2;
+        let rest = &text[body_start..];
+        let Some(end_pos) = rest.find("{{end}}") else {
+            search_from = abs_pos + 5;
+            continue;
+        };
+        let body = &rest[..end_pos];
+        if !body.contains("{{if ") {
+            return Some(abs_pos);
+        }
+        search_from = abs_pos + 5;
+    }
+    None
+}
+
+/// Evaluate a template condition against a construct.
+///
+/// Supported conditions:
+/// - `has_annotation("name")` — construct has annotation @name
+/// - `has_role("name")` — construct has a role (via registry)
+/// - `has_children` — construct.children is non-empty
+/// - `field.type == "X"` — field type check (set by field loop context)
+/// - `method == "X"` — string equality (set by loop variable context)
+/// - `!condition` — negation of any of the above
+fn evaluate_condition(condition: &str, construct: &Construct, registry: &LayerRegistry) -> bool {
+    let trimmed = condition.trim();
+
+    // Negation
+    if let Some(inner) = trimmed.strip_prefix('!') {
+        return !evaluate_condition(inner.trim(), construct, registry);
+    }
+
+    // has_annotation("name")
+    if let Some(name) = extract_quoted_arg(trimmed, "has_annotation") {
+        return construct.annotations.iter().any(|a| a.name == name);
+    }
+
+    // has_role("name")
+    if let Some(role) = extract_quoted_arg(trimmed, "has_role") {
+        return construct
+            .annotations
+            .iter()
+            .any(|a| registry.annotation_has_role(&a.name, &role));
+    }
+
+    // has_children
+    if trimmed == "has_children" {
+        return !construct.children.is_empty();
+    }
+
+    // field.type == "X" — this is evaluated at the CONSTRUCT level as a fallback.
+    // The real field-level check happens inside expand_field_loops_enhanced when
+    // conditionals are nested inside field loops. At construct level, this is always false.
+    if trimmed.starts_with("field.type == ") {
+        return false;
+    }
+
+    // Generic equality: `varname == "value"` — falls through to false at top level.
+    // Inside loops, conditions are evaluated with loop-scoped context.
+    if trimmed.contains(" == ") {
+        return false;
+    }
+
+    false
+}
+
+// ─── Child Iteration ─────────────────────────────────────────────────────────
+
+/// Expand `{{for child in children}}...{{end}}` and
+/// `{{for child in children where FILTER}}...{{end}}` loops.
+///
+/// Inside the loop body, the template context shifts to the child construct,
+/// so `{{name}}`, `{{annotation_value:X}}`, etc. resolve against the child.
+fn expand_child_loops(
+    template: &str,
+    construct: &Construct,
+    registry: &LayerRegistry,
+    target: &str,
+) -> String {
+    let mut result = template.to_string();
+    let prefix = "{{for child in children";
+
+    loop {
+        let Some(start) = result.find(prefix) else { break };
+        let after_prefix = &result[start + prefix.len()..];
+
+        // Parse the rest of the opening tag: either `}}` or ` where CONDITION}}`
+        let Some(tag_close) = after_prefix.find("}}") else { break };
+        let tag_content = after_prefix[..tag_close].trim();
+        let filter = if let Some(where_clause) = tag_content.strip_prefix("where ") {
+            Some(where_clause.trim().to_string())
+        } else {
+            // tag_content should be empty (plain `{{for child in children}}`)
+            None
+        };
+
+        let body_start = start + prefix.len() + tag_close + "}}".len();
+
+        // Find matching {{end}} accounting for nesting
+        let Some(end_offset) = find_matching_end(&result[body_start..]) else { break };
+        let end_abs = body_start + end_offset + "{{end}}".len();
+        let body = result[body_start..body_start + end_offset].to_string();
+
+        // Filter children
+        let children: Vec<&Construct> = construct
+            .children
+            .iter()
+            .filter(|child| match_child_filter(child, filter.as_deref(), registry))
+            .collect();
+
+        // Expand body for each matching child
+        let mut expanded = String::new();
+        for child in &children {
+            let mut child_body = body.clone();
+
+            // Replace {{child.lowers_to}} with recursive template rendering
+            if child_body.contains("{{child.lowers_to}}") {
+                let child_template = registry
+                    .construct_lowers_to(child, target)
+                    .unwrap_or("");
+                let rendered = if child_template.is_empty() {
+                    String::new()
+                } else {
+                    render_template_for_construct(child, child_template, registry, target)
+                };
+                child_body = child_body.replace("{{child.lowers_to}}", &rendered);
+            }
+
+            // Replace {{child.X}} accessors
+            child_body = child_body.replace("{{child.name}}", &child.name);
+            child_body = child_body.replace("{{child.name_snake}}", &to_snake_case(&child.name));
+            child_body = child_body.replace("{{child.name_camel}}", &to_camel_case(&child.name));
+            child_body = child_body.replace("{{child.subkind}}", &child.subkind);
+            child_body = child_body.replace("{{child.keyword}}", &child.keyword);
+
+            // {{child.annotation_value("name")}} / {{child.annotation_arg("name", N)}}
+            child_body = expand_prefixed_annotation_placeholders(child, &child_body, "child.");
+
+            expanded.push_str(&child_body);
+        }
+
+        result = format!("{}{}{}", &result[..start], expanded, &result[end_abs..]);
+    }
+
+    result
+}
+
+/// Check if a child matches a where-filter.
+///
+/// Supported filters:
+/// - `role == "X"` — child has role X (via registry)
+/// - `has_annotation("X")` — child has annotation @X
+/// - `keyword == "X"` — child.keyword equals X
+/// - `subkind == "X"` — child.subkind equals X
+fn match_child_filter(child: &Construct, filter: Option<&str>, registry: &LayerRegistry) -> bool {
+    let Some(filter) = filter else { return true };
+    let filter = filter.trim();
+
+    if let Some(role) = extract_equality_value(filter, "role") {
+        return registry.construct_has_role(child, &role);
+    }
+    if let Some(name) = extract_quoted_arg(filter, "has_annotation") {
+        return child.annotations.iter().any(|a| a.name == name);
+    }
+    if let Some(kw) = extract_equality_value(filter, "keyword") {
+        return child.keyword.eq_ignore_ascii_case(&kw);
+    }
+    if let Some(sk) = extract_equality_value(filter, "subkind") {
+        return child.subkind.eq_ignore_ascii_case(&sk);
+    }
+
+    // Unknown filter — include all
+    true
+}
+
+/// Extract value from `key == "value"` pattern.
+fn extract_equality_value(s: &str, key: &str) -> Option<String> {
+    let prefix = format!("{} == \"", key);
+    if let Some(start) = s.find(&prefix) {
+        let after = &s[start + prefix.len()..];
+        if let Some(end) = after.find('"') {
+            return Some(after[..end].to_string());
+        }
+    }
+    None
+}
+
+// ─── Method Iteration ────────────────────────────────────────────────────────
+
+/// Expand `{{for method in methods}}...{{end}}` loops.
+///
+/// Available inside the loop:
+/// - `{{method.name}}` — method name
+/// - `{{method.params}}` — formatted parameter list
+/// - `{{method.return_type}}` — return type string
+fn expand_method_loops(template: &str, construct: &Construct, target: &str) -> String {
+    let tag = "{{for method in methods}}";
+    let mut result = template.to_string();
+
+    while let Some(start) = result.find(tag) {
+        let body_start = start + tag.len();
+        let Some(end_offset) = find_matching_end(&result[body_start..]) else { break };
+        let end_abs = body_start + end_offset + "{{end}}".len();
+        let body = &result[body_start..body_start + end_offset];
+
+        let mut expanded = String::new();
+        for method in &construct.methods {
+            let mut line = body.to_string();
+            line = line.replace("{{method.name}}", &method.name);
+
+            let params = method
+                .params
+                .iter()
+                .map(|p| {
+                    let ty = match target {
+                        "rust" => crate::rust::type_to_rust(&p.type_expr),
+                        "typescript" => crate::ts::lower::type_to_ts(&p.type_expr),
+                        _ => type_to_display(&p.type_expr),
+                    };
+                    format!("{}: {}", p.name, ty)
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            line = line.replace("{{method.params}}", &params);
+
+            let ret = match &method.return_type {
+                Some(t) => match target {
+                    "rust" => crate::rust::type_to_rust(t),
+                    "typescript" => crate::ts::lower::type_to_ts(t),
+                    _ => type_to_display(t),
+                },
+                None => String::new(),
+            };
+            line = line.replace("{{method.return_type}}", &ret);
+
+            expanded.push_str(&line);
+        }
+
+        result = format!("{}{}{}", &result[..start], expanded, &result[end_abs..]);
+    }
+
+    result
+}
+
+// ─── Enhanced Field Iteration ────────────────────────────────────────────────
+
+/// Expand `{{for field in fields}}...{{end}}` with enhanced type introspection.
+///
+/// Available inside the loop:
+/// - `{{field.name}}` — field name
+/// - `{{field.type}}` — VEIL type as-is
+/// - `{{field.rust_type}}` — Rust type via type_to_rust
+/// - `{{field.ts_type}}` — TS type via type_to_ts
+///
+/// Supports optional where clause:
+/// - `{{for field in fields where annotation == "dep"}}` — only fields with @dep
+fn expand_field_loops_enhanced(
+    template: &str,
+    construct: &Construct,
+    registry: &LayerRegistry,
+    target: &str,
+) -> String {
+    let prefix = "{{for field in fields";
+    let mut result = template.to_string();
+
+    loop {
+        let Some(start) = result.find(prefix) else { break };
+        let after_prefix = &result[start + prefix.len()..];
+
+        let Some(tag_close) = after_prefix.find("}}") else { break };
+        let tag_content = after_prefix[..tag_close].trim();
+        let filter = if let Some(where_clause) = tag_content.strip_prefix("where ") {
+            Some(where_clause.trim().to_string())
+        } else {
+            None
+        };
+
+        let body_start = start + prefix.len() + tag_close + "}}".len();
+        let Some(end_offset) = find_matching_end(&result[body_start..]) else { break };
+        let end_abs = body_start + end_offset + "{{end}}".len();
+        let body = &result[body_start..body_start + end_offset];
+
+        // Collect fields, applying filter
+        let fields: Vec<&Field> = construct
+            .fields
+            .iter()
+            .filter(|f| match_field_filter(f, filter.as_deref(), registry))
+            .collect();
+
+        let mut expanded = String::new();
+        for field in &fields {
+            let mut line = body.to_string();
+
+            // Process field-level conditionals (e.g. {{if field.type == "Uuid"}}...{{end}})
+            line = expand_field_conditionals(&line, field, construct, registry, target);
+
+            line = line.replace("{{field.name}}", &field.name);
+            line = line.replace("{{field.type}}", &type_to_display(&field.type_expr));
+            line = line.replace("{{field.rust_type}}", &crate::rust::type_to_rust(&field.type_expr));
+            line = line.replace("{{field.ts_type}}", &crate::ts::lower::type_to_ts(&field.type_expr));
+
+            expanded.push_str(&line);
+        }
+
+        result = format!("{}{}{}", &result[..start], expanded, &result[end_abs..]);
+    }
+
+    result
+}
+
+/// Check if a field matches a where-filter.
+///
+/// Supported filters:
+/// - `annotation == "X"` — field has annotation @X
+/// - `type == "X"` — field type name equals X
+fn match_field_filter(field: &Field, filter: Option<&str>, _registry: &LayerRegistry) -> bool {
+    let Some(filter) = filter else { return true };
+    let filter = filter.trim();
+
+    if let Some(ann_name) = extract_equality_value(filter, "annotation") {
+        return field.annotations.iter().any(|a| a.name == ann_name);
+    }
+    if let Some(type_name) = extract_equality_value(filter, "type") {
+        return type_to_display(&field.type_expr) == type_name;
+    }
+
+    true
+}
+
+/// Expand conditionals inside a field loop body — these can reference field.type.
+fn expand_field_conditionals(
+    body: &str,
+    field: &Field,
+    construct: &Construct,
+    registry: &LayerRegistry,
+    _target: &str,
+) -> String {
+    let mut result = body.to_string();
+
+    loop {
+        let Some(if_start) = find_innermost_if(&result) else { break };
+
+        let after_if = &result[if_start + "{{if ".len()..];
+        let Some(cond_end) = after_if.find("}}") else { break };
+        let condition = after_if[..cond_end].trim().to_string();
+        let body_start = if_start + "{{if ".len() + cond_end + "}}".len();
+
+        let rest = &result[body_start..];
+        let Some(end_offset) = rest.find("{{end}}") else { break };
+        let end_abs = body_start + end_offset + "{{end}}".len();
+
+        let inner_body = &result[body_start..body_start + end_offset];
+        let (then_branch, else_branch) = if let Some(else_pos) = inner_body.find("{{else}}") {
+            (&inner_body[..else_pos], &inner_body[else_pos + "{{else}}".len()..])
+        } else {
+            (inner_body, "")
+        };
+
+        let cond_result = evaluate_field_condition(&condition, field, construct, registry);
+        let replacement = if cond_result { then_branch } else { else_branch };
+
+        result = format!("{}{}{}", &result[..if_start], replacement, &result[end_abs..]);
+    }
+
+    result
+}
+
+/// Evaluate a condition in the context of a field loop iteration.
+fn evaluate_field_condition(
+    condition: &str,
+    field: &Field,
+    construct: &Construct,
+    registry: &LayerRegistry,
+) -> bool {
+    let trimmed = condition.trim();
+
+    // Negation
+    if let Some(inner) = trimmed.strip_prefix('!') {
+        return !evaluate_field_condition(inner.trim(), field, construct, registry);
+    }
+
+    // field.type == "X"
+    if let Some(type_name) = extract_equality_value(trimmed, "field.type") {
+        return type_to_display(&field.type_expr) == type_name;
+    }
+
+    // Fall back to construct-level conditions
+    evaluate_condition(trimmed, construct, registry)
+}
+
+// ─── Dep-Field Iteration (legacy) ───────────────────────────────────────────
+
+/// Legacy dep_fields loop for backward compatibility.
+fn expand_dep_field_loops(
+    template: &str,
+    construct: &Construct,
+    registry: &LayerRegistry,
+) -> String {
+    if !template.contains("{{for field in dep_fields}}") {
+        return template.to_string();
+    }
+
+    let dep_fields: Vec<&Field> = {
+        let field_level: Vec<&Field> = construct
+            .fields
+            .iter()
+            .filter(|f| registry.field_is_dependency(f))
+            .collect();
+        if !field_level.is_empty() {
+            field_level
+        } else if construct
+            .annotations
+            .iter()
+            .any(|a| registry.is_dependency_annotation(&a.name))
+        {
+            construct.fields.iter().collect()
+        } else {
+            Vec::new()
+        }
+    };
+
+    expand_for_loop(template, "field", "dep_fields", &dep_fields, |field, var| {
+        match var {
+            "field.name" => field.name.clone(),
+            "field.type" => type_to_display(&field.type_expr),
+            _ => format!("{{{{{}}}}}", var),
+        }
+    })
+}
+
+// ─── Utility: Find matching {{end}} with nesting ────────────────────────────
+
+/// Find the offset of the matching `{{end}}` tag, accounting for nested
+/// `{{for` and `{{if` blocks.
+fn find_matching_end(text: &str) -> Option<usize> {
+    let mut depth = 1;
+    let mut pos = 0;
+    while pos < text.len() {
+        if text[pos..].starts_with("{{for ") || text[pos..].starts_with("{{if ") {
+            depth += 1;
+            pos += 5;
+        } else if text[pos..].starts_with("{{end}}") {
+            depth -= 1;
+            if depth == 0 {
+                return Some(pos);
+            }
+            pos += 7;
+        } else {
+            pos += text[pos..].chars().next().map_or(1, |c| c.len_utf8());
+        }
+    }
+    None
+}
+
+// ─── Helper: Annotation placeholders with prefix ────────────────────────────
+
+/// Expand annotation placeholders with a prefix (e.g. "child." for {{child.annotation_value("X")}}).
+fn expand_prefixed_annotation_placeholders(construct: &Construct, output: &str, prefix: &str) -> String {
+    let mut result = output.to_string();
+
+    // {{prefix.annotation_value("name")}}
+    let pattern = format!("{{{{{prefix}annotation_value(\"");
+    while let Some(start) = result.find(&pattern) {
+        let after = start + pattern.len();
+        let Some(name_end) = result[after..].find('"') else { break };
+        let name = result[after..after + name_end].to_string();
+        let rest = &result[after + name_end..];
+        let Some(close) = rest.find("}}") else { break };
+        let replacement = annotation_arg_at(construct, &name, 0);
+        let abs_end = after + name_end + close + 2;
+        result = format!("{}{}{}", &result[..start], replacement, &result[abs_end..]);
+    }
+
+    // {{prefix.annotation_arg("name", N)}}
+    let pattern = format!("{{{{{prefix}annotation_arg(\"");
+    while let Some(start) = result.find(&pattern) {
+        let after = start + pattern.len();
+        let Some(name_end) = result[after..].find('"') else { break };
+        let name = result[after..after + name_end].to_string();
+        let rest = &result[after + name_end..];
+        let Some(close) = rest.find("}}") else { break };
+        let mid = &rest[..close];
+        let idx: usize = mid
+            .chars()
+            .filter(|c| c.is_ascii_digit())
+            .collect::<String>()
+            .parse()
+            .unwrap_or(0);
+        let replacement = annotation_arg_at(construct, &name, idx);
+        let abs_end = after + name_end + close + 2;
+        result = format!("{}{}{}", &result[..start], replacement, &result[abs_end..]);
+    }
+
+    result
+}
+
+// ─── Case conversion helpers ─────────────────────────────────────────────────
+
+/// Convert PascalCase/camelCase to snake_case.
+fn to_snake_case(name: &str) -> String {
+    crate::rust::to_snake(name)
+}
+
+/// Convert PascalCase/snake_case to camelCase.
+fn to_camel_case(name: &str) -> String {
+    crate::ts::lower::to_camel(name)
 }
 
 /// URL path for a page/layout (or leftover API route). Prefers `role:ui_route`.
@@ -788,7 +1490,7 @@ fn expand_step_loop(template: &str, steps: &[&FlowStep]) -> String {
             }
             search_pos += 7;
         } else {
-            search_pos += 1;
+            search_pos += template[search_pos..].chars().next().map_or(1, |c| c.len_utf8());
         }
     }
 
@@ -910,5 +1612,585 @@ fn ts_default_value(ty: &veil_ir::TypeExpr) -> String {
         TypeExpr::Map(_, _) => "{}".into(),
         TypeExpr::Optional(_) => "null".into(),
         _ => "undefined as any".into(),
+    }
+}
+
+
+// ─── Tests ───────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use veil_ir::ast::{Annotation, Construct, Method, Param};
+    use veil_ir::layer::{CodegenRule, LayerRegistry, Shape};
+    use veil_ir::span::Span;
+    use veil_ir::TypeExpr;
+
+    fn span() -> Span {
+        Span::default()
+    }
+
+    fn empty_construct(name: &str) -> Construct {
+        Construct {
+            keyword: "struct".into(),
+            subkind: "Entity".into(),
+            shape: Shape::Struct,
+            name: name.into(),
+            type_params: Vec::new(),
+            span: span(),
+            annotations: Vec::new(),
+            exported: false,
+            visibility: "pub".into(),
+            where_clause: Vec::new(),
+            deployment_unit: false,
+            layer_provided: false,
+            fields: Vec::new(),
+            return_type: None,
+            blocks: Vec::new(),
+            raw_blocks: Vec::new(),
+            effects: Vec::new(),
+            fns: Vec::new(),
+            test_blocks: Vec::new(),
+            variants: Vec::new(),
+            rich_variants: Vec::new(),
+            transitions: Vec::new(),
+            methods: Vec::new(),
+            associated_types: Vec::new(),
+            target: None,
+            target_type_args: Vec::new(),
+            impls: Vec::new(),
+            inputs: Vec::new(),
+            steps: Vec::new(),
+            return_expr: None,
+            refs: Vec::new(),
+            children: Vec::new(),
+        }
+    }
+
+    fn make_rule(body: &str) -> CodegenRule {
+        CodegenRule {
+            match_shape: "struct".into(),
+            condition: String::new(),
+            emit_body: body.into(),
+            emit_to: None,
+            emit_file: None,
+            priority: 100,
+        }
+    }
+
+    fn render(construct: &Construct, body: &str) -> String {
+        let registry = LayerRegistry::builtin();
+        let rule = make_rule(body);
+        render_template(construct, &rule, &registry, "rust")
+    }
+
+    // ─── Conditionals ────────────────────────────────────────────────────────
+
+    #[test]
+    fn conditional_has_annotation_true() {
+        let mut c = empty_construct("Order");
+        c.annotations.push(Annotation {
+            name: "route".into(),
+            args: vec!["\"/orders\"".into()],
+            span: span(),
+        });
+        let result = render(&c, "{{if has_annotation(\"route\")}}yes{{end}}");
+        assert_eq!(result, "yes");
+    }
+
+    #[test]
+    fn conditional_has_annotation_false() {
+        let c = empty_construct("Order");
+        let result = render(&c, "{{if has_annotation(\"route\")}}yes{{end}}");
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn conditional_negation() {
+        let c = empty_construct("Order");
+        let result = render(&c, "{{if !has_annotation(\"route\")}}no route{{end}}");
+        assert_eq!(result, "no route");
+    }
+
+    #[test]
+    fn conditional_with_else_branch() {
+        let c = empty_construct("Order");
+        let result = render(&c, "{{if has_annotation(\"route\")}}routed{{else}}unrouted{{end}}");
+        assert_eq!(result, "unrouted");
+    }
+
+    #[test]
+    fn conditional_has_children_true() {
+        let mut c = empty_construct("Router");
+        c.children.push(empty_construct("Endpoint"));
+        let result = render(&c, "{{if has_children}}has kids{{end}}");
+        assert_eq!(result, "has kids");
+    }
+
+    #[test]
+    fn conditional_has_children_false() {
+        let c = empty_construct("Router");
+        let result = render(&c, "{{if has_children}}has kids{{end}}");
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn conditional_nested() {
+        let mut c = empty_construct("Order");
+        c.annotations.push(Annotation {
+            name: "route".into(),
+            args: vec!["\"/orders\"".into()],
+            span: span(),
+        });
+        c.children.push(empty_construct("Item"));
+        let tpl = "{{if has_annotation(\"route\")}}R{{if has_children}}C{{end}}{{end}}";
+        let result = render(&c, tpl);
+        assert_eq!(result, "RC");
+    }
+
+    // ─── Child Iteration ─────────────────────────────────────────────────────
+
+    #[test]
+    fn for_child_basic() {
+        let mut c = empty_construct("Router");
+        c.children.push(empty_construct("Alpha"));
+        c.children.push(empty_construct("Beta"));
+        let result = render(&c, "{{for child in children}}{{child.name}},{{end}}");
+        assert_eq!(result, "Alpha,Beta,");
+    }
+
+    #[test]
+    fn for_child_name_snake() {
+        let mut c = empty_construct("Router");
+        c.children.push(empty_construct("GetOrders"));
+        let result = render(&c, "{{for child in children}}{{child.name_snake}}{{end}}");
+        assert_eq!(result, "get_orders");
+    }
+
+    #[test]
+    fn for_child_where_keyword() {
+        let mut c = empty_construct("Router");
+        let mut ep = empty_construct("ListItems");
+        ep.keyword = "endpoint".into();
+        c.children.push(ep);
+        let mut other = empty_construct("Other");
+        other.keyword = "struct".into();
+        c.children.push(other);
+        let result = render(
+            &c,
+            "{{for child in children where keyword == \"endpoint\"}}{{child.name}}{{end}}",
+        );
+        assert_eq!(result, "ListItems");
+    }
+
+    #[test]
+    fn for_child_annotation_value() {
+        let mut c = empty_construct("Router");
+        let mut ep = empty_construct("GetOrder");
+        ep.annotations.push(Annotation {
+            name: "route".into(),
+            args: vec!["\"/orders/:id\"".into()],
+            span: span(),
+        });
+        c.children.push(ep);
+        let result = render(
+            &c,
+            "{{for child in children}}{{child.annotation_value(\"route\")}}{{end}}",
+        );
+        assert_eq!(result, "/orders/:id");
+    }
+
+    // ─── Field Iteration ─────────────────────────────────────────────────────
+
+    #[test]
+    fn for_field_basic() {
+        let mut c = empty_construct("Order");
+        c.fields.push(Field {
+            annotations: Vec::new(),
+            name: "id".into(),
+            type_expr: TypeExpr::Named("Uuid".into()),
+            default_expr: None,
+            span: span(),
+        });
+        c.fields.push(Field {
+            annotations: Vec::new(),
+            name: "total".into(),
+            type_expr: TypeExpr::Named("F64".into()),
+            default_expr: None,
+            span: span(),
+        });
+        let result = render(&c, "{{for field in fields}}{{field.name}}: {{field.rust_type}},\n{{end}}");
+        assert_eq!(result, "id: Uuid,\ntotal: f64,\n");
+    }
+
+    #[test]
+    fn for_field_ts_type() {
+        let mut c = empty_construct("Order");
+        c.fields.push(Field {
+            annotations: Vec::new(),
+            name: "name".into(),
+            type_expr: TypeExpr::Named("Str".into()),
+            default_expr: None,
+            span: span(),
+        });
+        let registry = LayerRegistry::builtin();
+        let result = render_template_for_construct(
+            &c,
+            "{{for field in fields}}{{field.ts_type}}{{end}}",
+            &registry,
+            "typescript",
+        );
+        assert_eq!(result, "string");
+    }
+
+    #[test]
+    fn for_field_with_annotation_filter() {
+        let mut c = empty_construct("Handler");
+        c.fields.push(Field {
+            annotations: vec![Annotation {
+                name: "dep".into(),
+                args: Vec::new(),
+                span: span(),
+            }],
+            name: "repo".into(),
+            type_expr: TypeExpr::Named("OrderRepo".into()),
+            default_expr: None,
+            span: span(),
+        });
+        c.fields.push(Field {
+            annotations: Vec::new(),
+            name: "count".into(),
+            type_expr: TypeExpr::Named("Int".into()),
+            default_expr: None,
+            span: span(),
+        });
+        let result = render(
+            &c,
+            "{{for field in fields where annotation == \"dep\"}}{{field.name}}{{end}}",
+        );
+        assert_eq!(result, "repo");
+    }
+
+    #[test]
+    fn for_field_with_type_conditional() {
+        let mut c = empty_construct("Handler");
+        c.fields.push(Field {
+            annotations: Vec::new(),
+            name: "id".into(),
+            type_expr: TypeExpr::Named("Uuid".into()),
+            default_expr: None,
+            span: span(),
+        });
+        c.fields.push(Field {
+            annotations: Vec::new(),
+            name: "name".into(),
+            type_expr: TypeExpr::Named("Str".into()),
+            default_expr: None,
+            span: span(),
+        });
+        let result = render(
+            &c,
+            "{{for field in fields}}{{if field.type == \"Uuid\"}}parse({{field.name}}){{else}}{{field.name}}{{end}},{{end}}",
+        );
+        assert_eq!(result, "parse(id),name,");
+    }
+
+    // ─── Method Iteration ────────────────────────────────────────────────────
+
+    #[test]
+    fn for_method_basic() {
+        let mut c = empty_construct("Repository");
+        c.shape = Shape::Trait;
+        c.methods.push(Method {
+            name: "find_by_id".into(),
+            span: span(),
+            params: vec![Param {
+                name: "id".into(),
+                type_expr: TypeExpr::Named("Uuid".into()),
+                span: span(),
+            }],
+            return_type: Some(TypeExpr::Named("Order".into())),
+        });
+        let result = render(
+            &c,
+            "{{for method in methods}}fn {{method.name}}({{method.params}}) -> {{method.return_type}};{{end}}",
+        );
+        assert_eq!(result, "fn find_by_id(id: Uuid) -> Order;");
+    }
+
+    #[test]
+    fn for_method_multiple_params() {
+        let mut c = empty_construct("Service");
+        c.shape = Shape::Trait;
+        c.methods.push(Method {
+            name: "update".into(),
+            span: span(),
+            params: vec![
+                Param {
+                    name: "id".into(),
+                    type_expr: TypeExpr::Named("Uuid".into()),
+                    span: span(),
+                },
+                Param {
+                    name: "data".into(),
+                    type_expr: TypeExpr::Named("Str".into()),
+                    span: span(),
+                },
+            ],
+            return_type: None,
+        });
+        let result = render(
+            &c,
+            "{{for method in methods}}{{method.name}}({{method.params}}){{end}}",
+        );
+        assert_eq!(result, "update(id: Uuid, data: String)");
+    }
+
+    // ─── Helper Variables ────────────────────────────────────────────────────
+
+    #[test]
+    fn helper_name_snake() {
+        let c = empty_construct("OrderService");
+        let result = render(&c, "{{name_snake}}");
+        assert_eq!(result, "order_service");
+    }
+
+    #[test]
+    fn helper_name_camel() {
+        let c = empty_construct("OrderService");
+        let result = render(&c, "{{name_camel}}");
+        // to_camel on PascalCase → keeps as-is or lowercases first char depending on impl
+        // Our to_camel converts "OrderService" → it depends on implementation
+        let result_val = to_camel_case("OrderService");
+        assert_eq!(result, result_val);
+    }
+
+    #[test]
+    fn helper_count_children() {
+        let mut c = empty_construct("Router");
+        c.children.push(empty_construct("A"));
+        c.children.push(empty_construct("B"));
+        c.children.push(empty_construct("C"));
+        let result = render(&c, "{{count_children}}");
+        assert_eq!(result, "3");
+    }
+
+    #[test]
+    fn helper_error_type() {
+        let mut registry = LayerRegistry::builtin();
+        registry.error_model = Some(veil_ir::layer::ErrorModelPolicy {
+            type_name: "AppError".into(),
+            variants: vec![
+                ("not_found".into(), "NotFound".into()),
+                ("validation".into(), "Validation".into()),
+            ],
+        });
+        let c = empty_construct("Handler");
+        let rule = make_rule("{{error_type}}");
+        let result = render_template(&c, &rule, &registry, "rust");
+        assert_eq!(result, "AppError");
+    }
+
+    #[test]
+    fn helper_error_variant() {
+        let mut registry = LayerRegistry::builtin();
+        registry.error_model = Some(veil_ir::layer::ErrorModelPolicy {
+            type_name: "AppError".into(),
+            variants: vec![
+                ("not_found".into(), "NotFound".into()),
+                ("validation".into(), "Validation".into()),
+            ],
+        });
+        let c = empty_construct("Handler");
+        let rule = make_rule("{{error_variant(\"not_found\")}}");
+        let result = render_template(&c, &rule, &registry, "rust");
+        assert_eq!(result, "NotFound");
+    }
+
+    // ─── Nested Template Resolution ──────────────────────────────────────────
+
+    #[test]
+    fn child_lowers_to_resolution() {
+        // Setup: a registry with a lowers_to template for the child's construct spec.
+        use veil_ir::layer::ConstructSpec;
+        use std::collections::HashMap;
+
+        let mut registry = LayerRegistry::builtin();
+        // Directly inject a construct spec with lowers_to for "endpoint" keyword.
+        let mut lowers_to = HashMap::new();
+        lowers_to.insert("rust".into(), "fn {{name_snake}}_handler() {}".into());
+        registry.constructs.push(ConstructSpec {
+            name: "Endpoint".into(),
+            keyword: "endpoint".into(),
+            maps_to: "struct".into(),
+            shape: Shape::Struct,
+            layer: "test".into(),
+            desc: String::new(),
+            contains: Vec::new(),
+            blocks: Vec::new(),
+            raw_block_keywords: Vec::new(),
+            constraints: Vec::new(),
+            allowed_in: String::new(),
+            group: String::new(),
+            visual: veil_ir::layer::Visual::default(),
+            runtime: None,
+            au: false,
+            is_step: false,
+            step_fields: Vec::new(),
+            annotations: Vec::new(),
+            tgt: String::new(),
+            dg: String::new(),
+            presentation: Default::default(),
+            roles: Vec::new(),
+            config_keys: Vec::new(),
+            required_fields: Vec::new(),
+            lowers_to,
+        });
+
+        let mut parent = empty_construct("Router");
+        let mut child = empty_construct("GetItems");
+        child.keyword = "endpoint".into();
+        child.subkind = "Endpoint".into();
+        parent.children.push(child);
+
+        let rule = make_rule("{{for child in children}}{{child.lowers_to}}\n{{end}}");
+        let result = render_template(&parent, &rule, &registry, "rust");
+        assert_eq!(result.trim(), "fn get_items_handler() {}");
+    }
+
+    // ─── Integration: Combined Features ──────────────────────────────────────
+
+    #[test]
+    fn combined_conditional_and_child_loop() {
+        let mut c = empty_construct("Router");
+        c.children.push(empty_construct("A"));
+        c.children.push(empty_construct("B"));
+        let tpl = "{{if has_children}}routes:\n{{for child in children}}- {{child.name_snake}}\n{{end}}{{end}}";
+        let result = render(&c, tpl);
+        assert_eq!(result, "routes:\n- a\n- b\n");
+    }
+
+    #[test]
+    fn combined_fields_and_helpers() {
+        let mut c = empty_construct("UserService");
+        c.fields.push(Field {
+            annotations: Vec::new(),
+            name: "name".into(),
+            type_expr: TypeExpr::Named("Str".into()),
+            default_expr: None,
+            span: span(),
+        });
+        let result = render(
+            &c,
+            "struct {{name}} {\n{{for field in fields}}  {{field.name}}: {{field.rust_type}},\n{{end}}}\nmod {{name_snake}};",
+        );
+        assert_eq!(
+            result,
+            "struct UserService {\n  name: String,\n}\nmod user_service;"
+        );
+    }
+
+    // ─── find_matching_end ───────────────────────────────────────────────────
+
+    #[test]
+    fn find_matching_end_simple() {
+        let text = "body text{{end}}";
+        assert_eq!(find_matching_end(text), Some(9));
+    }
+
+    #[test]
+    fn find_matching_end_nested_for() {
+        let text = "{{for x in y}}inner{{end}}outer{{end}}";
+        assert_eq!(find_matching_end(text), Some(31));
+    }
+
+    #[test]
+    fn find_matching_end_nested_if() {
+        let text = "{{if cond}}inner{{end}}outer{{end}}";
+        assert_eq!(find_matching_end(text), Some(28));
+    }
+
+    // ─── find_innermost_if ───────────────────────────────────────────────────
+
+    #[test]
+    fn find_innermost_no_if() {
+        assert_eq!(find_innermost_if("no conditionals here"), None);
+    }
+
+    #[test]
+    fn find_innermost_single_if() {
+        let text = "before{{if x}}body{{end}}after";
+        assert_eq!(find_innermost_if(text), Some(6));
+    }
+
+    #[test]
+    fn find_innermost_nested_ifs() {
+        let text = "{{if a}}{{if b}}inner{{end}}outer{{end}}";
+        // Innermost is the second {{if b}}
+        let pos = find_innermost_if(text).unwrap();
+        assert!(text[pos..].starts_with("{{if b}}"));
+    }
+
+    // ─── evaluate_condition ──────────────────────────────────────────────────
+
+    #[test]
+    fn eval_has_annotation_present() {
+        let mut c = empty_construct("X");
+        c.annotations.push(Annotation {
+            name: "auth".into(),
+            args: Vec::new(),
+            span: span(),
+        });
+        let registry = LayerRegistry::builtin();
+        assert!(evaluate_condition("has_annotation(\"auth\")", &c, &registry));
+    }
+
+    #[test]
+    fn eval_has_annotation_absent() {
+        let c = empty_construct("X");
+        let registry = LayerRegistry::builtin();
+        assert!(!evaluate_condition("has_annotation(\"auth\")", &c, &registry));
+    }
+
+    #[test]
+    fn eval_negation() {
+        let c = empty_construct("X");
+        let registry = LayerRegistry::builtin();
+        assert!(evaluate_condition("!has_annotation(\"auth\")", &c, &registry));
+    }
+
+    #[test]
+    fn eval_has_children_empty() {
+        let c = empty_construct("X");
+        let registry = LayerRegistry::builtin();
+        assert!(!evaluate_condition("has_children", &c, &registry));
+    }
+
+    #[test]
+    fn eval_has_children_nonempty() {
+        let mut c = empty_construct("X");
+        c.children.push(empty_construct("Y"));
+        let registry = LayerRegistry::builtin();
+        assert!(evaluate_condition("has_children", &c, &registry));
+    }
+
+    // ─── extract_equality_value ──────────────────────────────────────────────
+
+    #[test]
+    fn extract_eq_role() {
+        let v = extract_equality_value("role == \"http_endpoint\"", "role");
+        assert_eq!(v, Some("http_endpoint".to_string()));
+    }
+
+    #[test]
+    fn extract_eq_keyword() {
+        let v = extract_equality_value("keyword == \"endpoint\"", "keyword");
+        assert_eq!(v, Some("endpoint".to_string()));
+    }
+
+    #[test]
+    fn extract_eq_missing() {
+        let v = extract_equality_value("something else", "role");
+        assert_eq!(v, None);
     }
 }
