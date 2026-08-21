@@ -1202,24 +1202,52 @@ pub fn gen_local_harness_main(
         }
     }
 
-    out.push_str(&harness_json_public_helper(modules, registry));
-    if let Some(em) = &registry.error_model {
-        let not_found = em.variant("not_found").expect("error_model must declare variant 'not_found'");
-        let validation = em.variant("validation").expect("error_model must declare variant 'validation'");
-        let external = em.variant("external").expect("error_model must declare variant 'external'");
-        out.push_str(&harness_domain_error_status_helper_dynamic(&em.type_name, not_found, validation, external));
-    } else {
-        // Sentinel: check pipeline should have blocked compilation before reaching here.
-        out.push_str(&harness_domain_error_status_helper_dynamic(
-            "__VEIL_NO_ERROR_MODEL__", "__NO_NOT_FOUND__", "__NO_VALIDATION__", "__NO_EXTERNAL__",
-        ));
+    // Emit layer-provided helper functions from `shared_emit rust_bin` blocks.
+    // Substitute placeholders with computed values from the package IR.
+    let secret_keys = collect_secret_field_names(modules, registry)
+        .iter()
+        .map(|s| format!("\"{s}\""))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let err_type = registry.error_model.as_ref().map(|em| em.type_name.as_str()).unwrap_or("__VEIL_NO_ERROR_MODEL__");
+    let not_found = registry.error_model.as_ref()
+        .and_then(|em| em.variant("not_found"))
+        .unwrap_or("__NO_NOT_FOUND__");
+    let validation = registry.error_model.as_ref()
+        .and_then(|em| em.variant("validation"))
+        .unwrap_or("__NO_VALIDATION__");
+    let external = registry.error_model.as_ref()
+        .and_then(|em| em.variant("external"))
+        .unwrap_or("__NO_EXTERNAL__");
+
+    let mut emitted_layer_helpers = false;
+    for (target, code) in &registry.shared_emit {
+        if target == "rust_bin" {
+            let substituted = code
+                .replace("{error_type}", err_type)
+                .replace("{not_found_variant}", not_found)
+                .replace("{validation_variant}", validation)
+                .replace("{external_variant}", external)
+                .replace("{secret_keys}", &secret_keys);
+            out.push_str("\n");
+            out.push_str(&substituted);
+            out.push_str("\n");
+            emitted_layer_helpers = true;
+        }
     }
-    out.push_str(harness_auth_cors_helpers());
-    out.push_str(harness_body_dt_helper());
+
+    // Fallback: if no layer provides helpers, use the engine defaults.
+    if !emitted_layer_helpers {
+        out.push_str(&harness_json_public_helper(modules, registry));
+        out.push_str(&harness_domain_error_status_helper_dynamic(err_type, not_found, validation, external));
+        out.push_str(harness_auth_cors_helpers());
+        out.push_str(harness_body_dt_helper());
+    }
     out
 }
 
 /// Collect snake_case field names marked role:secret across the solution.
+/// Used to compute the `{secret_keys}` placeholder for layer shared_emit templates.
 pub fn collect_secret_field_names(modules: &[&Construct], registry: &LayerRegistry) -> Vec<String> {
     let mut names = std::collections::BTreeSet::new();
     fn walk(c: &Construct, registry: &LayerRegistry, names: &mut std::collections::BTreeSet<String>) {
@@ -1245,7 +1273,13 @@ pub fn collect_secret_field_names(modules: &[&Construct], registry: &LayerRegist
     names.into_iter().collect()
 }
 
+// ─── FALLBACK HELPERS ────────────────────────────────────────────────────────
+// These functions are superseded by `shared_emit rust_bin` in harness.layer.
+// They remain as fallback for configurations that don't load the harness layer.
+// In normal operation, the layer provides all helper code and these are unused.
+
 /// Harness helper: Serialize then strip secret keys (INV-001 roles).
+/// FALLBACK: superseded by harness.layer shared_emit rust_bin.
 pub fn harness_json_public_helper(modules: &[&Construct], registry: &LayerRegistry) -> String {
     let secrets = collect_secret_field_names(modules, registry);
     let keys: String = secrets
@@ -1319,6 +1353,7 @@ pub fn veil_redact_header_values(v: &mut serde_json::Value) {{
 }
 
 /// API key middleware + CORS policy for generated harness.
+/// FALLBACK: superseded by harness.layer shared_emit rust_bin.
 pub fn harness_auth_cors_helpers() -> &'static str {
     r#"
 /// Production-oriented auth:
@@ -1412,6 +1447,7 @@ pub fn veil_cors_layer() -> CorsLayer {
 }
 
 /// Dynamic version: generates the error→status helper using the layer-declared error model.
+/// FALLBACK: superseded by harness.layer shared_emit rust_bin.
 pub fn harness_domain_error_status_helper_dynamic(error_type: &str, not_found: &str, validation: &str, external: &str) -> String {
     format!(
         r#"

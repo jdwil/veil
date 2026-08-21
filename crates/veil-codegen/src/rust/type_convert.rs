@@ -812,18 +812,40 @@ pub fn generate_multi_package_harness(
 
     // Use error model from the first package (shared across workspace).
     let first_reg = packages.first().map(|(_, r)| *r);
-    if let Some(reg) = first_reg.and_then(|r| r.error_model.as_ref()) {
-        let not_found = reg.variant("not_found").expect("error_model must declare variant 'not_found'");
-        let validation = reg.variant("validation").expect("error_model must declare variant 'validation'");
-        let external = reg.variant("external").expect("error_model must declare variant 'external'");
-        main_rs.push_str(&harness_domain_error_status_helper_dynamic(&reg.type_name, not_found, validation, external));
-    } else {
-        main_rs.push_str(&harness_domain_error_status_helper_dynamic(
-            "__VEIL_NO_ERROR_MODEL__", "__NO_NOT_FOUND__", "__NO_VALIDATION__", "__NO_EXTERNAL__",
-        ));
+    let err_type = first_reg.and_then(|r| r.error_model.as_ref()).map(|em| em.type_name.as_str()).unwrap_or("__VEIL_NO_ERROR_MODEL__");
+    let not_found = first_reg.and_then(|r| r.error_model.as_ref())
+        .and_then(|em| em.variant("not_found"))
+        .unwrap_or("__NO_NOT_FOUND__");
+    let validation = first_reg.and_then(|r| r.error_model.as_ref())
+        .and_then(|em| em.variant("validation"))
+        .unwrap_or("__NO_VALIDATION__");
+    let external = first_reg.and_then(|r| r.error_model.as_ref())
+        .and_then(|em| em.variant("external"))
+        .unwrap_or("__NO_EXTERNAL__");
+
+    // Emit layer-provided helpers from shared_emit rust_bin (if available).
+    let mut emitted_layer_helpers = false;
+    if let Some(reg) = first_reg {
+        for (target, code) in &reg.shared_emit {
+            if target == "rust_bin" {
+                let substituted = code
+                    .replace("{error_type}", err_type)
+                    .replace("{not_found_variant}", not_found)
+                    .replace("{validation_variant}", validation)
+                    .replace("{external_variant}", external)
+                    .replace("{secret_keys}", ""); // multi-package: no per-package secrets in shared helpers
+                main_rs.push_str("\n");
+                main_rs.push_str(&substituted);
+                main_rs.push_str("\n");
+                emitted_layer_helpers = true;
+            }
+        }
     }
-    main_rs.push_str(harness_body_dt_helper());
-    main_rs.push_str(harness_auth_cors_helpers());
+    if !emitted_layer_helpers {
+        main_rs.push_str(&harness_domain_error_status_helper_dynamic(err_type, not_found, validation, external));
+        main_rs.push_str(harness_body_dt_helper());
+        main_rs.push_str(harness_auth_cors_helpers());
+    }
 
     // Build Cargo.toml for veil_bin
     let mut cargo_toml = String::new();

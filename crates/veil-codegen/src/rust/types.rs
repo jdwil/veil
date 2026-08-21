@@ -1162,7 +1162,10 @@ pub fn gen_child_types(contents: &ModuleContents, crate_name: &str) -> Generated
 ///
 /// Supported variables:
 /// - `{{name}}` → construct name (PascalCase)
+/// - `{{name_snake}}` → construct name (snake_case)
 /// - `{{subkind}}` → layer subkind
+/// - `{{annotation.X.N}}` → Nth arg of annotation named X on this construct
+/// - `{{has.X}}` → value of has-field X (from construct's `has` block)
 /// - `{{for field in fields}}...{{end}}` → iterate fields
 ///   - `{{field.name}}` → field name (snake_case)
 ///   - `{{field.type}}` → Rust type (via type_to_rust)
@@ -1170,6 +1173,12 @@ pub fn gen_child_types(contents: &ModuleContents, crate_name: &str) -> Generated
 ///   - `{{method.name}}` → method name (snake_case)
 ///   - `{{method.params}}` → parameter list (`name: Type, ...`)
 ///   - `{{method.return_type}}` → return type or empty string
+/// - `{{for child in children where role == "X"}}...{{end}}` → iterate children by role
+///   - `{{child.name}}` → child construct name (PascalCase)
+///   - `{{child.name_snake}}` → child construct name (snake_case)
+///   - `{{child.has.X}}` → child has-field value
+///   - `{{child.annotation.X.N}}` → Nth arg of annotation X on child
+///   - `{{child.field.X}}` → value of named field X on child
 pub fn interpolate_construct_template(
     template: &str,
     c: &Construct,
@@ -1179,62 +1188,58 @@ pub fn interpolate_construct_template(
 
     // Simple substitutions
     output = output.replace("{{name}}", &c.name);
+    output = output.replace("{{name_snake}}", &to_snake(&c.name));
     output = output.replace("{{subkind}}", &c.subkind);
 
-    // {{for field in fields}}...{{end}} loop
-    if let Some(start) = output.find("{{for field in fields}}") {
-        if let Some(end_offset) = output[start..].find("{{end}}") {
-            let end = start + end_offset + "{{end}}".len();
-            let body = &output[start + "{{for field in fields}}".len()..start + end_offset];
+    // {{annotation.X.N}} — access annotation args on the parent construct
+    output = interpolate_annotation_refs(&output, "annotation", &c.annotations);
 
-            // Collect fields: direct + struct-shaped named blocks (same as gen_struct)
-            let mut fields: Vec<&Field> = c.fields.iter().collect();
-            for block in &c.blocks {
-                if block.shape != Shape::Enum {
-                    fields.extend(block.fields.iter());
-                }
+    // {{has.X}} — access has-block field values on the parent construct
+    output = interpolate_has_refs(&output, "has", c);
+
+    // {{for field in fields}}...{{end}} loop (repeatable)
+    output = expand_for_loops(&output, "{{for field in fields}}", |body| {
+        let mut fields: Vec<&Field> = c.fields.iter().collect();
+        for block in &c.blocks {
+            if block.shape != Shape::Enum {
+                fields.extend(block.fields.iter());
             }
-
-            let mut expanded = String::new();
-            for field in &fields {
-                let mut line = body.to_string();
-                line = line.replace("{{field.name}}", &to_snake(&field.name));
-                line = line.replace("{{field.type}}", &type_to_rust(&field.type_expr));
-                expanded.push_str(&line);
-            }
-
-            output = format!("{}{}{}", &output[..start], expanded, &output[end..]);
         }
-    }
-
-    // {{for method in methods}}...{{end}} loop
-    if let Some(start) = output.find("{{for method in methods}}") {
-        if let Some(end_offset) = output[start..].find("{{end}}") {
-            let end = start + end_offset + "{{end}}".len();
-            let body = &output[start + "{{for method in methods}}".len()..start + end_offset];
-
-            let mut expanded = String::new();
-            for method in &c.methods {
-                let mut line = body.to_string();
-                line = line.replace("{{method.name}}", &to_snake(&method.name));
-                let params = method
-                    .params
-                    .iter()
-                    .map(|p| format!("{}: {}", to_snake(&p.name), type_to_rust(&p.type_expr)))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                line = line.replace("{{method.params}}", &params);
-                let ret = match &method.return_type {
-                    Some(t) => type_to_rust(t),
-                    None => String::new(),
-                };
-                line = line.replace("{{method.return_type}}", &ret);
-                expanded.push_str(&line);
-            }
-
-            output = format!("{}{}{}", &output[..start], expanded, &output[end..]);
+        let mut expanded = String::new();
+        for field in &fields {
+            let mut line = body.to_string();
+            line = line.replace("{{field.name}}", &to_snake(&field.name));
+            line = line.replace("{{field.type}}", &type_to_rust(&field.type_expr));
+            expanded.push_str(&line);
         }
-    }
+        expanded
+    });
+
+    // {{for method in methods}}...{{end}} loop (repeatable)
+    output = expand_for_loops(&output, "{{for method in methods}}", |body| {
+        let mut expanded = String::new();
+        for method in &c.methods {
+            let mut line = body.to_string();
+            line = line.replace("{{method.name}}", &to_snake(&method.name));
+            let params = method
+                .params
+                .iter()
+                .map(|p| format!("{}: {}", to_snake(&p.name), type_to_rust(&p.type_expr)))
+                .collect::<Vec<_>>()
+                .join(", ");
+            line = line.replace("{{method.params}}", &params);
+            let ret = match &method.return_type {
+                Some(t) => type_to_rust(t),
+                None => String::new(),
+            };
+            line = line.replace("{{method.return_type}}", &ret);
+            expanded.push_str(&line);
+        }
+        expanded
+    });
+
+    // {{for child in children where role == "X"}}...{{end}} — iterate children by role
+    output = expand_child_role_loops(&output, c, registry);
 
     // Dedent: find minimum indentation of non-empty lines and strip it.
     let lines: Vec<&str> = output.lines().collect();
@@ -1259,6 +1264,151 @@ pub fn interpolate_construct_template(
     }
 
     // Trim leading/trailing blank lines
-    let _ = registry; // used for future expansions (e.g. type resolution)
     output.trim().to_string()
+}
+
+/// Expand all occurrences of a `{{for X in Y}}...{{end}}` loop tag.
+/// Calls `expander(body)` for each occurrence and replaces the loop with the result.
+fn expand_for_loops(output: &str, tag: &str, expander: impl Fn(&str) -> String) -> String {
+    let mut result = output.to_string();
+    while let Some(start) = result.find(tag) {
+        let after_tag = start + tag.len();
+        if let Some(end_offset) = result[after_tag..].find("{{end}}") {
+            let end = after_tag + end_offset + "{{end}}".len();
+            let body = &result[after_tag..after_tag + end_offset];
+            let expanded = expander(body);
+            result = format!("{}{}{}", &result[..start], expanded, &result[end..]);
+        } else {
+            break;
+        }
+    }
+    result
+}
+
+/// Expand `{{for child in children where role == "X"}}...{{end}}` loops.
+/// Supports multiple loops with different roles in one template.
+fn expand_child_role_loops(output: &str, c: &Construct, registry: &LayerRegistry) -> String {
+    use std::borrow::Cow;
+    let tag_prefix = "{{for child in children where role == \"";
+    let mut result = Cow::Borrowed(output);
+
+    loop {
+        let owned = result.to_string();
+        let Some(start) = owned.find(tag_prefix) else {
+            break;
+        };
+        let after_prefix = start + tag_prefix.len();
+        // Extract role name up to closing `"}}`
+        let Some(role_end) = owned[after_prefix..].find("\"}}") else {
+            break;
+        };
+        let role = &owned[after_prefix..after_prefix + role_end];
+        let tag_end = after_prefix + role_end + "\"}}".len();
+        // Find matching {{end}}
+        let Some(end_offset) = owned[tag_end..].find("{{end}}") else {
+            break;
+        };
+        let end = tag_end + end_offset + "{{end}}".len();
+        let body = &owned[tag_end..tag_end + end_offset];
+
+        // Collect children matching this role (recursive)
+        let children = collect_children_with_role(c, role, registry);
+
+        let mut expanded = String::new();
+        for child in &children {
+            let mut line = body.to_string();
+            line = line.replace("{{child.name}}", &child.name);
+            line = line.replace("{{child.name_snake}}", &to_snake(&child.name));
+            // {{child.has.X}} — has-block fields
+            line = interpolate_has_refs(&line, "child.has", child);
+            // {{child.annotation.X.N}} — child annotation args
+            line = interpolate_annotation_refs(&line, "child.annotation", &child.annotations);
+            // {{child.field.X}} — named field values (from Construct.fields by name)
+            line = interpolate_field_refs(&line, "child.field", child);
+            expanded.push_str(&line);
+        }
+
+        result = Cow::Owned(format!("{}{}{}", &owned[..start], expanded, &owned[end..]));
+    }
+    result.into_owned()
+}
+
+/// Recursively collect child constructs matching a given role.
+fn collect_children_with_role<'a>(
+    c: &'a Construct,
+    role: &str,
+    registry: &LayerRegistry,
+) -> Vec<&'a Construct> {
+    let mut out = Vec::new();
+    for child in &c.children {
+        if registry.construct_has_role(child, role) {
+            out.push(child);
+        }
+        // Recurse into grandchildren
+        out.extend(collect_children_with_role(child, role, registry));
+    }
+    out
+}
+
+/// Replace `{{prefix.X.N}}` patterns with annotation arg values.
+/// E.g. `{{annotation.route.0}}` → first arg of @route annotation.
+fn interpolate_annotation_refs(text: &str, prefix: &str, annotations: &[Annotation]) -> String {
+    let mut result = text.to_string();
+    let pattern = format!("{{{{{prefix}.");
+    while let Some(start) = result.find(&pattern) {
+        let after = start + pattern.len();
+        if let Some(close) = result[after..].find("}}") {
+            let key = &result[after..after + close];
+            let end = after + close + "}}".len();
+            // key is "annotation_name.N" or just "annotation_name" (defaults to .0)
+            let (ann_name, idx) = if let Some((n, i)) = key.rsplit_once('.') {
+                (n, i.parse::<usize>().unwrap_or(0))
+            } else {
+                (key, 0)
+            };
+            let value = annotations
+                .iter()
+                .find(|a| a.name == ann_name)
+                .and_then(|a| a.args.get(idx))
+                .map(|s| s.as_str())
+                .unwrap_or("");
+            result = format!("{}{}{}", &result[..start], value, &result[end..]);
+        } else {
+            break;
+        }
+    }
+    result
+}
+
+/// Replace `{{prefix.X}}` patterns with has-block field values.
+/// In the AST, has-block values (method, path, handle, etc.) are stored as
+/// regular fields on the construct. This is an alias for field access.
+fn interpolate_has_refs(text: &str, prefix: &str, c: &Construct) -> String {
+    interpolate_field_refs(text, prefix, c)
+}
+
+/// Replace `{{prefix.X}}` patterns with named field values from the construct.
+/// Fields store their "value" as TypeExpr — Named("GET"), LitStr("/api/items"), etc.
+fn interpolate_field_refs(text: &str, prefix: &str, c: &Construct) -> String {
+    let mut result = text.to_string();
+    let pattern = format!("{{{{{prefix}.");
+    while let Some(start) = result.find(&pattern) {
+        let after = start + pattern.len();
+        if let Some(close) = result[after..].find("}}") {
+            let field_name = &result[after..after + close];
+            let end = after + close + "}}".len();
+            let value = c.fields.iter()
+                .find(|f| f.name == field_name || to_snake(&f.name) == field_name)
+                .map(|f| match &f.type_expr {
+                    TypeExpr::Named(n) => n.clone(),
+                    TypeExpr::LitStr(s) => s.clone(),
+                    other => type_to_rust(other),
+                })
+                .unwrap_or_default();
+            result = format!("{}{}{}", &result[..start], value, &result[end..]);
+        } else {
+            break;
+        }
+    }
+    result
 }

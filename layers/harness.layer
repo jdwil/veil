@@ -113,3 +113,186 @@ pkg harness v1
     - You MUST NOT rely on eternal handwritten bootstrap for new apps
     - You SHOULD keep `@main` thin: wire + one demo invoke
     - For dual-loop REST APIs, declare `deps` / `compose` / `endpoint`
+
+  shared_emit rust_bin
+    /// Production-oriented auth:
+    /// - `/health` + OPTIONS always open
+    /// - `VEIL_DEV=1` → open (local dual-loop only)
+    /// - else require a key: `VEIL_API_KEY`
+    /// - Present key via `X-Api-Key` or `Authorization: Bearer <key>`
+    async fn veil_api_key_middleware(
+        headers: HeaderMap,
+        request: Request,
+        next: Next,
+    ) -> Result<Response, StatusCode> {
+        if request.uri().path() == "/health" || request.method() == axum::http::Method::OPTIONS {
+            return Ok(next.run(request).await);
+        }
+        let dev = std::env::var("VEIL_DEV").ok().as_deref() == Some("1");
+        let require = std::env::var("VEIL_REQUIRE_AUTH").ok().as_deref() == Some("1");
+        let admin_key = std::env::var("VEIL_API_KEY").ok().filter(|s| !s.is_empty());
+        let presented = headers
+            .get("x-api-key")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string())
+            .or_else(|| {
+                headers
+                    .get("authorization")
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|s| s.strip_prefix("Bearer ").map(|t| t.to_string()))
+            });
+
+        if dev && !require && admin_key.is_none() {
+            return Ok(next.run(request).await);
+        }
+
+        let Some(presented) = presented else {
+            eprintln!("error: missing X-Api-Key / Authorization Bearer");
+            return Err(StatusCode::UNAUTHORIZED);
+        };
+
+        if admin_key.as_deref() != Some(presented.as_str()) {
+            eprintln!("warn: unauthorized — key not recognized");
+            return Err(StatusCode::UNAUTHORIZED);
+        }
+
+        Ok(next.run(request).await)
+    }
+
+    /// Restrict CORS: `CORS_ORIGINS=http://a,http://b` or localhost defaults (not *).
+    pub fn veil_cors_layer() -> CorsLayer {
+        use axum::http::{HeaderValue, Method};
+        if let Ok(raw) = std::env::var("CORS_ORIGINS") {
+            let origins: Vec<HeaderValue> = raw
+                .split(',')
+                .filter_map(|s| s.trim().parse().ok())
+                .collect();
+            if !origins.is_empty() {
+                return CorsLayer::new()
+                    .allow_origin(origins)
+                    .allow_methods([
+                        Method::GET,
+                        Method::POST,
+                        Method::PUT,
+                        Method::PATCH,
+                        Method::DELETE,
+                        Method::OPTIONS,
+                    ])
+                    .allow_headers(Any);
+            }
+        }
+        let local = [
+            "http://localhost:5173",
+            "http://127.0.0.1:5173",
+            "http://localhost:5174",
+            "http://127.0.0.1:5174",
+            "http://localhost:3000",
+            "http://127.0.0.1:3000",
+        ];
+        let origins: Vec<HeaderValue> = local.iter().filter_map(|s| s.parse().ok()).collect();
+        CorsLayer::new()
+            .allow_origin(origins)
+            .allow_methods([
+                Method::GET,
+                Method::POST,
+                Method::PUT,
+                Method::PATCH,
+                Method::DELETE,
+                Method::OPTIONS,
+            ])
+            .allow_headers(Any)
+    }
+
+    pub fn veil_domain_error_status(e: {error_type}) -> StatusCode {
+        match &e {
+            {error_type}::{not_found_variant} => {
+                eprintln!("warn: not found: {e}");
+                StatusCode::NOT_FOUND
+            }
+            {error_type}::{validation_variant}(msg) => {
+                eprintln!("warn: validation: {msg}");
+                StatusCode::BAD_REQUEST
+            }
+            {error_type}::{external_variant}(msg) => {
+                eprintln!("error: upstream: {msg}");
+                StatusCode::BAD_GATEWAY
+            }
+        }
+    }
+
+    /// Serialize for HTTP JSON, omitting fields annotated role:secret.
+    /// Persistence (repos) uses full `Serialize` — secrets still round-trip to storage.
+    pub fn veil_json_public<T: serde::Serialize>(value: &T) -> serde_json::Value {
+        let mut v = serde_json::to_value(value).unwrap_or_default();
+        veil_redact_secrets(&mut v);
+        v
+    }
+
+    pub fn veil_redact_secrets(v: &mut serde_json::Value) {
+        // Scalar secret fields from role:secret annotations (INV-001).
+        const SECRET_KEYS: &[&str] = &[{secret_keys}];
+        // Header maps/lists often carry API keys — redact values, keep names.
+        const HEADER_CONTAINERS: &[&str] = &["headers"];
+        match v {
+            serde_json::Value::Object(map) => {
+                for k in SECRET_KEYS {
+                    map.remove(*k);
+                }
+                for hk in HEADER_CONTAINERS {
+                    if let Some(headers) = map.get_mut(*hk) {
+                        veil_redact_header_values(headers);
+                    }
+                }
+                for (_k, child) in map.iter_mut() {
+                    veil_redact_secrets(child);
+                }
+            }
+            serde_json::Value::Array(items) => {
+                for item in items.iter_mut() {
+                    veil_redact_secrets(item);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    pub fn veil_redact_header_values(v: &mut serde_json::Value) {
+        match v {
+            serde_json::Value::Array(items) => {
+                for item in items.iter_mut() {
+                    if let serde_json::Value::Object(h) = item {
+                        if h.contains_key("value") {
+                            h.insert("value".into(), serde_json::Value::String(String::new()));
+                        }
+                        if h.contains_key("Value") {
+                            h.insert("Value".into(), serde_json::Value::String(String::new()));
+                        }
+                    }
+                }
+            }
+            serde_json::Value::Object(map) => {
+                // Map-shaped headers: redact all values
+                for (_k, val) in map.iter_mut() {
+                    *val = serde_json::Value::String(String::new());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// HTML `<input type="date">` and form empties → JSON values chrono/serde accept.
+    /// `""` → null; bare `YYYY-MM-DD` → `YYYY-MM-DDT00:00:00Z`.
+    pub fn veil_normalize_body_dt(v: Value) -> Value {
+        match v {
+            Value::String(s) if s.is_empty() => Value::Null,
+            Value::String(s)
+                if s.len() == 10
+                    && s.as_bytes().get(4) == Some(&b'-')
+                    && s.as_bytes().get(7) == Some(&b'-')
+                    && !s.contains('T') =>
+            {
+                Value::String(format!("{s}T00:00:00Z"))
+            }
+            other => other,
+        }
+    }
