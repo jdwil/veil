@@ -2263,7 +2263,7 @@ fn lower_guard_action_with_args() {
     };
     let ts = lower_to_ts(&Expr::Action(action), &test_ctx());
     let output = emit_ts(&ts);
-    assert!(output.contains("!(isValid)"), "output: {}", output);
+    assert!(output.contains("!isValid"), "output: {}", output);
     assert!(output.contains("throw new Error(\"validation failed\")"), "output: {}", output);
 }
 
