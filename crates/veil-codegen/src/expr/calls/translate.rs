@@ -1232,14 +1232,8 @@ fn lower_local_call(call: &CallExpr, ctx: &GenCtx, _args_ir: Vec<RustExpr>) -> R
         if ctx.name_to_shape.get(type_name) == Some(&Shape::Trait) {
             let bare_ty = peel_dyn_trait_name(type_name).unwrap_or_else(|| type_name.to_string());
             let fallible = call.method.ends_with('!')
-                || ctx
-                    .stubs
-                    .type_fallible_methods
-                    .contains(&(bare_ty, method_name.clone()))
-                || ctx
-                    .stubs
-                    .type_fallible_methods
-                    .contains(&(type_name.to_string(), method_name.clone()));
+                || ctx.is_method_fallible(&bare_ty, &method_name)
+                || ctx.is_method_fallible(type_name, &method_name);
             return finished_method(
                 target,
                 method_name,
@@ -1429,9 +1423,9 @@ fn lower_unknown_target_call(
         };
         let m = rust_method_name(&call.method);
         let bare = call.method.trim_end_matches(['!', '?']);
-        let suffix = if ctx.stubs.async_fallible_methods.contains(bare) {
+        let suffix = if ctx.is_method_async_fallible(struct_name, bare) {
             CallFinish::AwaitMapErr
-        } else if ctx.stubs.fallible_methods.contains(bare) {
+        } else if ctx.is_method_fallible(struct_name, bare) || ctx.is_stub_method_fallible_global(bare) {
             CallFinish::Try
         } else {
             CallFinish::Bare
@@ -1441,7 +1435,7 @@ fn lower_unknown_target_call(
     let target_snake = to_snake(&call.target);
     if ctx.known_modules.contains(&target_snake) {
         let m = to_snake(&call.method);
-        let suffix = if ctx.stubs.fallible_methods.contains(&call.method)
+        let suffix = if ctx.is_stub_method_fallible_global(&call.method)
             || call.method == "from_str"
             || call.method == "to_string"
             || call.method == "parse"

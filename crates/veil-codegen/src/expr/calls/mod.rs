@@ -32,14 +32,10 @@ pub fn receiver_call_finish(recv: &Expr, method: &str, ctx: &GenCtx) -> CallFini
                 || ctx.stubs.stub_type_crate.contains_key(k.as_str())
         });
         let typed_async = keys.iter().any(|k| {
-            ctx.stubs
-                .type_async_fallible_methods
-                .contains(&(k.clone(), method.to_string()))
+            ctx.is_method_async_fallible(k, method)
         });
         let typed_fall = keys.iter().any(|k| {
-            ctx.stubs
-                .type_fallible_methods
-                .contains(&(k.clone(), method.to_string()))
+            ctx.is_method_fallible(k, method)
         });
 
         if is_trait {

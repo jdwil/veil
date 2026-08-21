@@ -11,7 +11,7 @@ use veil_ir::layer::{Shape, LayerRegistry};
 
 use crate::rust::to_snake;
 
-use super::types::{extract_inner_type, type_name_simple, register_enum_variant, rust_field_is_defaultable};
+use super::types::{type_name_simple, register_enum_variant, rust_field_is_defaultable};
 
 /// Error model: names for the domain error type and its variants.
 /// Populated from layer-declared error types (ddd.layer `DomainError`).
@@ -126,7 +126,7 @@ impl Default for OwnershipContext {
     fn default() -> Self { Self::new() }
 }
 
-/// Stub context — crate/type mappings, fallibility metadata, free functions.
+/// Stub context — crate/type mappings, free functions.
 #[derive(Clone)]
 pub struct StubContext {
     /// Maps stub struct names to (crate_name, original_type_name) so codegen
@@ -136,22 +136,6 @@ pub struct StubContext {
     /// Stub free-fn constructors: type name → typed free-fn name + type-param template.
     /// From stub struct metadata `typed_variant` / `typed_type_params` (e.g. query_as).
     pub stub_typed_ctors: HashMap<String, (String, String)>,
-    /// Methods whose stub return type is `Res!` / fallible (e.g. builder `send`).
-    pub fallible_methods: HashSet<String>,
-    /// Methods that exist with a NON-fallible return on at least one stub type.
-    /// When a method is in both `fallible_methods` and `non_fallible_methods`,
-    /// the untyped-receiver fallback must NOT apply the fallible suffix (ambiguous).
-    pub non_fallible_methods: HashSet<String>,
-    /// Per-type fallible method tracking: (TypeName, method_name) pairs where the
-    /// method IS fallible on that specific type. Used for precise disambiguation.
-    pub type_fallible_methods: HashSet<(String, String)>,
-    /// Methods whose stub return type is async AND fallible (e.g. `BoxFuture<Res!<...>>`
-    /// or declared with `Res!` on a struct that acts as an executor).
-    /// Global name set — last-resort only; prefer `type_async_fallible_methods`.
-    pub async_fallible_methods: HashSet<String>,
-    /// Per-type async+fallible methods: (TypeName, method). Stub/layer metadata,
-    /// never a hardcoded method-name list in the backend.
-    pub type_async_fallible_methods: HashSet<(String, String)>,
     /// Stub package free-fn roots: use-alias / crate name → rust crate ident.
     /// e.g. `crypto` / `relay_crypto` / `relay-crypto` → `relay_crypto`.
     pub stub_pkg_crate: HashMap<String, String>,
@@ -164,11 +148,6 @@ impl StubContext {
         StubContext {
             stub_type_crate: HashMap::new(),
             stub_typed_ctors: HashMap::new(),
-            fallible_methods: HashSet::new(),
-            non_fallible_methods: HashSet::new(),
-            type_fallible_methods: HashSet::new(),
-            async_fallible_methods: HashSet::new(),
-            type_async_fallible_methods: HashSet::new(),
             stub_pkg_crate: HashMap::new(),
             stub_free_fns: HashMap::new(),
         }
@@ -319,7 +298,7 @@ impl GenCtx {
         ];
         for m in &keys {
             if let Some(t) = self.types.method_returns.get(&(target.to_string(), m.clone())) {
-                return Some(t.as_str());
+                return Some(strip_result_wrapper(t));
             }
         }
         // If target is a local, look up its type and check struct methods
@@ -329,7 +308,7 @@ impl GenCtx {
                     .types.method_returns
                     .get(&(type_name.clone(), m.clone()))
                 {
-                    return Some(t.as_str());
+                    return Some(strip_result_wrapper(t));
                 }
             }
         }
@@ -343,6 +322,90 @@ impl GenCtx {
         self.types.struct_fields.get(type_name)
             .and_then(|fields| fields.iter().find(|(n, _)| n == field_name))
             .map(|(_, t)| t.as_str())
+    }
+
+    /// Is method `method` on type `type_name` fallible (returns Result)?
+    /// Checks method_returns for "Result<" prefix, method_lowers_to templates
+    /// for `map_err` / `?`, and the call-site bang suffix.
+    pub fn is_method_fallible(&self, type_name: &str, method: &str) -> bool {
+        let bare = method.trim_end_matches(['!', '?']);
+        // Check method_returns for Result type (trait methods store "Result<...>")
+        let keys = [
+            (type_name.to_string(), bare.to_string()),
+            (to_snake(type_name), bare.to_string()),
+            (type_name.to_string(), method.to_string()),
+        ];
+        for key in &keys {
+            if let Some(ret) = self.types.method_returns.get(key) {
+                if ret.starts_with("Result<") {
+                    return true;
+                }
+            }
+        }
+        // Check lowers_to template for fallibility markers
+        for key in &keys[..2] {
+            if let Some(targets) = self.method_lowers_to.get(key) {
+                if let Some(tmpl) = targets.get("rust") {
+                    if tmpl.contains("map_err") || tmpl.contains('?') {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    /// Is method `method` on type `type_name` async AND fallible?
+    /// Checks method_lowers_to templates for `.await` combined with `map_err`/`?`,
+    /// or method_returns for "AsyncResult<" prefix.
+    pub fn is_method_async_fallible(&self, type_name: &str, method: &str) -> bool {
+        let bare = method.trim_end_matches(['!', '?']);
+        let keys = [
+            (type_name.to_string(), bare.to_string()),
+            (to_snake(type_name), bare.to_string()),
+        ];
+        // Check method_returns for AsyncResult marker
+        for key in &keys {
+            if let Some(ret) = self.types.method_returns.get(key) {
+                if ret.starts_with("AsyncResult<") {
+                    return true;
+                }
+            }
+        }
+        // Check lowers_to template
+        for key in &keys {
+            if let Some(targets) = self.method_lowers_to.get(key) {
+                if let Some(tmpl) = targets.get("rust") {
+                    let has_await = tmpl.contains(".await");
+                    let has_err = tmpl.contains("map_err") || tmpl.contains('?');
+                    if has_await && has_err {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    /// Is method `method` (by bare name) known as fallible from any stub source?
+    /// Global name-based fallback for free-fn calls where type context is unavailable.
+    pub fn is_stub_method_fallible_global(&self, method: &str) -> bool {
+        let bare = method.trim_end_matches(['!', '?']);
+        // Check stub free_fns
+        self.stubs.stub_free_fns.values().any(|_| false)
+            || self.stubs.stub_free_fns.iter().any(|((_, name), fallible)| {
+                name == bare && *fallible
+            })
+    }
+
+    /// Is method `method` (by bare name) async from any source?
+    /// Global name-based check for TypeScript lowering where type context is unavailable.
+    pub fn is_stub_method_async_global(&self, method: &str) -> bool {
+        let bare = method.trim_end_matches(['!', '?']);
+        // Check all lowers_to templates for an async marker
+        self.method_lowers_to.iter().any(|((_, m), targets)| {
+            m == bare && targets.get("rust").map(|t| t.contains(".await")).unwrap_or(false)
+        })
     }
 
     /// Get the type of a method's parameter at a given position.
@@ -364,6 +427,16 @@ impl GenCtx {
 }
 
 /// Build a GenCtx populated with type information from the solution's constructs and loaded stubs.
+/// Strip "Result<...>" or "AsyncResult<...>" wrapper from a type string, returning the inner type.
+/// Preserves existing behavior where callers expect unwrapped types from return_type_of.
+fn strip_result_wrapper(ty: &str) -> &str {
+    if let Some(inner) = ty.strip_prefix("Result<").or_else(|| ty.strip_prefix("AsyncResult<")) {
+        inner.strip_suffix('>').unwrap_or(inner)
+    } else {
+        ty
+    }
+}
+
 pub fn build_ctx_from_solution(solution: &Solution, name_to_shape: HashMap<String, Shape>, registry: &LayerRegistry) -> GenCtx {
     let mut ctx = GenCtx::new(name_to_shape);
 
@@ -371,21 +444,16 @@ pub fn build_ctx_from_solution(solution: &Solution, name_to_shape: HashMap<Strin
         // Record method return types for trait-shaped constructs
         if c.shape == Shape::Trait {
             for method in &c.methods {
+                let is_bang = method.name.ends_with('!');
                 let ret_type = method.return_type.as_ref()
-                    .map(extract_inner_type)
-                    .unwrap_or_else(|| "()".to_string());
+                    .map(|ty| match ty {
+                        TypeExpr::Result(Some(inner)) => format!("Result<{}>", type_name_simple(inner)),
+                        TypeExpr::Result(None) => "Result<()>".to_string(),
+                        other if is_bang => format!("Result<{}>", type_name_simple(other)),
+                        other => type_name_simple(other),
+                    })
+                    .unwrap_or_else(|| if is_bang { "Result<()>".to_string() } else { "()".to_string() });
                 let bare_method = method.name.trim_end_matches(['!', '?']).to_string();
-                // Res! / Result, or a bang on the signature, is fallible.
-                // Unit methods without bang must not get `.await?`.
-                let is_result = matches!(method.return_type, Some(TypeExpr::Result(_)));
-                if is_result || method.name.ends_with('!') {
-                    ctx.stubs.type_fallible_methods
-                        .insert((c.name.clone(), bare_method.clone()));
-                    ctx.stubs.type_fallible_methods
-                        .insert((to_snake(&c.name), bare_method.clone()));
-                    ctx.stubs.type_fallible_methods
-                        .insert((c.name.clone(), method.name.clone()));
-                }
                 // Register under PascalCase trait name (e.g. "CohortRepo", "find")
                 ctx.types.method_returns.insert(
                     (c.name.clone(), method.name.clone()),
@@ -583,13 +651,6 @@ pub fn build_ctx_from_solution(solution: &Solution, name_to_shape: HashMap<Strin
             let bare = ff.name.trim_end_matches(['!', '?']).to_string();
             let ret = ff.return_type.as_deref().unwrap_or("()");
             let fallible = ret.starts_with("Res!") || ret.starts_with("Res!<") || ret.contains("Res!");
-            if fallible {
-                ctx.stubs.fallible_methods.insert(ff.name.clone());
-                ctx.stubs.fallible_methods.insert(bare.clone());
-            } else {
-                ctx.stubs.non_fallible_methods.insert(ff.name.clone());
-                ctx.stubs.non_fallible_methods.insert(bare.clone());
-            }
             ctx.stubs.stub_free_fns
                 .insert((rust_crate.clone(), bare.clone()), fallible);
             // Register return type for type inference (crate name acts as "type"):
@@ -621,25 +682,8 @@ pub fn build_ctx_from_solution(solution: &Solution, name_to_shape: HashMap<Strin
             // Register struct methods under the aliased name
             for method in &s.methods {
                 let ret = method.return_type.as_deref().unwrap_or("()");
-                let fallible = ret.starts_with("Res!") || ret.starts_with("Res!<")
-                    || ret.contains("Res!");
-                let is_async_fallible = ret.contains("BoxFuture") && ret.contains("Res!")
-                    || (fallible && method.params.iter().any(|p| {
-                        // Methods taking an executor param (e.g. `executor: E`) are async
-                        p.0 == "executor" || p.0 == "pool"
-                    }));
-                if fallible {
-                    ctx.stubs.fallible_methods.insert(method.name.clone());
-                    ctx.stubs.type_fallible_methods.insert((type_name.clone(), method.name.clone()));
-                } else {
-                    ctx.stubs.non_fallible_methods.insert(method.name.clone());
-                }
-                if is_async_fallible {
-                    ctx.stubs.async_fallible_methods.insert(method.name.clone());
-                    ctx.stubs
-                        .type_async_fallible_methods
-                        .insert((type_name.clone(), method.name.clone()));
-                }
+                let is_fallible = ret.starts_with("Res!") || ret.starts_with("Res!<") || ret.contains("Res!");
+                let is_async = ret.contains("BoxFuture");
                 // Unwrap BoxFuture and Res! layers to get the actual value type.
                 let unwrapped = if ret.starts_with("BoxFuture<") && ret.ends_with('>') {
                     &ret["BoxFuture<".len()..ret.len()-1]
@@ -653,9 +697,18 @@ pub fn build_ctx_from_solution(solution: &Solution, name_to_shape: HashMap<Strin
                 } else {
                     unwrapped
                 };
+                // Store with Result<> wrapper when fallible so is_method_fallible can detect it.
+                // return_type_of strips the Result<> wrapper for callers.
+                let stored_type = if is_fallible && is_async {
+                    format!("AsyncResult<{inner}>")
+                } else if is_fallible {
+                    format!("Result<{inner}>")
+                } else {
+                    inner.to_string()
+                };
                 ctx.types.method_returns.insert(
                     (type_name.clone(), method.name.clone()),
-                    inner.to_string(),
+                    stored_type,
                 );
                 let param_types: Vec<String> = method
                     .params
@@ -735,13 +788,8 @@ pub fn build_ctx_from_solution(solution: &Solution, name_to_shape: HashMap<Strin
         for i in &stub.impls {
             for method in &i.methods {
                 let ret = method.return_type.as_deref().unwrap_or("()");
-                let fallible = ret.starts_with("Res!") || ret.starts_with("Res!<");
-                if fallible {
-                    ctx.stubs.fallible_methods.insert(method.name.clone());
-                    ctx.stubs.type_fallible_methods.insert((i.target.clone(), method.name.clone()));
-                } else {
-                    ctx.stubs.non_fallible_methods.insert(method.name.clone());
-                }
+                let is_fallible = ret.starts_with("Res!") || ret.starts_with("Res!<");
+                let is_async = ret.contains("BoxFuture");
                 // Unwrap BoxFuture and Res! layers to get the actual value type.
                 let unwrapped = if ret.starts_with("BoxFuture<") && ret.ends_with('>') {
                     &ret["BoxFuture<".len()..ret.len()-1]
@@ -755,9 +803,16 @@ pub fn build_ctx_from_solution(solution: &Solution, name_to_shape: HashMap<Strin
                 } else {
                     unwrapped
                 };
+                let stored_type = if is_fallible && is_async {
+                    format!("AsyncResult<{inner}>")
+                } else if is_fallible {
+                    format!("Result<{inner}>")
+                } else {
+                    inner.to_string()
+                };
                 ctx.types.method_returns.insert(
                     (i.target.clone(), method.name.clone()),
-                    inner.to_string(),
+                    stored_type,
                 );
             }
         }

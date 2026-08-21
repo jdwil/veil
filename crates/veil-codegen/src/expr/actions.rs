@@ -306,7 +306,7 @@ pub fn translate_action(a: &ActionExpr, ctx: &GenCtx) -> RustExpr {
                 Some(cond @ Expr::Call(c))
                     if !c.method.is_empty()
                         && (ctx.name_to_shape.contains_key(&c.target)
-                            || ctx.stubs.fallible_methods.contains(&c.method)
+                            || ctx.is_stub_method_fallible_global(&c.method)
                             || c.method == "validate") =>
                 {
                     map_err_ignore(strip_try_ir(lower_to_rust(cond, ctx)), err_node)

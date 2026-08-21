@@ -236,8 +236,8 @@ fn lower_receiver_method(recv: &Expr, method: &str, args: &[Expr], ctx: &GenCtx)
 
     // ── General method call ──────────────────────────────────────────────
     let lowered_args: Vec<TsExpr> = args.iter().map(|a| lower_to_ts(a, ctx)).collect();
-    let is_async = ctx.stubs.async_fallible_methods.contains(method_clean)
-        || ctx.stubs.fallible_methods.contains(method_clean);
+    let is_async = ctx.is_stub_method_async_global(method_clean)
+        || ctx.is_stub_method_fallible_global(method_clean);
 
     // is_async: true on MethodCall emits `await` — no extra Await wrapper needed
     TsExpr::MethodCall {

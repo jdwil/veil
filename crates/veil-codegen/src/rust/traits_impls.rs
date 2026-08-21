@@ -833,11 +833,6 @@ pub fn gen_impls(
                 ctx.types.method_params = seeded.types.method_params;
                 ctx.types.struct_fields = seeded.types.struct_fields;
                 ctx.stubs.stub_type_crate = seeded.stubs.stub_type_crate;
-                ctx.stubs.fallible_methods = seeded.stubs.fallible_methods;
-                ctx.stubs.non_fallible_methods = seeded.stubs.non_fallible_methods;
-                ctx.stubs.type_fallible_methods = seeded.stubs.type_fallible_methods;
-                ctx.stubs.async_fallible_methods = seeded.stubs.async_fallible_methods;
-                ctx.stubs.type_async_fallible_methods = seeded.stubs.type_async_fallible_methods;
                 ctx.stubs.stub_pkg_crate = seeded.stubs.stub_pkg_crate;
                 ctx.stubs.stub_free_fns = seeded.stubs.stub_free_fns;
                 ctx.async_fns = seeded.async_fns;
