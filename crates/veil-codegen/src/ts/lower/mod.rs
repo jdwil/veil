@@ -1,21 +1,20 @@
 //! VEIL AST → TsExpr lowering.
 //!
 //! `lower_to_ts` converts a VEIL `Expr` into the typed `TsExpr` IR.
-//! Unhandled expressions fall back to `TsExpr::Raw(expr_to_ts(...))` wrapping
-//! the existing string-based codegen path during migration.
+//! All expression variants are handled structurally — no fallback to
+//! legacy string-based codegen.
 
 use veil_ir::ast::{BinOp, Expr, Field, IfExprData, MatchArm, Pattern, StringPart, TypeExpr, UnaryOp};
 use crate::expr::GenCtx;
-use crate::ts::legacy::expr_to_ts;
 use super::expr::{TsBinOp, TsExpr, TsPattern, TsTemplatePart, TsType, TsUnaryOp};
 
 // ─── Public Entry Point ──────────────────────────────────────────────────────
 
 /// Lower a VEIL expression to a TypeScript IR node.
 ///
-/// Handles literals, identifiers, field access, operators, bindings, and
-/// simple wrappers (return, await, try, require, break, continue).
-/// All other expressions fall through to the `Raw` escape hatch.
+/// Handles all VEIL expression variants structurally: literals, identifiers,
+/// field access, operators, bindings, wrappers, control flow, collections,
+/// calls, and actions. `Expr::Stock` is unreachable (expanded before codegen).
 pub fn lower_to_ts(expr: &Expr, ctx: &GenCtx) -> TsExpr {
     match expr {
         // ── Batch 1: Literals ────────────────────────────────────────────
@@ -63,7 +62,7 @@ pub fn lower_to_ts(expr: &Expr, ctx: &GenCtx) -> TsExpr {
         // ── Batch 5: Simple Wrappers ─────────────────────────────────────
         Expr::Return(inner) => {
             match inner.as_ref() {
-                Expr::Ident(n) if n == "Ok" => TsExpr::Raw("return".to_string()),
+                Expr::Ident(n) if n == "Ok" => TsExpr::Return(Box::new(TsExpr::UndefinedLit)),
                 Expr::Ident(n) if n == "null" || n == "None" => {
                     TsExpr::Return(Box::new(TsExpr::NullLit))
                 }
@@ -118,10 +117,25 @@ pub fn lower_to_ts(expr: &Expr, ctx: &GenCtx) -> TsExpr {
             ty: map_cast_type(ty_name),
         },
         Expr::Closure { params, body } => lower_closure(params, body, ctx),
-        // Range has no native TS equivalent — leave as escape hatch.
-        // TS lacks a built-in range type; emitting Array.from or a helper
-        // would require runtime assumptions. Raw fallback preserves intent.
-        Expr::Range { .. } => TsExpr::Raw(expr_to_ts(expr, 0)),
+        // Range has no native TS equivalent — emit a comment-annotated array.
+        // TS lacks a built-in range type; preserves start/end for intent.
+        Expr::Range { start, end, .. } => {
+            let start_expr = start
+                .as_ref()
+                .map(|e| lower_to_ts(e, ctx))
+                .unwrap_or(TsExpr::IntLit(0));
+            let end_expr = end
+                .as_ref()
+                .map(|e| lower_to_ts(e, ctx))
+                .unwrap_or_else(|| TsExpr::Ident {
+                    name: "Infinity".to_string(),
+                    ty: Some(TsType::Number),
+                });
+            TsExpr::ArrayLit {
+                items: vec![start_expr, end_expr],
+                ty: None,
+            }
+        }
         Expr::IfLet { pattern: _, expr: inner, then_body, else_body } => {
             lower_if_let(inner, then_body, else_body.as_deref(), ctx)
         }
@@ -135,8 +149,8 @@ pub fn lower_to_ts(expr: &Expr, ctx: &GenCtx) -> TsExpr {
         // ── Batch 10: Actions ────────────────────────────────────────────
         Expr::Action(action) => lower_action(action, ctx),
 
-        // ── Fallback: delegate to old string-based codegen ───────────────
-        _ => TsExpr::Raw(expr_to_ts(expr, 0)),
+        // ── Stock: transpile-time marker, never reaches codegen ─────────────
+        Expr::Stock => unreachable!("Expr::Stock should be expanded before codegen"),
     }
 }
 
@@ -158,7 +172,7 @@ fn lower_string_interp(parts: &[StringPart], ctx: &GenCtx) -> TsExpr {
 fn lower_ident(name: &str, ctx: &GenCtx) -> TsExpr {
     match name {
         "null" | "None" => TsExpr::NullLit,
-        "noop" => TsExpr::Raw(String::new()),
+        "noop" => TsExpr::Noop,
         _ => {
             let ty = ctx
                 .types
@@ -279,12 +293,29 @@ fn pattern_name(pat: &Pattern) -> String {
 
 // ─── Batch 5: Require ───────────────────────────────────────────────────────
 
-fn lower_require(inner: &Expr, _ctx: &GenCtx) -> TsExpr {
-    // `require expr` → null check: if (expr == null) throw new Error("NotFound"); expr
-    // Emit as the IIFE pattern: ((v) ?? (() => { throw new Error("NotFound"); })())
-    // Use the raw pattern matching the old codegen for compatibility:
-    let raw = expr_to_ts(&Expr::Require(Box::new(inner.clone())), 0);
-    TsExpr::Raw(raw)
+fn lower_require(inner: &Expr, ctx: &GenCtx) -> TsExpr {
+    // `require expr` → null-check IIFE: `(expr) ?? (() => { throw new Error("NotFound"); })()`
+    // Structurally: NullishCoalesce { left: inner, right: throw-IIFE }
+    let value = lower_to_ts(inner, ctx);
+    let throw_iife = TsExpr::FnCall {
+        name: String::new(),
+        args: vec![TsExpr::ArrowFn {
+            params: vec![],
+            body: vec![TsExpr::Throw {
+                message: Box::new(TsExpr::NewCall {
+                    class: "Error".to_string(),
+                    args: vec![TsExpr::StringLit("NotFound".to_string())],
+                    ty: None,
+                }),
+            }],
+            is_async: false,
+        }],
+        ty: None,
+    };
+    TsExpr::NullishCoalesce {
+        left: Box::new(value),
+        right: Box::new(throw_iife),
+    }
 }
 
 // ─── Block Helper ────────────────────────────────────────────────────────────

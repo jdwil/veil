@@ -24,7 +24,7 @@ use crate::rust::build_name_to_shape;
 
 use super::api_client::{TsFile, TsProject};
 use super::emit::emit_ts;
-use super::lower::{to_camel_case, type_to_ts, infer_field_type_ts};
+use super::lower::{lower_to_ts, to_camel_case, type_to_ts, infer_field_type_ts};
 use super::transforms::detect_async;
 
 // ─── Public Entry Point ──────────────────────────────────────────────────────
@@ -635,6 +635,7 @@ fn process_for_loop(input: &str, block_name: &str, fields: &[(String, String, St
 
 /// Collect fields from a named block as (name, type_string, default_string) tuples.
 fn collect_block_fields(c: &Construct, block_keyword: &str) -> Vec<(String, String, String)> {
+    let default_ctx = GenCtx::new(std::collections::HashMap::new());
     c.blocks.iter()
         .filter(|b| b.keyword == block_keyword)
         .flat_map(|b| b.fields.iter())
@@ -644,7 +645,7 @@ fn collect_block_fields(c: &Construct, block_keyword: &str) -> Vec<(String, Stri
                 ty => type_to_ts(ty),
             };
             let default = f.default_expr.as_ref()
-                .map(|e| crate::ts::legacy::expr_to_ts(e, 0))
+                .map(|e| emit_ts(&lower_to_ts(e, &default_ctx)))
                 .unwrap_or_default();
             (f.name.clone(), ty, default)
         })
