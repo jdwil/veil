@@ -256,25 +256,29 @@ a skilled human would write for that meaning.
 | Layer semantics | Same struct emission regardless of layer | ValueObject → derives `Eq, Hash`, no `&mut self` methods; Entity → identity-bearing; Event → `Clone + Serialize`, immutable |
 | Expression composition | Render sub-expressions to strings then concatenate | Compose a typed expression tree, then emit; never patch rendered text after the fact |
 
-### The lowering pipeline (as it must work)
+### The lowering pipeline (target architecture)
 
 ```
 VEIL source (parse)
      ↓
-  Typed expression IR  ←─── type inference resolves ALL expressions,
-     ↓                       not just literals/idents/calls
-  Semantic analysis    ←─── ownership, lifetime, move/borrow, mutability
-     ↓                       determined from the expression tree
-  Target lowering      ←─── layer policies consulted: constraints,
-     ↓                       lowers_to, emit_to sections, codegen blocks
-  Surface emission     ←─── final Rust/TS/Swift text produced from a
-                             structured target-specific AST, never from
-                             format!() string interpolation of sub-expressions
+  AST + built-in analysis  ←─── use_count, in_loop, in_closure,
+     ↓                          type resolution (universal, target-agnostic)
+  Layer-declared passes    ←─── type mapping, ownership, null safety,
+     ↓                          async marking — rules read analysis,
+     ↓                          annotate/transform the AST
+  Emit pass (templates)    ←─── layer templates render annotated AST
+     ↓                          to target text, reading pass annotations
+  Generated project files
 ```
 
-Each stage must be **complete** — no expression variant returning `None` from
-type inference, no catch-all match arm emitting `todo!()`, no heuristic that
-guesses when the type system should know.
+The engine provides the pass executor, rule evaluator, and built-in analysis.
+ALL target-language intelligence lives in layers. Adding a new target = writing
+a .layer file with type mapping + ownership/safety passes + emit templates.
+
+Each pass declares rules with predicates (`when: expr.use_count > 1 &&
+!expr.type.is_copy`) and actions (`annotate: ownership = "clone"`). Passes
+compose across layers (higher priority overrides). The emit pass renders
+the annotated AST using templates that read the annotations.
 
 ### Consequences for implementation
 
@@ -414,30 +418,23 @@ works **without** engine or viewer code changes.
 
 ### Invariant status (honest assessment)
 
-The invariant **holds** for the parser, IR builder, and viewer. It does
-**NOT** hold for codegen today:
+The invariant **holds across the entire pipeline** — parser, IR builder,
+viewer, AND codegen. As of the Aug 2026 refactoring:
 
-- The generation dispatch (`generate.rs`) does NOT branch on subkind or
-  `is_a` strings — it routes by structural role (group, construct, field).
-  DDD-specific handling lives in `application.rs` where ApplicationService
-  and DomainService flows are generated, but this is driven by construct
-  roles not string matching on keywords.
-- Layer `emit_to` sections: **derives** and **trait_attrs** are consumed
-  by the backend (wired through `gen_module_crate`). **fn_attrs** is declared
-  in `rust.layer` (emits "async") but not consumed because the backend
-  hardcodes `pub async fn` directly — documented, not a functional gap since
-  all fn-shaped constructs are async today.
-- Layer constraints (`immutable`, `no_identity`, `equality_by_value`) are
-  validated and **partially consulted during code emission** — immutable
-  constructs get `&self` methods (not `&mut self`). Full constraint-driven
-  emission (e.g., suppressing Clone on immutable types) is incomplete.
-- Custom roles declared by new layers have no effect unless the backend
-  hardcodes handling for that specific role string.
+- Zero references to axum, DomainError, Svelte, InProcessBus, saga,
+  AllowAllAuth, or any DDD keyword in the codegen engine code
+- All framework code (HTTP harness, bus routing, auth, Svelte components)
+  lives in layer templates and declare blocks
+- Error model is fully layer-declared (ddd.layer provides DomainError;
+  projects without it must provide their own or veil check refuses)
+- async/sync comes from runtime layers (tokio.layer), not engine defaults
+- The engine's fallback when no layer provides policy is minimal valid
+  output (plain fn, pub, no derives beyond what the layer declares)
 
-These violations mean a new layer that introduces novel fn-shaped or
-struct-shaped constructs will NOT get intelligent codegen treatment — it
-will fall through to generic emission that ignores its declared semantics.
-Fixing this is the highest-priority codegen work.
+**Remaining architectural step:** The target backends (src/rust/, src/ts/)
+are still compiled Rust code in the engine. The multi-pass layer-driven
+pipeline (see Strategic Sequencing #1) will migrate these to layer-declared
+passes + emit templates, making the engine fully target-agnostic.
 
 ### Invariant hygiene
 
@@ -672,34 +669,33 @@ ui/                      — ProductHost SPA (projects, review/sign-off, in-shel
 
 ## Current State
 
-The zero-domain-knowledge invariant **holds** for the parser, IR builder, and
-viewer. It does **not yet hold** for codegen — see "Invariant status" above.
-Example workspaces generate Rust that compiles cleanly for simple and moderate
-patterns (ladder l0/l1, multi_harness). Complex examples (customer_onboarding)
-have known unstubbed externals and correctly emit `compile_error!()` at build
-time (fail-closed).
+The zero-domain-knowledge invariant **holds across the entire pipeline**:
+parser, IR builder, viewer, AND codegen. The engine has zero references to
+axum, DomainError, Svelte, bus routing, saga, or any other domain/framework
+concept. All target-specific and domain-specific code lives in layers.
 
-**Expression codegen is IR-based.** The production path is:
-`expr_to_rust → lower_to_rust (typed RustExpr IR) → emit()`. The legacy
-string-interpolation path (`legacy_expr_to_rust`) has been deleted. All ~34
-expression variants are handled natively in `lower_to_rust`. String-inspection
-heuristics for type inference have been removed.
+**Codegen architecture (current):** Target-specific backends (src/rust/,
+src/ts/) with structural IRs (RustExpr, TsExpr), ownership analysis, and
+layer-driven policy (emit_to, lowers_to, construct templates). This works
+but requires engine-side code per target.
 
-**Error model is parameterized.** All expression-level error generation uses
-`ctx.error_model` (not hardcoded `DomainError::` strings). Infrastructure
-generators (harness, type definitions) use the default model.
+**Codegen architecture (next):** Multi-pass layer-driven pipeline. Layers
+declare passes (type mapping, ownership, null safety) with rules that read
+engine-provided analysis. Engine has zero target knowledge. See
+`veil-codegen-multipass-layer-driven` spec. Migration: ~20-25 sessions.
 
-**Generated code is fail-closed.** No `todo!()`, `unreachable!()`, or
-`unimplemented!()` in generated code. Unstubbed externals, empty adapters, and
-unknown types emit `compile_error!()` — visible at build time.
+**Template system:** Conditionals, iteration over children with role
+filtering, field introspection, nested resolution, annotation access. Layers
+can generate any framework-specific code (axum harness, Svelte components)
+through templates alone.
 
-**Clippy passes.** `cargo clippy -p veil-codegen --no-deps -- -D warnings`
-produces zero warnings. Generated Rust for fixture examples passes
-`cargo clippy -- -D warnings`.
+**Targets:** Rust (primary, structural IR + ownership + clippy-clean output),
+TypeScript (structural IR, full expression coverage), HTML5 and CSS (emit
+functions). All targets have snapshot tests.
 
-TypeScript generation exists; full UI/structure parity and additional backends
-are incomplete. The TypeScript backend shares no lowering infrastructure with
-the Rust backend — each is a standalone implementation.
+**Quality bar:** Zero clippy warnings on engine. Generated Rust passes clippy.
+Fail-closed (compile_error!, never todo!). Snapshot tests lock output.
+All workspace tests pass (zero failures).
 
 **File types:** top-level unit is `pkg` only. Never author `sol`.
 Deployment topology is manifest + runtime, not a separate “solution” kind.
@@ -763,25 +759,24 @@ Implementation map (summary):
 
 Not a sprint plan — product order of operations:
 
-1. **Intelligent codegen for Rust** — the codegen must produce code that
-   passes clippy, reads idiomatically, and respects layer-declared semantics.
-   This requires: completing type inference for all expression forms,
-   replacing string-interpolation emission with structured expression
-   composition, wiring up layer `emit_to` / constraint / `lowers_to`
-   consumption, and eliminating hardcoded DDD/module-name special cases.
-   **This is the critical path.** Without it, VEIL is a dumb mapper with
-   a nice vocabulary layer.
+1. **Multi-pass layer-driven compiler** — migrate target-specific backends
+   (src/rust/, src/ts/) into layer-declared passes + emit templates. The
+   engine provides: pass executor, rule evaluator, built-in analysis
+   (use_count, type resolution, scope detection). Layers provide: type
+   mapping, ownership rules, null safety, async marking, emit templates.
+   Adding a new target = writing a layer file. This is the critical path
+   to VEIL being a true multi-target compiler, not a Rust code generator
+   with a TS port.
 2. **Dual-loop excellence on the current surface** — world-class `check` +
    deterministic codegen; topology and critical-body review UX; **visible
    agency** (human-speed simulation, IDE auto-open, multi-project indicators)
-   and first-class outstanding-change **sign-off**; Rust primary, TS/Svelte
-   secondary with honest capabilities.
-3. **Semantic IR hardening** — effects, errors, async, ownership
-   capabilities; purge engine domain heuristics into layers. Extract shared
-   lowering abstractions so targets interpret a common typed IR rather than
-   each reimplementing expression translation from scratch.
-4. **Parity by program class** — portable application logic → services/
-   adapters → structured UI (retire raw templates) → more backends →
+   and first-class outstanding-change **sign-off**; multi-target with honest
+   capabilities.
+3. **Target expansion** — Go, Python, Swift, Kotlin targets as layer files.
+   Each requires: type mapping pass + emit templates + project layout
+   template. No engine changes.
+4. **Escape-hatch debt burn-down** — measure and reduce raw/stub/untyped
+   surface in real trees (`examples/`, `runtime/`).
    library-quality modules.
 5. **Escape-hatch debt burn-down** — measure and reduce raw/stub/untyped
    surface in real trees (`examples/`, `runtime/`).
