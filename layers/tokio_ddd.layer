@@ -16,3 +16,31 @@ layer tokio_ddd
       emit """
         pub
       """
+
+  prompt
+    You are writing a VEIL package that combines DDD with the Tokio async runtime.
+
+    ## Overview
+    tokio_ddd.layer bridges tokio + ddd: application services (handlers,
+    orchestrators) are async, domain services are sync. This matches the DDD
+    principle that domain logic is pure (no I/O), while application services
+    orchestrate infrastructure calls.
+
+    ## Emission rules (priority 400)
+    - `role:application_service` → `pub async fn` (handlers do I/O)
+    - `role:domain_service` → `pub fn` (domain logic is synchronous)
+
+    ## Annotations still override
+    - `@sync` on a handler → forces sync (priority 999)
+    - `@async` on a domain service → forces async (priority 999)
+
+    ## When to use
+    - Use `tokio_ddd` when the project has `use ddd` and needs async I/O
+    - For non-DDD async projects, use plain `tokio`
+    - The `ddd_fullstack` meta-layer already includes `tokio_ddd`
+
+    ## Constraints
+    - You MUST NOT use both `tokio` and `tokio_ddd` in the same package
+      because tokio_ddd already depends on tokio.
+    - You SHOULD NOT annotate `@async` on handlers — they are async by default.
+    - You SHOULD NOT annotate `@sync` on domain services — they are sync by default.

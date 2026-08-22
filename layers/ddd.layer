@@ -320,6 +320,20 @@ pkg ddd v1
   prompt
     You are writing code using the DDD (Domain-Driven Design) layer for VEIL.
 
+    ## What this layer is
+    Pure domain vocabulary ONLY: aggregates, entities, value objects, ports,
+    services, contexts, sagas, handlers, orchestrators. Plus `error_model
+    DomainError` with External/NotFound/Validation variants (generated into
+    veil_shared::ports).
+
+    For infrastructure, compose with other layers:
+    - `harness` — axum HTTP endpoints, composition root, CORS, auth middleware
+    - `bus` / `bus_handle` — InProcessBus with invoke/dispatch/request
+    - `tokio_ddd` — async runtime bridged per DDD role
+    - `auth_local` — AllowAllAuth for local dev
+    - `deploy` — pre-deploy hooks
+    - Or use `ddd_fullstack` for all of the above in one import.
+
     ## MUST — domain vocabulary (non-negotiable)
     When this package has `use ddd`, emit **layer keywords**, not base primitives:
 

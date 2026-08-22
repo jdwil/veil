@@ -26,3 +26,29 @@ layer tokio
       emit """
         pub async
       """
+
+  prompt
+    You are writing a VEIL package that uses the Tokio async runtime.
+
+    ## Overview
+    tokio.layer provides the async runtime for Rust projects. When loaded, ALL
+    fn-shaped constructs default to `pub async fn` via `emit_to "fn_attrs"`
+    at priority 200 (overriding rust.layer's sync default at priority 100).
+
+    ## Annotations
+    - `@sync` — force a specific function to be synchronous (priority 999)
+    - `@async` — force a specific function to be async (priority 999, useful
+      in sync-default contexts like tokio_ddd domain services)
+
+    ## When to use
+    - Use `tokio` for pure Rust projects that need async I/O
+    - Use `tokio_ddd` instead if the project also uses `ddd` — it bridges
+      async policy per DDD role (application services async, domain sync)
+
+    ## Constraints
+    - You MUST NOT use both `tokio` and `tokio_ddd` — tokio_ddd already
+      depends on tokio and adds role-based overrides.
+    - You SHOULD use `@sync` sparingly — only for pure compute functions
+      that genuinely must not be async.
+    - You MUST NOT manually write `async fn` in VEIL source — the layer
+      controls emission via emit_to priority resolution.

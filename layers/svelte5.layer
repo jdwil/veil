@@ -347,7 +347,7 @@ pkg svelte5 v1
     - You SHOULD annotate dual-loop backends with
       `@proxy("/api", "http://127.0.0.1:BACKEND_PORT")` **before** the `app` keyword
       (leading annotations attach to the next construct). sveltekit5 codegen then
-      emits Vite `server.proxy` for relative `/api/*` in the browser.
+      emits a SvelteKit `hooks.server.ts` proxy for relative `/api/*` requests.
 
     - You MUST declare component props as typed fields because they generate
       the `$props()` rune destructuring.

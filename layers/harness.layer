@@ -83,11 +83,23 @@ pkg harness v1
     for local dual-loop even **without** `@main`. Use `@main` (di.layer) when
     you need Bus composition roots or ProductHost.
 
+    Handler generation is fully template-driven: the engine computes semantic
+    `HarnessTemplateData` and this layer's `harness_template rust_bin` block
+    renders all axum code. No framework syntax lives in the engine.
+
     The engine generates `InProcessBus` into `veil_shared` only when a loaded
     layer declares routing statements (`mt SomePort.method`). DDD does not.
 
     For the product host: `link veil_server` + `@main` emits ProductHost listen
     (CAP-002/006). FileSystem / GitRepo are provided_by runtime (CAP-004).
+
+    ## Constructs
+    - `deps` (DepsBundle) — the application Deps type; fields are wired from
+      compose. Place in `group application`.
+    - `compose` (ComposeRoot) — declares which adapter satisfies each deps field.
+      Place in `group infrastructure`.
+    - `endpoint` (HttpEndpoint) — explicit HTTP endpoint: method, path, handler,
+      bind params. Place in `group presentation`.
 
     ## Local REST routes (dual-loop harness)
     - Declare first-class `endpoint Name METHOD /path -> Handler` (or field form).
@@ -111,6 +123,8 @@ pkg harness v1
 
     ## Constraints
     - You MUST NOT rely on eternal handwritten bootstrap for new apps
+    - You MUST NOT reference engine internals — all framework code is in this
+      layer's templates (harness_template, shared_emit)
     - You SHOULD keep `@main` thin: wire + one demo invoke
     - For dual-loop REST APIs, declare `deps` / `compose` / `endpoint`
 

@@ -202,14 +202,24 @@ layer bus
     You are writing VEIL code that uses a message bus for inter-context communication.
 
     ## Overview
-    The `bus` layer provides three verbs for cross-boundary messaging:
+    The `bus` layer provides three statement verbs for cross-boundary messaging:
     - `invoke` — send a command, await a typed response
     - `dispatch` — fire-and-forget event
     - `request` — send a query, await a typed response
 
+    Each verb has a `lowers_to` template that produces the JSON envelope call
+    (`{ "type": target, "payload": serde_json::to_value(&args) }`). The engine
+    never knows this is a "bus" — it sees a trait dep call lowered by the template.
+
+    ## Declare block
+    The layer declares `trait Bus: Send + Sync` with invoke/dispatch/request
+    methods. `shared_emit rust` provides `InProcessBus` (local implementation)
+    and the handler registry (HANDLER_NAMES, register_all, handler_count) for
+    host integration.
+
     ## Usage
-    1. Declare a `port Bus` in your domain (or the layer-provided `Bus` trait is used).
-    2. Inject `@dep bus: Bus` on services that send messages.
+    1. A package `use bus` (or via ddd_fullstack / bus_handle) to load the vocab.
+    2. Inject `@dep bus: Bus` on handlers that send messages.
     3. Use statement verbs in flow steps:
        ```
        invoke ProcessOrder { order_id: id, amount: total }

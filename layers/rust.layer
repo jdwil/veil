@@ -43,3 +43,30 @@ layer rust
       emit """
         #[async_trait::async_trait]
       """
+
+  prompt
+    You are writing a VEIL package targeting Rust codegen.
+
+    ## Overview
+    rust.layer is the platform target layer for Rust code generation. It provides:
+    - Default struct derives via `emit_to "derives"` (Debug, Clone, PartialEq, Serialize, Deserialize)
+    - Trait attributes via `emit_to "trait_attrs"` (#[async_trait::async_trait])
+    - Constructor policy for smart-constructor auto-fields (created_at, updated_at, etc.)
+    - English REST name-derived routes (via rest_english) for solo Rust packages
+
+    Projects using Rust as their target should `use rust` (or a layer that
+    depends on it, such as `ddd` or `harness`).
+
+    ## What this layer does NOT provide
+    - Async runtime — use `tokio` (or `tokio_ddd` with DDD)
+    - Domain vocabulary — use `ddd` for aggregates, ports, handlers
+    - HTTP harness — use `harness` for axum endpoint generation
+    - DI annotations — use `di` for @dep/@pvd/@main
+
+    ## Constraints
+    - You MUST NOT override `emit_to "derives"` at a lower priority than 100
+      because rust.layer's defaults would mask your emission.
+    - You SHOULD rely on the default derives unless a construct genuinely needs
+      different traits (e.g., no PartialEq for types with floats).
+    - You MUST NOT hardcode `#[derive(...)]` in VEIL source — the layer
+      handles it via emit_to policy.
