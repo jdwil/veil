@@ -52,6 +52,21 @@ pkg harness v1
       bind: struct
     desc "Explicit HTTP endpoint — engineer-defined method/path/handler/binds"
 
+  # @secret — field must not appear in serialized API responses (Rust: skip_serializing).
+  # Engine keys off role:secret only (INV-001); products annotate fields explicitly.
+  # Lives in harness because the redaction code is emitted by the harness layer
+  # (veil_json_public / veil_redact_secrets in shared_emit rust_bin).
+  construct SecretField
+    kw secret
+    mt struct
+    desc "Secret — omit from outbound serialization (tokens, passwords)"
+    ann
+      secret: "Omit from serialization" field role:secret
+    visual
+      icon "🔒"
+      color "#ef4444"
+      label "Secret"
+
   # CAP-002 / CAP-004: system + host ports provided by runtime trampoline.
   # Declared as traits (core shape); host implements via ProductHost / LocalFs.
   declare

@@ -336,12 +336,16 @@ pub fn gen_struct(
 
     // ─── Phase 6: Constraint-driven emission ───────────────────────────
     // Look up layer constraints for this construct (equality_by_value, immutable).
+    // Also check annotations with matching roles — this allows non-DDD projects
+    // to use @immutable and @equality_by_value directly on any struct.
     let constraints: Vec<String> = registry
         .spec_for_construct(c)
         .map(|spec| spec.constraints.clone())
         .unwrap_or_default();
-    let has_equality_by_value = constraints.iter().any(|c| c == "equality_by_value");
-    let has_immutable = constraints.iter().any(|c| c == "immutable");
+    let has_equality_by_value = constraints.iter().any(|c| c == "equality_by_value")
+        || c.annotations.iter().any(|a| registry.annotation_has_role(&a.name, "equality_by_value"));
+    let has_immutable = constraints.iter().any(|c| c == "immutable")
+        || c.annotations.iter().any(|a| registry.annotation_has_role(&a.name, "immutable"));
 
     // Fields: direct plus struct-shaped named blocks (e.g. root).
     let mut fields: Vec<&Field> = c.fields.iter().collect();

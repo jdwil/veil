@@ -5157,6 +5157,8 @@ pkg bad v1
         assert!(reg.is_invariant_annotation("invariant"), "invariant role");
         assert!(reg.is_secret_annotation("secret"), "secret role");
         assert!(reg.is_permission_annotation("auth"), "permission role");
+        assert!(reg.annotation_has_role("immutable", "immutable"), "immutable role from base.layer");
+        assert!(reg.annotation_has_role("equality_by_value", "equality_by_value"), "equality_by_value role from base.layer");
         assert_eq!(reg.auth_policy.service_trait.as_deref(), Some("AuthService"));
         assert!(reg.bus_policy.strip_name_prefix.as_deref() == Some("Handle"));
         assert!(reg.http_name_policy.list_prefix.as_deref() == Some("List"));

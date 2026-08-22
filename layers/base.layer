@@ -73,6 +73,33 @@ pkg base v1
       label "Group"
     in mod
 
+  # ─── Universal Semantic Modifiers ─────────────────────────────────────────
+  # These annotations are available to ALL projects regardless of paradigm.
+  # DDD layers auto-apply them via constraints; non-DDD projects use them
+  # directly with @immutable or @equality_by_value on any struct-shaped type.
+
+  construct ImmutableMarker
+    kw immutable
+    mt struct
+    desc "Marker: struct cannot be mutated after creation (no &mut self methods)"
+    ann
+      immutable: "Value cannot change after creation" flag role:immutable
+    visual
+      icon "🔒"
+      color "#64748b"
+      label "Immutable"
+
+  construct EqualityByValueMarker
+    kw equality_by_value
+    mt struct
+    desc "Marker: equality determined by field contents, not identity/reference"
+    ann
+      equality_by_value: "Equality by field contents" flag role:equality_by_value
+    visual
+      icon "⚖️"
+      color "#64748b"
+      label "Value Equality"
+
   prompt
     You are writing VEIL code using the base layer primitives.
 
@@ -90,6 +117,16 @@ pkg base v1
     - `impl` — implementation of a trait for a struct
     - `mod` — module / namespace boundary
     - `group` — visual/organizational container (no codegen effect)
+
+    ## Universal Semantic Modifiers
+    Available to ALL projects regardless of paradigm:
+    - `@immutable` — struct cannot be mutated after creation. Rust: no `&mut self`
+      methods. TypeScript: all fields emit as `readonly`.
+    - `@equality_by_value` — equality is by field contents, not identity. Rust:
+      Eq + Hash derives. TypeScript: generates `TypeNameEquals(a, b)` helper.
+
+    DDD layers auto-apply these via constraints (ValueObject gets equality_by_value,
+    Event gets immutable). Non-DDD projects use them directly on any struct.
 
     ## Constraints
     - You SHOULD prefer domain-layer constructs over raw base primitives because

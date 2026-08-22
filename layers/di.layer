@@ -32,19 +32,6 @@ layer di
       color "#8b5cf6"
       label "Dependency"
 
-  # @secret — field must not appear in serialized API responses (Rust: skip_serializing).
-  # Engine keys off role:secret only (INV-001); products annotate fields explicitly.
-  construct SecretField
-    kw secret
-    mt struct
-    desc "Secret — omit from outbound serialization (tokens, passwords)"
-    ann
-      secret: "Omit from serialization" field role:secret
-    visual
-      icon "🔒"
-      color "#ef4444"
-      label "Secret"
-
   # @pvd — marks a fn as a provider/factory for a given type.
   # The annotation value is the type it satisfies.
   # Example:
@@ -129,19 +116,37 @@ layer di
         {{end}}
       """
 
+  codegen typescript
+    # TypeScript DI: dependency structs emit as classes with constructor injection
+    match struct where has_role("dependency")
+      emit """
+        export class {{name}} {
+            constructor(
+                {{for field in fields where annotation == "dep"}}public readonly {{field.name}}: {{field.ts_type}},
+                {{end}}
+            ) {}
+        }
+      """
+
   prompt
     You are writing VEIL code using the DI (Dependency Injection) layer.
 
     ## Overview
-    This layer provides annotations for expressing dependency relationships. It
-    works WITH other layers (especially ddd.layer) — you annotate fields with @dep
-    to declare what needs injecting, mark functions with @pvd to declare providers,
-    and mark bootstrap functions with @main to contribute to the composition root.
+    This layer provides annotations for expressing dependency relationships for
+    both Rust and TypeScript targets. It works WITH other layers (especially
+    ddd.layer) — you annotate fields with @dep to declare what needs injecting,
+    mark functions with @pvd to declare providers, and mark bootstrap functions
+    with @main to contribute to the composition root.
 
     ## Annotations
     - `@dep` — on a handler/struct input field: "this dependency is injected"
     - `@pvd` — on a fn: "this function creates/satisfies a dependency type"
     - `@main` — on a fn: "my steps contribute to the generated main()"
+    - `@shared` — on a field: "emit Arc/shared ownership wrapping" (Rust only)
+
+    ## Multi-Target Codegen
+    - Rust: @dep structs get `impl Type { pub fn new(...) -> Self }` constructor
+    - TypeScript: @dep structs emit as `export class Type { constructor(...) {} }`
 
     ## Constraints
     - You MUST annotate handler inputs that reference ports/traits with `@dep`

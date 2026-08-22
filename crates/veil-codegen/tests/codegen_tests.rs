@@ -2987,3 +2987,69 @@ fn ts_ir_tsconfig_has_strict_mode() {
     let out = generate_ts_ir_example(include_str!("../../../examples/customer_onboarding.veil"));
     assert!(out.contains("\"strict\": true"), "tsconfig missing strict mode");
 }
+
+
+/// Non-DDD: @equality_by_value annotation (from base.layer) adds Eq, Hash derives.
+#[test]
+fn annotation_equality_by_value_adds_eq_hash() {
+    // Uses ddd_fullstack stack but the struct uses base annotation, not DDD val keyword.
+    let src = r#"
+pkg Inventory
+  use ddd_fullstack
+  ctx Warehouse
+    @equality_by_value
+    struct Coordinate
+      x: Int
+      y: Int
+    ent Product
+      id: Id
+      name: Str
+"#;
+    let out = generate_example(src);
+    let lines: Vec<&str> = out.lines().collect();
+
+    // Coordinate has @equality_by_value annotation → Eq, Hash.
+    let coord_idx = lines.iter().position(|l| l.contains("pub struct Coordinate"));
+    let coord_derive = coord_idx
+        .and_then(|i| lines[..i].iter().rev().find(|l| l.contains("#[derive(")))
+        .copied()
+        .unwrap_or("");
+    assert!(
+        coord_derive.contains("Eq") && coord_derive.contains("Hash"),
+        "@equality_by_value annotation must produce Eq, Hash:\n{coord_derive}"
+    );
+
+    // Product entity does NOT have it.
+    let product_idx = lines.iter().position(|l| l.contains("pub struct Product"));
+    let product_derive = product_idx
+        .and_then(|i| lines[..i].iter().rev().find(|l| l.contains("#[derive(")))
+        .copied()
+        .unwrap_or("");
+    assert!(
+        !product_derive.contains("Hash"),
+        "Product without annotation must NOT derive Hash:\n{product_derive}"
+    );
+}
+
+/// Non-DDD: @immutable annotation (from base.layer) forces &self on methods.
+#[test]
+fn annotation_immutable_forces_shared_ref() {
+    let src = r#"
+pkg Inventory
+  use ddd_fullstack
+  ctx Warehouse
+    @immutable
+    struct Config
+      host: Str
+      port: Int
+      fn url()
+        ret f"{host}:{port}"
+"#;
+    let out = generate_example(src);
+    // @immutable annotation → method uses &self, not &mut self
+    assert!(
+        out.contains("fn url(&self)"),
+        "@immutable annotation must produce &self methods:\n{}",
+        out.lines().filter(|l| l.contains("fn url")).collect::<Vec<_>>().join("\n")
+    );
+}

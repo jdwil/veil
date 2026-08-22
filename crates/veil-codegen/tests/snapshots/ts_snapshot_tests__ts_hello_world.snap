@@ -1,6 +1,6 @@
 ---
 source: crates/veil-codegen/tests/ts_snapshot_tests.rs
-assertion_line: 146
+assertion_line: 91
 expression: out
 ---
 // ===== src/types.ts =====
@@ -17,6 +17,12 @@ export interface User {
 
 export interface Email {
   addr: string;
+}
+
+export function EmailEquals(a: Email, b: Email): boolean {
+  return (
+    a.addr === b.addr
+  );
 }
 
 
