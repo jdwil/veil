@@ -388,6 +388,68 @@ pub struct CodegenRule {
     pub priority: u32,
 }
 
+// ─── Layer Pass System ───────────────────────────────────────────────────────
+
+/// A pass declared by a layer: runs before or after the engine backend to
+/// annotate AST nodes based on predicate rules. Extension mechanism — does NOT
+/// replace the compiled engine backends.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PassSpec {
+    /// Pass name (e.g. "ownership", "async_marking").
+    pub name: String,
+    /// Execution priority — lower numbers run first.
+    pub priority: u32,
+    /// Whether this pass runs before or after the engine backend.
+    pub phase: PassPhase,
+    /// Rules within this pass (evaluated in order).
+    pub rules: Vec<RuleSpec>,
+    /// Which layer declared this pass.
+    pub layer: String,
+}
+
+/// When a pass executes relative to the engine backend.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PassPhase {
+    /// Runs before the engine backend — annotates AST for the backend to read.
+    Pre,
+    /// Runs after the engine backend — augments or transforms output.
+    Post,
+}
+
+/// A single rule within a pass: when a predicate matches, apply actions.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RuleSpec {
+    /// Rule name (e.g. "last_use_moves", "multi_use_clones").
+    pub name: String,
+    /// Predicate expression evaluated against each node context.
+    /// Example: `expr.kind == "ident" && expr.use_count == 1`
+    pub when: String,
+    /// Actions to apply when the predicate matches.
+    pub actions: Vec<RuleAction>,
+}
+
+/// An action applied by a pass rule when its predicate matches.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum RuleAction {
+    /// Set an annotation key=value on the matched node.
+    Annotate { key: String, value: String },
+    /// Wrap the matched expression in a language construct.
+    Wrap(WrapKind),
+    /// Mark the node for removal from output.
+    Remove,
+}
+
+/// Wrap operations for expression nodes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum WrapKind {
+    Clone,
+    Borrow,
+    MutBorrow,
+    OptionalChain,
+    Try,
+    Await,
+}
+
 // ─── LayerRegistry ───────────────────────────────────────────────────────────
 
 /// Identity / FK edge policy (INV-006). Default: no `*_id` inference.
@@ -553,6 +615,8 @@ pub struct LayerRegistry {
     pub implicit_uses: Vec<String>,
     /// Codegen templates declared by loaded layers.
     pub codegen_templates: Vec<CodegenTemplate>,
+    /// Layer-declared passes (pre/post engine) for AST annotation.
+    pub passes: Vec<PassSpec>,
     /// Loaded third-party crate stubs.
     pub stubs: Vec<StubCrate>,
     /// External layer resolver — called when a layer isn't found locally or in system.
@@ -687,6 +751,7 @@ impl Default for LayerRegistry {
             layer_deps: HashMap::new(),
             implicit_uses: Vec::new(),
             codegen_templates: Vec::new(),
+            passes: Vec::new(),
             stubs: Vec::new(),
             external_resolver: None,
             source_resolver: None,
@@ -719,6 +784,7 @@ impl Clone for LayerRegistry {
             layer_deps: self.layer_deps.clone(),
             implicit_uses: self.implicit_uses.clone(),
             codegen_templates: self.codegen_templates.clone(),
+            passes: self.passes.clone(),
             stubs: self.stubs.clone(),
             external_resolver: None, // resolver is not cloneable — cleared on clone
             source_resolver: None, // resolver is not cloneable — cleared on clone
