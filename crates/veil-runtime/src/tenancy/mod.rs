@@ -17,7 +17,7 @@ pub use config::{ResolutionStrategy, TenantResolutionConfig};
 pub use fallback::FallbackResolver;
 pub use header::HeaderResolver;
 pub use lookup::LookupResolver;
-pub use middleware::{TenantResolutionLayer, TenantResolutionService};
+pub use middleware::{ResolvedTenant, TenantResolutionLayer, TenantResolutionService};
 pub use subdomain::SubdomainResolver;
 
 use async_trait::async_trait;

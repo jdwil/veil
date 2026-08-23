@@ -5,6 +5,7 @@
 //! Target: keep this file ≤ ~80 lines of process glue.
 
 mod artifact_registry;
+mod function_invoke;
 mod local_ports;
 mod platform;
 mod platform_http;
