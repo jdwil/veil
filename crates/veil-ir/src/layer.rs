@@ -1978,6 +1978,11 @@ impl LayerRegistry {
             self.codegen_templates.push(tpl);
         }
 
+        // Accumulate layer passes.
+        for pass in raw.passes {
+            self.passes.push(pass);
+        }
+
         // Accumulate declared method lowering templates.
         for (key, targets) in raw.method_lowers_to {
             self.method_lowers_to.entry(key).or_default().extend(targets);
@@ -3002,6 +3007,8 @@ pub struct RawLayer {
     pub prompt: Option<String>,
     /// Codegen template blocks declared by this layer.
     pub codegen_templates: Vec<CodegenTemplate>,
+    /// Layer-declared passes (pre/post engine) for AST annotation.
+    pub passes: Vec<PassSpec>,
     /// Per-target lowering templates for declared trait/struct methods.
     /// Key: `(TypeName, MethodName)`, Value: `{ target → template }`.
     pub method_lowers_to: HashMap<(String, String), HashMap<String, String>>,
@@ -3084,6 +3091,17 @@ pub fn parse_layer_file(content: &str, layer_name: &str) -> Result<RawLayer, Str
     let mut harness_template_target: String = String::new();
     let mut harness_template_base_indent: usize = 0;
     let mut harness_template_lines: Vec<String> = Vec::new();
+    // Pass block parsing state
+    let mut passes: Vec<PassSpec> = Vec::new();
+    let mut in_pass = false;
+    let mut pass_name: String = String::new();
+    let mut _pass_base_indent: usize = 0;
+    let mut pass_phase = PassPhase::Pre;
+    let mut pass_priority: u32 = 100;
+    let mut pass_rules: Vec<RuleSpec> = Vec::new();
+    let mut pass_current_rule_name: Option<String> = None;
+    let mut pass_current_when: String = String::new();
+    let mut pass_current_actions: Vec<RuleAction> = Vec::new();
     // In-progress `view` under `present` (flushed on next view / role / section).
     let mut present_view: Option<crate::presentation::ViewSpec> = None;
     let mut errors: Vec<String> = Vec::new();
@@ -3464,6 +3482,137 @@ pub fn parse_layer_file(content: &str, layer_name: &str) -> Result<RawLayer, Str
                     trimmed
                 };
                 harness_template_lines.push(dedented.to_string());
+                continue;
+            }
+        }
+
+        // Handle `pass <name>` blocks: layer-declared pre/post passes
+        if trimmed.starts_with("pass ") && indent <= 2 {
+            // Flush any in-progress pass
+            if in_pass {
+                // Flush current rule
+                if let Some(rn) = pass_current_rule_name.take() {
+                    if !pass_current_when.is_empty() || !pass_current_actions.is_empty() {
+                        pass_rules.push(RuleSpec {
+                            name: rn,
+                            when: std::mem::take(&mut pass_current_when),
+                            actions: std::mem::take(&mut pass_current_actions),
+                        });
+                    }
+                }
+                passes.push(PassSpec {
+                    name: std::mem::take(&mut pass_name),
+                    priority: pass_priority,
+                    phase: pass_phase,
+                    rules: std::mem::take(&mut pass_rules),
+                    layer: layer_name.to_string(),
+                });
+            }
+            // Flush other sections
+            if in_codegen && !codegen_lines.is_empty() {
+                let template = parse_codegen_block(&codegen_target, &codegen_lines, layer_name);
+                codegen_templates.push(template);
+                codegen_lines.clear();
+            }
+            if in_declare && !current_decl_lines.is_empty() {
+                while current_decl_lines.last().map(|l| l.is_empty()).unwrap_or(false) {
+                    current_decl_lines.pop();
+                }
+                declarations.push(current_decl_lines.join("\n"));
+                current_decl_lines.clear();
+            }
+            if let Some(item) = current.take() {
+                items.push(item);
+            }
+            in_declare = false;
+            in_prompt = false;
+            in_codegen = false;
+            in_shared_emit = false;
+            in_harness_template = false;
+            pass_name = trimmed.strip_prefix("pass ").unwrap().trim().to_string();
+            pass_phase = PassPhase::Pre;
+            pass_priority = 100;
+            pass_rules.clear();
+            pass_current_rule_name = None;
+            pass_current_when.clear();
+            pass_current_actions.clear();
+            in_pass = true;
+            _pass_base_indent = indent + 2;
+            section = Section::None;
+            continue;
+        }
+
+        if in_pass {
+            if indent <= 2 && !trimmed.is_empty() {
+                // Leaving pass block — flush
+                if let Some(rn) = pass_current_rule_name.take() {
+                    if !pass_current_when.is_empty() || !pass_current_actions.is_empty() {
+                        pass_rules.push(RuleSpec {
+                            name: rn,
+                            when: std::mem::take(&mut pass_current_when),
+                            actions: std::mem::take(&mut pass_current_actions),
+                        });
+                    }
+                }
+                passes.push(PassSpec {
+                    name: std::mem::take(&mut pass_name),
+                    priority: pass_priority,
+                    phase: pass_phase,
+                    rules: std::mem::take(&mut pass_rules),
+                    layer: layer_name.to_string(),
+                });
+                in_pass = false;
+                // Fall through to normal parsing
+            } else {
+                // Parse pass contents
+                if let Some(rest) = trimmed.strip_prefix("phase ") {
+                    pass_phase = match rest.trim() {
+                        "post" => PassPhase::Post,
+                        _ => PassPhase::Pre,
+                    };
+                } else if let Some(rest) = trimmed.strip_prefix("priority ") {
+                    pass_priority = rest.trim().parse().unwrap_or(100);
+                } else if let Some(rest) = trimmed.strip_prefix("rule ") {
+                    // Flush previous rule
+                    if let Some(rn) = pass_current_rule_name.take() {
+                        if !pass_current_when.is_empty() || !pass_current_actions.is_empty() {
+                            pass_rules.push(RuleSpec {
+                                name: rn,
+                                when: std::mem::take(&mut pass_current_when),
+                                actions: std::mem::take(&mut pass_current_actions),
+                            });
+                        }
+                    }
+                    pass_current_rule_name = Some(rest.trim().to_string());
+                    pass_current_when.clear();
+                    pass_current_actions.clear();
+                } else if let Some(rest) = trimmed.strip_prefix("when:") {
+                    pass_current_when = rest.trim().to_string();
+                } else if let Some(rest) = trimmed.strip_prefix("annotate:") {
+                    // Parse `key = "value"` or `key = value`
+                    let rest = rest.trim();
+                    if let Some((key, val)) = rest.split_once('=') {
+                        pass_current_actions.push(RuleAction::Annotate {
+                            key: key.trim().to_string(),
+                            value: unquote(val.trim()),
+                        });
+                    }
+                } else if let Some(rest) = trimmed.strip_prefix("wrap:") {
+                    let kind = match rest.trim() {
+                        "clone" => Some(WrapKind::Clone),
+                        "borrow" => Some(WrapKind::Borrow),
+                        "mut_borrow" => Some(WrapKind::MutBorrow),
+                        "optional_chain" => Some(WrapKind::OptionalChain),
+                        "try" => Some(WrapKind::Try),
+                        "await" => Some(WrapKind::Await),
+                        _ => None,
+                    };
+                    if let Some(k) = kind {
+                        pass_current_actions.push(RuleAction::Wrap(k));
+                    }
+                } else if trimmed == "remove" {
+                    pass_current_actions.push(RuleAction::Remove);
+                }
                 continue;
             }
         }
@@ -3938,6 +4087,26 @@ pub fn parse_layer_file(content: &str, layer_name: &str) -> Result<RawLayer, Str
         harness_render_templates.insert(harness_template_target.clone(), harness_template_lines.join("\n"));
     }
 
+    // Flush any trailing pass block
+    if in_pass {
+        if let Some(rn) = pass_current_rule_name.take() {
+            if !pass_current_when.is_empty() || !pass_current_actions.is_empty() {
+                pass_rules.push(RuleSpec {
+                    name: rn,
+                    when: std::mem::take(&mut pass_current_when),
+                    actions: std::mem::take(&mut pass_current_actions),
+                });
+            }
+        }
+        passes.push(PassSpec {
+            name: std::mem::take(&mut pass_name),
+            priority: pass_priority,
+            phase: pass_phase,
+            rules: std::mem::take(&mut pass_rules),
+            layer: layer_name.to_string(),
+        });
+    }
+
     // Flush any trailing prompt content
     let prompt = if !prompt_lines.is_empty() {
         while prompt_lines.last().map(|l| l.is_empty()).unwrap_or(false) {
@@ -3959,6 +4128,7 @@ pub fn parse_layer_file(content: &str, layer_name: &str) -> Result<RawLayer, Str
         declarations,
         prompt,
         codegen_templates,
+        passes,
         method_lowers_to,
         shared_emit,
         harness_render_templates,
