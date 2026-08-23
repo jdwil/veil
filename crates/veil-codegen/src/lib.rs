@@ -23,6 +23,7 @@ pub mod kotlin;
 pub mod links;
 pub mod emit_hooks;
 pub mod pass_eval;
+pub mod pass_exec;
 pub mod rust;
 pub mod swift;
 pub mod template;

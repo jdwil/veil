@@ -5,6 +5,8 @@
 //! resolved core `Shape` and the layer's construct name (`subkind`).
 //! Layer-defined statements parse into `Expr::Action`.
 
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 
 use crate::layer::{Shape, StmtShape};
@@ -387,6 +389,12 @@ pub struct Construct {
 
     // ─── mod/group shape + nesting ────────────────────────────────────
     pub children: Vec<Construct>,
+
+    // ─── Layer pass annotations ───────────────────────────────────────
+    /// Annotations applied by layer pre/post passes. Key = annotation name,
+    /// value = annotation value. Read by the engine backend and emit templates.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub pass_annotations: HashMap<String, String>,
 }
 
 impl Construct {
@@ -424,6 +432,7 @@ impl Construct {
             return_expr: None,
             refs: Vec::new(),
             children: Vec::new(),
+            pass_annotations: HashMap::new(),
         }
     }
 }

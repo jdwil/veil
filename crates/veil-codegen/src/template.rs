@@ -1672,6 +1672,7 @@ mod tests {
             return_expr: None,
             refs: Vec::new(),
             children: Vec::new(),
+            pass_annotations: std::collections::HashMap::new(),
         }
     }
 
