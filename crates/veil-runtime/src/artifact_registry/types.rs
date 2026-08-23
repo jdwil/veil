@@ -99,6 +99,20 @@ pub enum ContributionKind {
 
 // ─── Artifact Record ─────────────────────────────────────────────────────────
 
+/// Manifest metadata for a frontend artifact — everything a harness needs to load it.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ArtifactManifest {
+    /// Primary entry point file (e.g. "index.js").
+    #[serde(default)]
+    pub entrypoint: Option<String>,
+    /// Exported symbols (e.g. ["mount", "unmount"]).
+    #[serde(default)]
+    pub exports: Vec<String>,
+    /// Props interface expected by the artifact (name → type hint).
+    #[serde(default)]
+    pub props: std::collections::HashMap<String, String>,
+}
+
 /// A registered, versioned artifact in the platform registry.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ArtifactRecord {
@@ -118,6 +132,18 @@ pub struct ArtifactRecord {
     pub signed_off_at: Option<DateTime<Utc>>,
     /// S3 key for the blob (set after upload).
     pub blob_key: Option<String>,
+    /// SHA-256 hex hash of the bundle content (enables immutable caching).
+    #[serde(default)]
+    pub content_hash: Option<String>,
+    /// S3 key for the compiled bundle (may differ from blob_key for multi-file artifacts).
+    #[serde(default)]
+    pub bundle_path: Option<String>,
+    /// Size of the bundle in bytes.
+    #[serde(default)]
+    pub bundle_size: Option<u64>,
+    /// Manifest metadata (entrypoint, exports, props interface).
+    #[serde(default)]
+    pub manifest: Option<ArtifactManifest>,
     /// When this record was created.
     pub created_at: DateTime<Utc>,
     /// When this record was last updated.

@@ -10,5 +10,8 @@ pub mod storage;
 #[allow(dead_code)]
 pub mod types;
 
+#[cfg(test)]
+mod tests;
+
 pub use storage::ArtifactRegistryStore;
 pub use types::*;

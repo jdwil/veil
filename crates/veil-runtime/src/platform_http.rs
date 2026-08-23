@@ -2647,6 +2647,62 @@ struct ArtifactRegistryState {
     store: Arc<crate::artifact_registry::ArtifactRegistryStore>,
 }
 
+// ─── Function Invoke (Phase 3) ──────────────────────────────────────────────
+
+#[derive(Clone)]
+struct FunctionInvokeState {
+    registry: Arc<crate::function_invoke::FunctionRegistry>,
+}
+
+#[derive(Deserialize)]
+struct InvokeFunctionBody {
+    #[serde(default)]
+    args: Value,
+}
+
+async fn invoke_function(
+    State(st): State<FunctionInvokeState>,
+    Path(function_id): Path<String>,
+    tenant: crate::tenancy::ResolvedTenant,
+    Json(body): Json<InvokeFunctionBody>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let tenant_id = tenant.0;
+
+    // Resolve the function under this tenant's context.
+    let handle = st
+        .registry
+        .resolve(&tenant_id, &function_id)
+        .await
+        .map_err(|e| {
+            let status = e.status_code();
+            let body = json!({
+                "error": e.to_string(),
+                "code": status.as_u16(),
+            });
+            (status, Json(body))
+        })?;
+
+    // Invoke the function with the provided args.
+    match handle.invoke(body.args) {
+        Ok(result) => Ok(Json(json!({ "result": result }))),
+        Err(e) => {
+            tracing::error!(
+                function_id = %function_id,
+                tenant = %tenant_id,
+                error = %e,
+                "function invocation failed"
+            );
+            Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "error": format!("invocation failed: {e}"),
+                    "code": 500,
+                })),
+            ))
+        }
+    }
+}
+
 #[derive(Deserialize)]
 struct RegisterArtifactBody {
     id: String,
@@ -2661,6 +2717,14 @@ struct RegisterArtifactBody {
     signed_off_at: Option<chrono::DateTime<chrono::Utc>>,
     #[serde(default)]
     blob_key: Option<String>,
+    #[serde(default)]
+    content_hash: Option<String>,
+    #[serde(default)]
+    bundle_path: Option<String>,
+    #[serde(default)]
+    bundle_size: Option<u64>,
+    #[serde(default)]
+    manifest: Option<crate::artifact_registry::ArtifactManifest>,
 }
 
 async fn register_artifact(
@@ -2677,6 +2741,10 @@ async fn register_artifact(
         signed_off_by: body.signed_off_by,
         signed_off_at: body.signed_off_at,
         blob_key: body.blob_key,
+        content_hash: body.content_hash,
+        bundle_path: body.bundle_path,
+        bundle_size: body.bundle_size,
+        manifest: body.manifest,
         created_at: now,
         updated_at: now,
     };
@@ -2778,6 +2846,237 @@ fn registry_status(e: crate::artifact_registry::RegistryError) -> StatusCode {
         crate::artifact_registry::RegistryError::InvalidInput(_) => StatusCode::BAD_REQUEST,
         crate::artifact_registry::RegistryError::Storage(_) => StatusCode::INTERNAL_SERVER_ERROR,
     }
+}
+
+// ─── Phase 4: Artifact Serving (bundle, manifest, contributions) ────────────
+
+/// GET /api/artifacts/:id/bundle?v={content_hash}
+/// Serves the compiled bundle from S3 with immutable caching headers.
+async fn serve_artifact_bundle(
+    State(st): State<ArtifactRegistryState>,
+    Path(id): Path<String>,
+    Query(q): Query<BundleQuery>,
+) -> Result<axum::response::Response, StatusCode> {
+    use axum::response::IntoResponse;
+    use axum::http::header;
+
+    let record = st.store.get_latest(&id).await.map_err(registry_status)?;
+
+    // Determine the S3 key: prefer bundle_path, fall back to blob_key.
+    let s3_key = record
+        .bundle_path
+        .as_deref()
+        .or(record.blob_key.as_deref())
+        .ok_or(StatusCode::NOT_FOUND)?;
+
+    // Fetch the blob from S3.
+    let data = st.store.get_blob(s3_key).await.map_err(registry_status)?;
+
+    // Content-Type based on the S3 key extension (runtime has no opinion about content).
+    let content_type = guess_content_type(s3_key);
+
+    // If the client passed ?v=<hash> and it matches, use immutable caching.
+    // Otherwise still serve, but with shorter cache.
+    let cache_control = if q.v.as_deref() == record.content_hash.as_deref()
+        && record.content_hash.is_some()
+    {
+        "public, max-age=31536000, immutable"
+    } else {
+        "public, max-age=300"
+    };
+
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert(
+        header::CONTENT_TYPE,
+        content_type.parse().unwrap_or_else(|_| "application/octet-stream".parse().unwrap()),
+    );
+    headers.insert(
+        header::CACHE_CONTROL,
+        cache_control.parse().unwrap(),
+    );
+    if let Some(ref hash) = record.content_hash {
+        headers.insert(
+            header::ETAG,
+            format!("\"{hash}\"").parse().unwrap(),
+        );
+    }
+
+    Ok((headers, data).into_response())
+}
+
+#[derive(Deserialize)]
+struct BundleQuery {
+    #[serde(default)]
+    v: Option<String>,
+}
+
+/// GET /api/artifacts/:id/manifest
+/// Returns metadata the harness needs to load and mount the artifact.
+async fn get_artifact_manifest(
+    State(st): State<ArtifactRegistryState>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, StatusCode> {
+    let record = st.store.get_latest(&id).await.map_err(registry_status)?;
+
+    let bundle_url = if record.bundle_path.is_some() || record.blob_key.is_some() {
+        let hash_param = record
+            .content_hash
+            .as_deref()
+            .map(|h| format!("?v={h}"))
+            .unwrap_or_default();
+        Some(format!("/api/artifacts/{}/bundle{}", record.id, hash_param))
+    } else {
+        None
+    };
+
+    let manifest = record
+        .manifest
+        .as_ref()
+        .cloned()
+        .unwrap_or_default();
+
+    Ok(Json(json!({
+        "id": record.id,
+        "version": record.version,
+        "artifact_type": record.artifact_type,
+        "entrypoint": manifest.entrypoint,
+        "exports": manifest.exports,
+        "props": manifest.props,
+        "bundle_url": bundle_url,
+        "bundle_size": record.bundle_size,
+        "content_hash": record.content_hash,
+    })))
+}
+
+/// GET /api/contributions?kind=menu_item&tenant_id=...
+/// Lists contributions visible to the current tenant, filtered by kind.
+async fn list_contributions(
+    State(st): State<ArtifactRegistryState>,
+    Query(q): Query<ContributionsQuery>,
+) -> Result<Json<Value>, StatusCode> {
+    let tenant_id = q.tenant_id.as_deref().unwrap_or("default");
+    let roles: Vec<String> = q
+        .roles
+        .as_deref()
+        .unwrap_or("")
+        .split(',')
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .collect();
+    let principal = crate::artifact_registry::Principal {
+        id: q.principal_id.clone().unwrap_or_default(),
+        roles,
+    };
+
+    // If kind is specified, filter by it; otherwise return all contributions.
+    let artifacts = st
+        .store
+        .list_for_tenant(tenant_id)
+        .await
+        .map_err(registry_status)?;
+
+    let mut results: Vec<Value> = Vec::new();
+    for artifact in &artifacts {
+        for contribution in &artifact.contributions {
+            let matches_kind = match (&q.kind, contribution) {
+                (Some(crate::artifact_registry::ContributionKind::MenuItem), crate::artifact_registry::Contribution::MenuItem { .. }) => true,
+                (Some(crate::artifact_registry::ContributionKind::Route), crate::artifact_registry::Contribution::Route { .. }) => true,
+                (Some(crate::artifact_registry::ContributionKind::SlotFill), crate::artifact_registry::Contribution::SlotFill { .. }) => true,
+                (Some(crate::artifact_registry::ContributionKind::BackendFunction), crate::artifact_registry::Contribution::BackendFunction { .. }) => true,
+                (None, _) => true, // no filter → return all
+                _ => false,
+            };
+            if !matches_kind {
+                continue;
+            }
+
+            // Role filtering for menu items.
+            let role_ok = match contribution {
+                crate::artifact_registry::Contribution::MenuItem { roles, .. } => {
+                    roles.is_empty()
+                        || roles.iter().any(|r| principal.roles.contains(r))
+                }
+                _ => true,
+            };
+            if !role_ok {
+                continue;
+            }
+
+            let mut entry = serde_json::to_value(contribution).unwrap_or(json!({}));
+            if let Some(obj) = entry.as_object_mut() {
+                obj.insert("artifact_id".into(), json!(artifact.id));
+                obj.insert("artifact_version".into(), json!(artifact.version));
+            }
+            results.push(entry);
+        }
+    }
+
+    Ok(Json(json!(results)))
+}
+
+#[derive(Deserialize)]
+struct ContributionsQuery {
+    #[serde(default)]
+    kind: Option<crate::artifact_registry::ContributionKind>,
+    #[serde(default)]
+    tenant_id: Option<String>,
+    #[serde(default)]
+    principal_id: Option<String>,
+    #[serde(default)]
+    roles: Option<String>,
+}
+
+/// Guess content-type from S3 key file extension.
+pub(crate) fn guess_content_type(key: &str) -> &'static str {
+    if let Some(ext) = key.rsplit('.').next() {
+        match ext {
+            "js" | "mjs" => "application/javascript",
+            "css" => "text/css",
+            "wasm" => "application/wasm",
+            "json" => "application/json",
+            "html" => "text/html",
+            "svg" => "image/svg+xml",
+            "png" => "image/png",
+            "jpg" | "jpeg" => "image/jpeg",
+            "map" => "application/json",
+            _ => "application/octet-stream",
+        }
+    } else {
+        "application/octet-stream"
+    }
+}
+
+/// Build a CORS layer for artifact serving.
+///
+/// Reads `VEIL_CORS_ORIGINS` env var (comma-separated list of allowed origins).
+/// If not set, falls back to permissive CORS (matches the ProductHost default).
+/// The Authorization header is always allowed for authenticated fetches.
+pub(crate) fn build_artifact_cors_layer() -> tower_http::cors::CorsLayer {
+    use axum::http::{header, Method};
+    use tower_http::cors::CorsLayer;
+
+    let origins_env = std::env::var("VEIL_CORS_ORIGINS").unwrap_or_default();
+
+    if origins_env.is_empty() || origins_env == "*" {
+        return CorsLayer::permissive();
+    }
+
+    let origins: Vec<axum::http::HeaderValue> = origins_env
+        .split(',')
+        .filter_map(|s| {
+            let trimmed = s.trim();
+            if trimmed.is_empty() {
+                return None;
+            }
+            trimmed.parse().ok()
+        })
+        .collect();
+
+    CorsLayer::new()
+        .allow_origin(origins)
+        .allow_methods([Method::GET, Method::OPTIONS])
+        .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE])
+        .max_age(std::time::Duration::from_secs(86400))
 }
 
 /// Build platform domain router and merge onto ProductHost.
@@ -2922,11 +3221,40 @@ pub async fn build_platform_router(
             "/api/artifact-registry/resolve/ui-artifact",
             get(resolve_ui_artifact_handler),
         )
-        .with_state(art_reg);
+        // Phase 4: Artifact Serving
+        .route(
+            "/api/artifacts/{id}/bundle",
+            get(serve_artifact_bundle),
+        )
+        .route(
+            "/api/artifacts/{id}/manifest",
+            get(get_artifact_manifest),
+        )
+        .route(
+            "/api/contributions",
+            get(list_contributions),
+        )
+        .with_state(art_reg)
+        .layer(build_artifact_cors_layer());
+
+    // Function Invoke (Phase 3 Platform Primitives)
+    let fn_registry = Arc::new(crate::function_invoke::FunctionRegistry::new(
+        Arc::new(crate::artifact_registry::ArtifactRegistryStore::from_env().await),
+    ));
+    let fn_invoke_state = FunctionInvokeState {
+        registry: fn_registry,
+    };
+    let function_invoke_r = Router::new()
+        .route(
+            "/api/functions/{function_id}/invoke",
+            post(invoke_function),
+        )
+        .with_state(fn_invoke_state);
 
     storage_r
         .merge(cm_r)
         .merge(deploy_r)
         .merge(registry_r)
         .merge(artifact_registry_r)
+        .merge(function_invoke_r)
 }
