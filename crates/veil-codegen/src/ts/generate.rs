@@ -34,6 +34,11 @@ use super::transforms::detect_async;
 /// This produces the same file structure as the old `generate_ts` but routes
 /// function bodies through `lower_to_ts → emit_ts` instead of `expr_to_ts`.
 pub fn generate_ts_ir(solution: &Solution, registry: &LayerRegistry) -> TsProject {
+    // Run layer pre-passes on a mutable copy of the AST.
+    let mut solution_owned = solution.clone();
+    crate::pass_exec::execute_pre_passes(&mut solution_owned, registry, false);
+    let solution = &solution_owned;
+
     let name_to_shape = build_name_to_shape(solution, registry);
     let ctx = build_ctx_from_solution(solution, name_to_shape, registry);
     let sol_name = to_camel_case(&solution.name);

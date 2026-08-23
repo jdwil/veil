@@ -21,6 +21,11 @@ pub struct GeneratedFile {
 
 /// Generate a Rust project from a VEIL Solution AST.
 pub fn generate(solution: &Solution, registry: &LayerRegistry) -> GeneratedProject {
+    // Run layer pre-passes on a mutable copy of the AST.
+    let mut solution_owned = solution.clone();
+    crate::pass_exec::execute_pre_passes(&mut solution_owned, registry, false);
+    let solution = &solution_owned;
+
     let mut files = Vec::new();
 
     // CAP-001: resolve external crate links (skip invalid with warning-style omit:
