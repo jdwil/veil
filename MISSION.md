@@ -759,26 +759,23 @@ Implementation map (summary):
 
 Not a sprint plan — product order of operations:
 
-1. **Multi-pass layer-driven compiler** — migrate target-specific backends
-   (src/rust/, src/ts/) into layer-declared passes + emit templates. The
-   engine provides: pass executor, rule evaluator, built-in analysis
-   (use_count, type resolution, scope detection). Layers provide: type
-   mapping, ownership rules, null safety, async marking, emit templates.
-   Adding a new target = writing a layer file. This is the critical path
-   to VEIL being a true multi-target compiler, not a Rust code generator
-   with a TS port.
+1. **Layer pass extension system** — build a pass executor that lets layers
+   hook into codegen (pre-passes and post-passes) without replacing the
+   engine's core backends. Layers declare rules for policy decisions
+   (async/sync, derives, error strategy, null safety). Engine keeps core
+   algorithms (ownership, type inference, expression lowering) as compiled
+   Rust. This formalizes what emit_to/lowers_to already do, and enables
+   layers to influence codegen in ways we can't predict yet.
 2. **Dual-loop excellence on the current surface** — world-class `check` +
    deterministic codegen; topology and critical-body review UX; **visible
    agency** (human-speed simulation, IDE auto-open, multi-project indicators)
    and first-class outstanding-change **sign-off**; multi-target with honest
    capabilities.
-3. **Target expansion** — Go, Python, Swift, Kotlin targets as layer files.
-   Each requires: type mapping pass + emit templates + project layout
-   template. No engine changes.
+3. **Target expansion** — Go, Python, Swift, Kotlin targets. Each requires
+   a compact engine backend (~1000-2000 lines for core lowering) plus layer
+   files for policy. Simpler targets (HTML, CSS) may be expressible entirely
+   in layer passes without an engine backend.
 4. **Escape-hatch debt burn-down** — measure and reduce raw/stub/untyped
-   surface in real trees (`examples/`, `runtime/`).
-   library-quality modules.
-5. **Escape-hatch debt burn-down** — measure and reduce raw/stub/untyped
    surface in real trees (`examples/`, `runtime/`).
 
 ## Success Measures
