@@ -4,9 +4,11 @@
 //! Bus dispatch lives in `platform` until CAP-003/004 wire generated handlers fully.
 //! Target: keep this file ≤ ~80 lines of process glue.
 
+mod artifact_registry;
 mod local_ports;
 mod platform;
 mod platform_http;
+pub mod tenancy;
 
 use std::collections::HashMap;
 use std::sync::Arc;

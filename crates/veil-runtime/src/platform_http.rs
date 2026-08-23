@@ -2640,6 +2640,146 @@ async fn list_review_policies() -> Result<Json<Value>, StatusCode> {
     Ok(Json(json!({ "policies": map })))
 }
 
+// ─── Artifact Registry ──────────────────────────────────────────────────────
+
+#[derive(Clone)]
+struct ArtifactRegistryState {
+    store: Arc<crate::artifact_registry::ArtifactRegistryStore>,
+}
+
+#[derive(Deserialize)]
+struct RegisterArtifactBody {
+    id: String,
+    version: String,
+    artifact_type: crate::artifact_registry::ArtifactType,
+    tenant_visibility: crate::artifact_registry::TenantVisibility,
+    #[serde(default)]
+    contributions: Vec<crate::artifact_registry::Contribution>,
+    #[serde(default)]
+    signed_off_by: Option<String>,
+    #[serde(default)]
+    signed_off_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(default)]
+    blob_key: Option<String>,
+}
+
+async fn register_artifact(
+    State(st): State<ArtifactRegistryState>,
+    Json(body): Json<RegisterArtifactBody>,
+) -> Result<Json<Value>, StatusCode> {
+    let now = chrono::Utc::now();
+    let record = crate::artifact_registry::ArtifactRecord {
+        id: body.id,
+        version: body.version,
+        artifact_type: body.artifact_type,
+        tenant_visibility: body.tenant_visibility,
+        contributions: body.contributions,
+        signed_off_by: body.signed_off_by,
+        signed_off_at: body.signed_off_at,
+        blob_key: body.blob_key,
+        created_at: now,
+        updated_at: now,
+    };
+    st.store
+        .put_artifact(&record)
+        .await
+        .map_err(registry_status)?;
+    Ok(Json(json!(record)))
+}
+
+async fn list_artifacts_registry(
+    State(st): State<ArtifactRegistryState>,
+) -> Result<Json<Value>, StatusCode> {
+    let records = st.store.list_all().await.map_err(registry_status)?;
+    Ok(Json(json!(records)))
+}
+
+async fn get_artifact_registry(
+    State(st): State<ArtifactRegistryState>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, StatusCode> {
+    let record = st.store.get_latest(&id).await.map_err(registry_status)?;
+    Ok(Json(json!(record)))
+}
+
+#[derive(Deserialize)]
+struct ResolveContributionsQuery {
+    tenant_id: String,
+    kind: crate::artifact_registry::ContributionKind,
+    #[serde(default)]
+    principal_id: Option<String>,
+    #[serde(default)]
+    roles: Option<String>,
+}
+
+async fn resolve_contributions_handler(
+    State(st): State<ArtifactRegistryState>,
+    Query(q): Query<ResolveContributionsQuery>,
+) -> Result<Json<Value>, StatusCode> {
+    let roles: Vec<String> = q
+        .roles
+        .as_deref()
+        .unwrap_or("")
+        .split(',')
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .collect();
+    let principal = crate::artifact_registry::Principal {
+        id: q.principal_id.unwrap_or_default(),
+        roles,
+    };
+    let results = st
+        .store
+        .resolve_contributions(&q.tenant_id, &principal, q.kind)
+        .await
+        .map_err(registry_status)?;
+    Ok(Json(json!(results)))
+}
+
+#[derive(Deserialize)]
+struct ResolveFunctionQuery {
+    tenant_id: String,
+    function_id: String,
+}
+
+async fn resolve_function_handler(
+    State(st): State<ArtifactRegistryState>,
+    Query(q): Query<ResolveFunctionQuery>,
+) -> Result<Json<Value>, StatusCode> {
+    let record = st
+        .store
+        .resolve_function(&q.tenant_id, &q.function_id)
+        .await
+        .map_err(registry_status)?;
+    Ok(Json(json!(record)))
+}
+
+#[derive(Deserialize)]
+struct ResolveUiArtifactQuery {
+    tenant_id: String,
+    artifact_id: String,
+}
+
+async fn resolve_ui_artifact_handler(
+    State(st): State<ArtifactRegistryState>,
+    Query(q): Query<ResolveUiArtifactQuery>,
+) -> Result<Json<Value>, StatusCode> {
+    let url = st
+        .store
+        .resolve_ui_artifact(&q.tenant_id, &q.artifact_id)
+        .await
+        .map_err(registry_status)?;
+    Ok(Json(json!(url)))
+}
+
+fn registry_status(e: crate::artifact_registry::RegistryError) -> StatusCode {
+    match e {
+        crate::artifact_registry::RegistryError::NotFound(_) => StatusCode::NOT_FOUND,
+        crate::artifact_registry::RegistryError::InvalidInput(_) => StatusCode::BAD_REQUEST,
+        crate::artifact_registry::RegistryError::Storage(_) => StatusCode::INTERNAL_SERVER_ERROR,
+    }
+}
+
 /// Build platform domain router and merge onto ProductHost.
 pub async fn build_platform_router(
     bus: Arc<dyn veil_shared::Bus + Send + Sync>,
@@ -2755,8 +2895,38 @@ pub async fn build_platform_router(
         .route("/api/registry/layers", get(list_registry_layers))
         .route("/api/registry/stubs", get(list_registry_stubs));
 
+    // Artifact Registry (Phase 1 Platform Primitives)
+    let art_reg = ArtifactRegistryState {
+        store: Arc::new(
+            crate::artifact_registry::ArtifactRegistryStore::from_env().await,
+        ),
+    };
+    let artifact_registry_r = Router::new()
+        .route(
+            "/api/artifact-registry",
+            get(list_artifacts_registry).post(register_artifact),
+        )
+        .route(
+            "/api/artifact-registry/{id}",
+            get(get_artifact_registry),
+        )
+        .route(
+            "/api/artifact-registry/resolve/contributions",
+            get(resolve_contributions_handler),
+        )
+        .route(
+            "/api/artifact-registry/resolve/function",
+            get(resolve_function_handler),
+        )
+        .route(
+            "/api/artifact-registry/resolve/ui-artifact",
+            get(resolve_ui_artifact_handler),
+        )
+        .with_state(art_reg);
+
     storage_r
         .merge(cm_r)
         .merge(deploy_r)
         .merge(registry_r)
+        .merge(artifact_registry_r)
 }

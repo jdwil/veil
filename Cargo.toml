@@ -81,5 +81,8 @@ aws-sdk-sqs = "1"
 aws-sdk-sns = "1"
 aws-sdk-apigatewayv2 = "1"
 
+# Auth / JWT
+jsonwebtoken = "9"
+
 # Testing
 insta = { version = "1.41", features = ["glob"] }
