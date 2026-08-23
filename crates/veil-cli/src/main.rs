@@ -102,6 +102,9 @@ enum Commands {
         /// Emit machine-readable JSON report (PAR-010 metrics)
         #[arg(long)]
         json: bool,
+        /// Print layer pass execution trace (which rules matched which nodes)
+        #[arg(long)]
+        trace_passes: bool,
     },
     /// Assemble layer prompts + construct outline for agents (PAR-009)
     Prompt {
@@ -126,6 +129,9 @@ enum Commands {
         /// delete sibling context crates before gen-harness runs.
         #[arg(long, default_value_t = false)]
         no_prune: bool,
+        /// Print layer pass execution trace (which rules matched which nodes)
+        #[arg(long)]
+        trace_passes: bool,
     },
     /// Generate a combined harness binary for multiple VEIL packages (local dev).
     /// Used by the devloop for multi-package workspaces.
@@ -2600,6 +2606,7 @@ fn main() {
             deny_escape_hatches,
             escape_summary,
             json,
+            trace_passes,
         } => {
             let codegen_target = veil_codegen::CodegenTarget::from_str(&target).unwrap_or_else(|| {
                 eprintln!(
@@ -2750,6 +2757,30 @@ fn main() {
                 }
             }
 
+            // --trace-passes: run passes with tracing and print results
+            if trace_passes {
+                let mut trace_sol = sol.clone();
+                let traces = veil_codegen::pass_exec::execute_pre_passes(&mut trace_sol, &registry, true);
+                if traces.is_empty() {
+                    eprintln!("[trace-passes] No passes matched any nodes.");
+                } else {
+                    for t in &traces {
+                        eprintln!(
+                            "[pass:{}/{:?}/{}] {} ({}) → {}",
+                            t.pass_name,
+                            "pre",
+                            registry.passes.iter()
+                                .find(|p| p.name == t.pass_name)
+                                .map(|p| p.priority)
+                                .unwrap_or(0),
+                            t.construct_name,
+                            t.construct_kind,
+                            t.action_desc,
+                        );
+                    }
+                }
+            }
+
             if result.diagnostics.is_empty() {
                 eprintln!(
                     "ok — {} node(s), {} edge(s), 0 diagnostics ({} ms)",
@@ -2875,7 +2906,7 @@ fn main() {
             }
             println!("✓ Generated multi-package harness ({} files) in {}", harness_files.len(), output.display());
         }
-        Commands::Gen { file, output, target, no_prune } => {
+        Commands::Gen { file, output, target, no_prune, trace_passes } => {
             let source = std::fs::read_to_string(&file).expect("Failed to read file");
             let registry = registry_for(&file);
             let tokens = veil_parser::lex(&source);
@@ -2896,6 +2927,38 @@ fn main() {
                     );
                     std::process::exit(1);
                 });
+
+            // --trace-passes: run passes with tracing and print results
+            if trace_passes {
+                let trace_sol = match &veil_file {
+                    veil_ir::ast::VeilFile::Solution(sol) => Some(sol.clone()),
+                    veil_ir::ast::VeilFile::Package(pkg) => {
+                        Some(veil_ir::package_as_solution(pkg))
+                    }
+                    _ => None,
+                };
+                if let Some(mut sol) = trace_sol {
+                    let traces = veil_codegen::pass_exec::execute_pre_passes(&mut sol, &registry, true);
+                    if traces.is_empty() {
+                        eprintln!("[trace-passes] No passes matched any nodes.");
+                    } else {
+                        for t in &traces {
+                            eprintln!(
+                                "[pass:{}/{:?}/{}] {} ({}) → {}",
+                                t.pass_name,
+                                "pre",
+                                registry.passes.iter()
+                                    .find(|p| p.name == t.pass_name)
+                                    .map(|p| p.priority)
+                                    .unwrap_or(0),
+                                t.construct_name,
+                                t.construct_kind,
+                                t.action_desc,
+                            );
+                        }
+                    }
+                }
+            }
 
             let files = match &veil_file {
                 veil_ir::ast::VeilFile::Solution(sol) => {
