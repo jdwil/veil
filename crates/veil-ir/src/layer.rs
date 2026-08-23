@@ -6229,4 +6229,106 @@ error_model AppError
         let content = "construct Foo\n  kw foo\n";
         assert!(super::parse_error_model(content).is_none());
     }
+
+    #[test]
+    fn pass_declaration_parses_from_layer() {
+        let src = r#"
+pkg test v1
+  construct Aggregate
+    kw agg
+    mt struct
+  pass ownership
+    phase pre
+    priority 20
+    rule last_use_moves
+      when: construct.kind == "struct"
+      annotate: ownership = "move"
+    rule multi_use_clones
+      when: construct.kind == "struct" && construct.exported
+      annotate: ownership = "clone"
+      wrap: clone
+"#;
+        let mut reg = LayerRegistry::builtin();
+        reg.load_content("test", src).expect("layer should load");
+        assert_eq!(reg.passes.len(), 1);
+        let pass = &reg.passes[0];
+        assert_eq!(pass.name, "ownership");
+        assert_eq!(pass.phase, PassPhase::Pre);
+        assert_eq!(pass.priority, 20);
+        assert_eq!(pass.layer, "test");
+        assert_eq!(pass.rules.len(), 2);
+        // First rule
+        let r0 = &pass.rules[0];
+        assert_eq!(r0.name, "last_use_moves");
+        assert_eq!(r0.when, r#"construct.kind == "struct""#);
+        assert_eq!(r0.actions.len(), 1);
+        match &r0.actions[0] {
+            RuleAction::Annotate { key, value } => {
+                assert_eq!(key, "ownership");
+                assert_eq!(value, "move");
+            }
+            _ => panic!("expected Annotate"),
+        }
+        // Second rule has annotate + wrap
+        let r1 = &pass.rules[1];
+        assert_eq!(r1.name, "multi_use_clones");
+        assert_eq!(r1.actions.len(), 2);
+        match &r1.actions[0] {
+            RuleAction::Annotate { key, value } => {
+                assert_eq!(key, "ownership");
+                assert_eq!(value, "clone");
+            }
+            _ => panic!("expected Annotate"),
+        }
+        match &r1.actions[1] {
+            RuleAction::Wrap(WrapKind::Clone) => {}
+            _ => panic!("expected Wrap(Clone)"),
+        }
+    }
+
+    #[test]
+    fn pass_post_phase_parses() {
+        let src = r#"
+pkg test v1
+  pass style_enforce
+    phase post
+    priority 200
+    rule remove_unused
+      when: construct.kind == "struct" && !construct.exported
+      remove
+"#;
+        let mut reg = LayerRegistry::builtin();
+        reg.load_content("test", src).expect("layer should load");
+        assert_eq!(reg.passes.len(), 1);
+        let pass = &reg.passes[0];
+        assert_eq!(pass.phase, PassPhase::Post);
+        assert_eq!(pass.priority, 200);
+        let r = &pass.rules[0];
+        assert_eq!(r.actions.len(), 1);
+        matches!(&r.actions[0], RuleAction::Remove);
+    }
+
+    #[test]
+    fn multiple_passes_accumulate() {
+        let src = r#"
+pkg test v1
+  pass first_pass
+    phase pre
+    priority 10
+    rule r1
+      when: construct.kind == "struct"
+      annotate: x = "1"
+  pass second_pass
+    phase pre
+    priority 20
+    rule r2
+      when: construct.kind == "trait"
+      annotate: y = "2"
+"#;
+        let mut reg = LayerRegistry::builtin();
+        reg.load_content("test", src).expect("layer should load");
+        assert_eq!(reg.passes.len(), 2);
+        assert_eq!(reg.passes[0].name, "first_pass");
+        assert_eq!(reg.passes[1].name, "second_pass");
+    }
 }

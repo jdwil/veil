@@ -342,4 +342,121 @@ mod tests {
             assert_eq!(c.pass_annotations.get("post"), Some(&"yes".to_string()));
         }
     }
+
+    #[test]
+    fn two_layers_same_pass_name_higher_priority_wins() {
+        let mut sol = make_solution_with_construct("agg", "Aggregate", "Item");
+
+        let mut reg = LayerRegistry::builtin();
+        // Layer A: priority 10 sets key = "from_a"
+        reg.passes.push(PassSpec {
+            name: "shared".into(),
+            priority: 10,
+            phase: PassPhase::Pre,
+            rules: vec![RuleSpec {
+                name: "a_rule".into(),
+                when: r#"construct.kind == "struct""#.into(),
+                actions: vec![RuleAction::Annotate { key: "origin".into(), value: "from_a".into() }],
+            }],
+            layer: "layer_a".into(),
+        });
+        // Layer B: priority 20 (runs second) sets key = "from_b"
+        reg.passes.push(PassSpec {
+            name: "shared".into(),
+            priority: 20,
+            phase: PassPhase::Pre,
+            rules: vec![RuleSpec {
+                name: "b_rule".into(),
+                when: r#"construct.kind == "struct""#.into(),
+                actions: vec![RuleAction::Annotate { key: "origin".into(), value: "from_b".into() }],
+            }],
+            layer: "layer_b".into(),
+        });
+
+        execute_pre_passes(&mut sol, &reg, false);
+
+        // Priority 20 runs after priority 10, so "from_b" wins (last write)
+        if let TopLevelItem::Construct(c) = &sol.items[0] {
+            assert_eq!(c.pass_annotations.get("origin"), Some(&"from_b".to_string()));
+        }
+    }
+
+    #[test]
+    fn effective_annotation_checks_pass_then_global() {
+        let mut c = Construct::new("agg", "Aggregate", Shape::Struct, "Order".into(), span());
+        // No pass annotation yet — falls back to global
+        assert_eq!(super::effective_annotation(&c, "fn_attrs", Some("pub async")), Some("pub async"));
+        assert_eq!(super::effective_annotation(&c, "fn_attrs", None), None);
+
+        // Set pass annotation — overrides global
+        c.pass_annotations.insert("fn_attrs".into(), "pub".into());
+        assert_eq!(super::effective_annotation(&c, "fn_attrs", Some("pub async")), Some("pub"));
+    }
+
+    #[test]
+    fn pass_recurses_into_children() {
+        let mut sol = make_solution_with_construct("ctx", "Context", "App");
+        // Add a child construct
+        if let TopLevelItem::Construct(c) = &mut sol.items[0] {
+            c.shape = Shape::Mod;
+            c.children.push(Construct::new(
+                "agg", "Aggregate", Shape::Struct, "Customer".into(), span(),
+            ));
+        }
+
+        let mut reg = LayerRegistry::builtin();
+        reg.passes.push(PassSpec {
+            name: "mark_all".into(),
+            priority: 10,
+            phase: PassPhase::Pre,
+            rules: vec![RuleSpec {
+                name: "mark".into(),
+                when: r#"construct.kind == "struct""#.into(),
+                actions: vec![RuleAction::Annotate { key: "seen".into(), value: "yes".into() }],
+            }],
+            layer: "test".into(),
+        });
+
+        execute_pre_passes(&mut sol, &reg, false);
+
+        // Parent is mod-shaped (not struct) — should NOT match
+        if let TopLevelItem::Construct(c) = &sol.items[0] {
+            assert!(c.pass_annotations.is_empty(), "mod should not match struct predicate");
+            // Child is struct-shaped — SHOULD match
+            assert_eq!(
+                c.children[0].pass_annotations.get("seen"),
+                Some(&"yes".to_string()),
+                "child struct should be annotated"
+            );
+        }
+    }
+
+    #[test]
+    fn trace_output_contains_expected_info() {
+        let mut sol = make_solution_with_construct("svc", "DomainService", "UserSvc");
+
+        let mut reg = LayerRegistry::builtin();
+        reg.passes.push(PassSpec {
+            name: "async_pass".into(),
+            priority: 50,
+            phase: PassPhase::Pre,
+            rules: vec![RuleSpec {
+                name: "mark_async".into(),
+                when: r#"construct.kind == "struct""#.into(),
+                actions: vec![RuleAction::Annotate { key: "fn_attrs".into(), value: "pub async".into() }],
+            }],
+            layer: "tokio".into(),
+        });
+
+        let traces = execute_pre_passes(&mut sol, &reg, true);
+
+        assert_eq!(traces.len(), 1);
+        let t = &traces[0];
+        assert_eq!(t.pass_name, "async_pass");
+        assert_eq!(t.rule_name, "mark_async");
+        assert_eq!(t.construct_name, "UserSvc");
+        assert_eq!(t.construct_kind, "DomainService");
+        assert!(t.action_desc.contains("fn_attrs"));
+        assert!(t.action_desc.contains("pub async"));
+    }
 }
