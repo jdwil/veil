@@ -118,6 +118,8 @@ pub fn generate(solution: &Solution, registry: &LayerRegistry) -> GeneratedProje
 
     // Extract layer-declared section overrides. When present, these replace the
     // backend's hardcoded defaults for derives, trait attributes, and fn modifiers.
+    // The pass system can also contribute these via pass_annotations on constructs;
+    // template output is the global fallback, pass_annotations are per-construct.
     let layer_derives = crate::template::compose_section(&template_output, "derives");
     let layer_trait_attrs = crate::template::compose_section(&template_output, "trait_attrs");
     let layer_fn_attrs = crate::template::compose_section(&template_output, "fn_attrs");

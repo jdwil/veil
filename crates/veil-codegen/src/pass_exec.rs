@@ -173,6 +173,16 @@ fn describe_action(action: &RuleAction) -> String {
     }
 }
 
+/// Get the effective value of a pass annotation for a construct.
+/// Checks the construct's pass_annotations first (per-construct override from passes),
+/// then falls back to the provided global default (from template system).
+///
+/// This unifies emit_to/fn_attrs/derives threading: both the template system
+/// and the pass system can contribute, with pass annotations taking precedence.
+pub fn effective_annotation<'a>(construct: &'a Construct, key: &str, global_default: Option<&'a str>) -> Option<&'a str> {
+    construct.pass_annotations.get(key).map(|s| s.as_str()).or(global_default)
+}
+
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
