@@ -1,6 +1,7 @@
 stub aws-sdk-sns 1.109.0
   # @generated veil-stub-gen 1
   # source crates.io
+  async_methods send
   # surface full
   # cargo_name aws-sdk-sns
   # generated_at 2026-08-20T19:51:08Z
@@ -1480,7 +1481,7 @@ aws_sdk_sns::Client::from_conf(conf)
         rust: "{{self}}.get_phone_number({{args}})"
 
   struct MessageAttributeValueBuilder
-    path types::_message_attribute_value
+    path types
     fn data_type(input: Str) -> Self
       lowers_to
         rust: "{{self}}.data_type({{input}})"
@@ -6223,7 +6224,7 @@ aws_sdk_sns::Client::from_conf(conf)
         rust: "aws_sdk_sns::OptInPhoneNumber::new({{args}})"
 
   struct MessageAttributeValue
-    path types::_message_attribute_value
+    path types
     fn data_type() -> Str
       lowers_to
         rust: "{{self}}.data_type({{args}})"
