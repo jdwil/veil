@@ -11,10 +11,12 @@ stub sqlx 0.9.0
   row_type_derives sqlx::FromRow
   wrapper_type_derives sqlx::Type
   wrapper_type_attrs sqlx(transparent)
+  borrow_fields pool
   rust_name PoolOptions AnyPoolOptions
   codegen_imports sqlx::AnyPoolOptions
   rust_name Pool PgPool
   codegen_imports sqlx::PgPool
+  root_types Pool
   harness_field Pool """
 {
     let url = std::env::var("DATABASE_URL").unwrap_or_else(|_| "postgres://localhost/test".into());

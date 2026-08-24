@@ -190,11 +190,16 @@ pub fn gen_types(
         }
         out.push_str(&gen_enum(e));
     }
+
+    // Pre-pass: compute types that cannot safely derive Eq/Hash due to
+    // containing serde_json::Value (directly or transitively via another struct).
+    let non_eq_safe_types = compute_non_eq_safe_types(&contents.structs);
+
     for c in &contents.structs {
         if declared.contains(&c.name) {
             continue;
         }
-        let (chunk, is_defaultable) = gen_struct(c, registry, &defaultable_structs, layer_derives);
+        let (chunk, is_defaultable) = gen_struct(c, registry, &defaultable_structs, layer_derives, &non_eq_safe_types);
         out.push_str(&chunk);
         if is_defaultable {
             defaultable_structs.insert(c.name.clone());
@@ -272,6 +277,82 @@ pub fn collect_type_refs(ty: &TypeExpr, refs: &mut Vec<String>) {
     }
 }
 
+/// Check if a TypeExpr contains `Json` (maps to `serde_json::Value`) anywhere
+/// in its structure. Used to skip `Eq`/`Hash` derives since `Value` doesn't
+/// implement those traits.
+pub fn type_expr_contains_json(ty: &TypeExpr) -> bool {
+    match ty {
+        TypeExpr::Named(name) => name == "Json",
+        TypeExpr::Generic(_, args) => args.iter().any(type_expr_contains_json),
+        TypeExpr::Result(Some(inner)) => type_expr_contains_json(inner),
+        TypeExpr::Result(None) => false,
+        TypeExpr::Optional(inner) => type_expr_contains_json(inner),
+        TypeExpr::List(inner) => type_expr_contains_json(inner),
+        TypeExpr::Map(k, v) => type_expr_contains_json(k) || type_expr_contains_json(v),
+        TypeExpr::Set(inner) => type_expr_contains_json(inner),
+        TypeExpr::Tuple(items) => items.iter().any(type_expr_contains_json),
+        TypeExpr::Array(inner, _) => type_expr_contains_json(inner),
+        TypeExpr::Ref(inner, _) => type_expr_contains_json(inner),
+        TypeExpr::Dyn(inner) => type_expr_contains_json(inner),
+        TypeExpr::ImplTrait(inner) => type_expr_contains_json(inner),
+        TypeExpr::FnPtr(params, ret) => {
+            params.iter().any(type_expr_contains_json)
+                || ret.as_ref().map(|r| type_expr_contains_json(r)).unwrap_or(false)
+        }
+        TypeExpr::LitStr(_) => false,
+    }
+}
+
+/// Compute the set of struct names that cannot safely derive Eq/Hash because
+/// they contain `serde_json::Value` directly or transitively (via another struct
+/// that contains it). Uses fixed-point iteration.
+pub fn compute_non_eq_safe_types(structs: &[&Construct]) -> std::collections::HashSet<String> {
+    let mut non_eq: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    // Seed: structs that directly contain Json fields.
+    for c in structs {
+        let mut fields: Vec<&Field> = c.fields.iter().collect();
+        for block in &c.blocks {
+            if block.shape != Shape::Enum {
+                fields.extend(block.fields.iter());
+            }
+        }
+        if fields.iter().any(|f| type_expr_contains_json(&f.type_expr)) {
+            non_eq.insert(c.name.clone());
+        }
+    }
+
+    // Fixed-point: propagate to structs that reference non-eq types.
+    loop {
+        let mut changed = false;
+        for c in structs {
+            if non_eq.contains(&c.name) {
+                continue;
+            }
+            let mut fields: Vec<&Field> = c.fields.iter().collect();
+            for block in &c.blocks {
+                if block.shape != Shape::Enum {
+                    fields.extend(block.fields.iter());
+                }
+            }
+            let refs_non_eq = fields.iter().any(|f| {
+                let mut refs = Vec::new();
+                collect_type_refs(&f.type_expr, &mut refs);
+                refs.iter().any(|r| non_eq.contains(r))
+            });
+            if refs_non_eq {
+                non_eq.insert(c.name.clone());
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    non_eq
+}
+
 /// Collect stub-declared derives/attrs for domain structs used with that SDK.
 /// Multi-field → `row_type_derives`; single-field → `wrapper_type_derives` + attrs.
 pub fn stub_domain_type_attrs(registry: &LayerRegistry, is_single_field: bool) -> (String, String) {
@@ -321,6 +402,7 @@ pub fn gen_struct(
     registry: &LayerRegistry,
     defaultable: &std::collections::HashSet<String>,
     layer_derives: Option<&str>,
+    non_eq_safe_types: &std::collections::HashSet<String>,
 ) -> (String, bool) {
     let mut out = String::new();
 
@@ -360,7 +442,11 @@ pub fn gen_struct(
     let (extra_derive, extra_attr) = stub_domain_type_attrs(registry, is_single_field);
 
     // Phase 6c: equality_by_value → append Eq, Hash to derives.
-    let constraint_derive = if has_equality_by_value {
+    // Skip Eq/Hash when any field contains `Json` (serde_json::Value) because
+    // Value does NOT implement Eq or Hash. Also skips when the struct transitively
+    // references another struct that contains Json.
+    let is_non_eq_safe = non_eq_safe_types.contains(&c.name);
+    let constraint_derive = if has_equality_by_value && !is_non_eq_safe {
         ", Eq, Hash"
     } else {
         ""
@@ -1049,7 +1135,7 @@ pub fn gen_enum(c: &Construct) -> String {
         !c.variants.is_empty()
     };
     let derives = if unit_only {
-        "Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default"
+        "Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, Hash"
     } else {
         "Debug, Clone, PartialEq, Serialize, Deserialize"
     };

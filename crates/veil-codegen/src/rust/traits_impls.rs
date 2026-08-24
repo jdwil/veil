@@ -776,7 +776,7 @@ pub fn gen_impls(
 
                 // Translate the body. Adapter bodies call external targets
                 // (e.g. `http.post(...)`) that resolve to runtime stubs.
-                let mut ctx = GenCtx::new(name_to_shape.clone());
+                let mut ctx = build_ctx_from_solution(solution, name_to_shape.clone(), registry);
                 // The impl's bare params are locals in the body; seed types from
                 // the trait signature so Json/Option methods lower correctly.
                 for p in &mimpl.params {

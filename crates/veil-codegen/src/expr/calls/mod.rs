@@ -366,7 +366,21 @@ pub fn clone_args_ir(recv_type: Option<&str>, method: &str, args: &[Expr], ctx: 
             .iter()
             .map(|a| match a {
                 Expr::StringLit(s) => RustExpr::StringLit(s.clone()),
-                Expr::Ident(n) => borrow_of(ident(n.clone())),
+                Expr::Ident(n) => {
+                    // For Pattern-taking methods: if the arg is a String/&String local,
+                    // use .as_str() to get &str (which impls Pattern).
+                    // Plain & on a &String gives &&String which does NOT impl Pattern.
+                    let is_string_type = ctx
+                        .local_type(n)
+                        .map(|t| t == "String" || t == "&String" || t == "&str" || t == "str")
+                        .unwrap_or(false);
+                    let is_ref_elem = ctx.ownership.ref_elem_locals.contains(n.as_str());
+                    if is_string_type || is_ref_elem {
+                        rust_ir::method(ident(n.clone()), "as_str", vec![])
+                    } else {
+                        borrow_of(ident(n.clone()))
+                    }
+                }
                 other => {
                     let node = lower_value(other, ctx);
                     if matches!(node, RustExpr::Borrow { .. }) {

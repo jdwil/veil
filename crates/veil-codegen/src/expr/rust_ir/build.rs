@@ -367,9 +367,16 @@ pub fn wrap_as_option_ir(expr: &Expr, node: RustExpr, ctx: &GenCtx) -> RustExpr 
         RustExpr::Ident { name, .. } => {
             if let Expr::Ident(n) = expr
                 && n == name
-                && ctx.local_type(n).is_some_and(|ty| ty.starts_with("Option<"))
             {
-                return node;
+                let local_ty = ctx.local_type(n);
+                if local_ty.is_some_and(|ty| ty.starts_with("Option<")) {
+                    return node;
+                }
+                // Unknown type: skip wrapping to avoid double-Option when the
+                // local already holds Option from fetch_optional / similar.
+                if local_ty.is_none() {
+                    return node;
+                }
             }
             some_of(node)
         }

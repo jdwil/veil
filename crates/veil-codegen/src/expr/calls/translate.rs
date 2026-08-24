@@ -1484,7 +1484,9 @@ fn lower_unknown_target_call(
                 .map(|a| {
                     let node = lower_value(a, ctx);
                     match a {
-                        Expr::StringLit(_) | Expr::Ident(_) | Expr::FieldAccess(_, _) => {
+                        // String literals are already &str — don't double-borrow.
+                        Expr::StringLit(_) => node,
+                        Expr::Ident(_) | Expr::FieldAccess(_, _) => {
                             borrow_of(node)
                         }
                         _ if matches!(node, RustExpr::Borrow { .. }) => node,

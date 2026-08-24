@@ -633,10 +633,24 @@ fn lower_return(inner: &Expr, expr: &Expr, ctx: &GenCtx) -> RustExpr {
                 }
             } else if returns_option && !matches!(&val, RustExpr::FnCall { path, .. } if path == "Some")
             {
-                if let Expr::Ident(name) = inner
-                    && ctx.local_type(name).map(is_option_type).unwrap_or(false)
-                {
-                    return ret_ok(val);
+                if let Expr::Ident(name) = inner {
+                    let local_ty = ctx.local_type(name);
+                    if local_ty.map(is_option_type).unwrap_or(false) {
+                        return ret_ok(val);
+                    }
+                    // If local type is unknown (not inferred), skip wrapping — the local
+                    // likely already holds Option from a fetch_optional / similar method.
+                    // Double-wrapping (Some(Option<T>)) is always wrong; missing Some is
+                    // caught by the compiler as a concrete type error.
+                    if local_ty.is_none() {
+                        return ret_ok(val);
+                    }
+                }
+                // Fallback: check inferred type of the expression directly.
+                if let Some(inferred) = crate::expr::infer_expr_type(inner, ctx) {
+                    if is_option_type(&inferred) {
+                        return ret_ok(val);
+                    }
                 }
                 ret_ok(some_of(val))
             } else {
@@ -742,7 +756,7 @@ fn lower_struct_lit(
             .collect();
         return RustExpr::JsonMacro { entries };
     }
-    let ir_fields: Vec<(String, RustExpr)> = fields
+    let mut ir_fields: Vec<(String, RustExpr)> = fields
         .iter()
         .map(|(k, v)| {
             let mut val = match v {
@@ -796,11 +810,30 @@ fn lower_struct_lit(
                     } else {
                         val = RustExpr::JsonValue(Box::new(val));
                     }
+                } else if is_option_type(field_ty) && !is_none_node(&val) {
+                    // Auto-wrap non-Option values in Some() when target field is Option<T>
+                    let val_is_already_option = val_ty
+                        .as_deref()
+                        .map(|t| is_option_type(t))
+                        .unwrap_or(false);
+                    if !val_is_already_option {
+                        val = some_of(val);
+                    }
                 }
             }
             (to_snake(k), val)
         })
         .collect();
+    // Fill missing optional fields with None so the struct literal is complete
+    if let Some(all_fields) = ctx.types.struct_fields.get(name) {
+        let present: std::collections::HashSet<String> = ir_fields.iter().map(|(k, _)| k.clone()).collect();
+        for (field_name, field_ty) in all_fields {
+            let snake = to_snake(field_name);
+            if !present.contains(&snake) && is_option_type(field_ty) {
+                ir_fields.push((snake, none()));
+            }
+        }
+    }
     RustExpr::StructLit {
         name: name.to_string(),
         fields: ir_fields,
