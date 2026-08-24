@@ -316,6 +316,45 @@ pkg ddd v1
       color "#ef4444"
       label "Guard"
 
+  # ─── Error model (layer-controlled: emitted into veil_shared) ────────────────
+  # The error enum, ValidationError, and From impls are layer-declared here.
+  # The engine substitutes {error_type}, {not_found_variant}, {validation_variant},
+  # {external_variant} from the error_model declaration above.
+  shared_emit rust
+    /// Domain error type (layer-provided).
+    #[derive(Debug, thiserror::Error)]
+    pub enum {error_type} {
+        #[error("Not found")]
+        {not_found_variant},
+        #[error("Validation failed: {0}")]
+        {validation_variant}(String),
+        #[error("External service error: {0}")]
+        {external_variant}(String),
+    }
+
+    /// Validation error type.
+    #[derive(Debug, thiserror::Error)]
+    #[error("Validation error: {0}")]
+    pub struct ValidationError(pub String);
+
+    impl From<ValidationError> for {error_type} {
+        fn from(e: ValidationError) -> Self {
+            {error_type}::{validation_variant}(e.0)
+        }
+    }
+
+    impl From<serde_json::Error> for {error_type} {
+        fn from(e: serde_json::Error) -> Self {
+            {error_type}::{external_variant}(e.to_string())
+        }
+    }
+
+    impl From<String> for {error_type} {
+        fn from(e: String) -> Self {
+            {error_type}::{external_variant}(e)
+        }
+    }
+
   # ─── LLM Prompt (RAG context for code-generating agents) ─────────────────────
   prompt
     You are writing code using the DDD (Domain-Driven Design) layer for VEIL.

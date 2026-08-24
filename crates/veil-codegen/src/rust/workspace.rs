@@ -100,7 +100,11 @@ pub fn gen_bin_crate(
     // Use statements so main can call into context crates when present.
     // CAP-001 linked crates are available as `veil_server::…` via Cargo deps
     // (extern prelude); no extra `use` required.
-    let mut uses = String::from("use veil_shared::*;\n");
+    // Use statements: shared crate import from layer template or default.
+    let shared_import = registry.harness_render_templates.get("shared_imports")
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|| "use veil_shared::*;".to_string());
+    let mut uses = format!("{shared_import}\n");
     for c in module_crates {
         uses.push_str(&format!("use {c}::*;\n"));
     }
@@ -152,6 +156,9 @@ pub fn gen_workspace_toml(
     links: &[crate::links::ResolvedLink],
 ) -> GeneratedFile {
     let mut members = vec!["    \"crates/veil_shared\"".to_string()];
+    // veil_shared is included because layers provide content for it (shared_emit,
+    // declare blocks, traits). If this list were empty, the crate wouldn't be needed.
+    // Future: skip when no layer contributes content.
     for item in &sol.items {
         if let TopLevelItem::Construct(c) = item
             && c.shape == Shape::Mod {

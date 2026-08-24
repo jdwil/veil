@@ -16,8 +16,15 @@ pub fn gen_shared_crate(
     use crate::expr::{build_ctx_from_solution, stmt_to_rust};
     let mut files = Vec::new();
 
-    let mut shared_cargo = String::from(
-        r#"[package]
+    // Cargo.toml: use layer-provided template if available, else engine default.
+    let mut shared_cargo = if let Some(layer_cargo) = registry.harness_render_templates.get("shared_cargo") {
+        format!(
+            "[package]\nname = \"veil_shared\"\nversion.workspace = true\nedition.workspace = true\n\n[dependencies]\n{}\n",
+            layer_cargo.trim()
+        )
+    } else {
+        String::from(
+            r#"[package]
 name = "veil_shared"
 version.workspace = true
 edition.workspace = true
@@ -32,7 +39,8 @@ chrono.workspace = true
 tokio = { workspace = true }
 futures = "0.3"
 "#,
-    );
+        )
+    };
     // CAP-001: allow shared layer decls / free fns to call linked crates.
     for link in links {
         shared_cargo.push_str(&crate::links::cargo_workspace_dep_line(link));
@@ -60,23 +68,30 @@ futures = "0.3"
     } else {
         ("__VEIL_NO_ERROR_MODEL__".to_string(), "__NO_NOT_FOUND__".to_string(), "__NO_VALIDATION__".to_string(), "__NO_EXTERNAL__".to_string())
     };
-    lib.push_str(&format!("/// Domain error type.\n#[derive(Debug, thiserror::Error)]\npub enum {} {{\n", err_type));
-    lib.push_str(&format!("    #[error(\"Not found\")]\n    {},\n", err_not_found));
-    lib.push_str(&format!("    #[error(\"Validation failed: {{0}}\")]\n    {}(String),\n", err_validation));
-    lib.push_str(&format!("    #[error(\"External service error: {{0}}\")]\n    {}(String),\n", err_external));
-    // Emit any additional variants declared by the layer.
-    if let Some(em) = &registry.error_model {
-        for (role, variant) in &em.variants {
-            if role != "not_found" && role != "validation" && role != "external" {
-                // Additional variants get String payload by default.
-                lib.push_str(&format!("    #[error(\"{role}: {{0}}\")]\n    {variant}(String),\n"));
+    // Check if any layer shared_emit provides the error model (contains the
+    // error type name in a `pub enum` line). If so, skip engine generation —
+    // the layer controls the error enum format.
+    let layer_provides_error_model = registry.shared_emit.iter().any(|(target, code)| {
+        target == "rust" && code.contains(&format!("pub enum {}", err_type))
+    });
+    if !layer_provides_error_model {
+        // Fallback: engine generates the error model (backward compat).
+        lib.push_str(&format!("/// Domain error type.\n#[derive(Debug, thiserror::Error)]\npub enum {} {{\n", err_type));
+        lib.push_str(&format!("    #[error(\"Not found\")]\n    {},\n", err_not_found));
+        lib.push_str(&format!("    #[error(\"Validation failed: {{0}}\")]\n    {}(String),\n", err_validation));
+        lib.push_str(&format!("    #[error(\"External service error: {{0}}\")]\n    {}(String),\n", err_external));
+        if let Some(em) = &registry.error_model {
+            for (role, variant) in &em.variants {
+                if role != "not_found" && role != "validation" && role != "external" {
+                    lib.push_str(&format!("    #[error(\"{role}: {{0}}\")]\n    {variant}(String),\n"));
+                }
             }
         }
+        lib.push_str("}\n\n");
+        lib.push_str(&format!("/// Validation error type.\n#[derive(Debug, thiserror::Error)]\n#[error(\"Validation error: {{0}}\")]\npub struct ValidationError(pub String);\n\nimpl From<ValidationError> for {err_type} {{\n    fn from(e: ValidationError) -> Self {{\n        {err_type}::{err_validation}(e.0)\n    }}\n}}\n\n"));
+        lib.push_str(&format!("impl From<serde_json::Error> for {err_type} {{\n    fn from(e: serde_json::Error) -> Self {{\n        {err_type}::{err_external}(e.to_string())\n    }}\n}}\n\n"));
+        lib.push_str(&format!("impl From<String> for {err_type} {{\n    fn from(e: String) -> Self {{\n        {err_type}::{err_external}(e)\n    }}\n}}\n\n"));
     }
-    lib.push_str("}\n\n");
-    lib.push_str(&format!("/// Validation error type.\n#[derive(Debug, thiserror::Error)]\n#[error(\"Validation error: {{0}}\")]\npub struct ValidationError(pub String);\n\nimpl From<ValidationError> for {err_type} {{\n    fn from(e: ValidationError) -> Self {{\n        {err_type}::{err_validation}(e.0)\n    }}\n}}\n\n"));
-    lib.push_str(&format!("impl From<serde_json::Error> for {err_type} {{\n    fn from(e: serde_json::Error) -> Self {{\n        {err_type}::{err_external}(e.to_string())\n    }}\n}}\n\n"));
-    lib.push_str(&format!("impl From<String> for {err_type} {{\n    fn from(e: String) -> Self {{\n        {err_type}::{err_external}(e)\n    }}\n}}\n\n"));
 
     // Trait names in scope — used to box value-position references (List<Trait>).
     let trait_names: std::collections::HashSet<String> =
@@ -124,11 +139,18 @@ futures = "0.3"
     }
 
     // Layer-provided shared_emit blocks (e.g. InProcessBus + handler registry from bus.layer).
-    // Substitute {error_type}, {not_found_variant}, {handler_names_entries} placeholders.
+    // Substitute {error_type}, {not_found_variant}, {validation_variant}, {external_variant},
+    // {handler_names_entries} placeholders.
     let err_type_name = registry.error_model.as_ref().map(|em| em.type_name.as_str()).unwrap_or("__VEIL_NO_ERROR_MODEL__");
     let not_found_variant = registry.error_model.as_ref()
         .and_then(|em| em.variant("not_found"))
         .unwrap_or("__NO_NOT_FOUND__");
+    let validation_variant = registry.error_model.as_ref()
+        .and_then(|em| em.variant("validation"))
+        .unwrap_or("__NO_VALIDATION__");
+    let external_variant = registry.error_model.as_ref()
+        .and_then(|em| em.variant("external"))
+        .unwrap_or("__NO_EXTERNAL__");
     let handler_entries: String = handler_names.iter()
         .map(|n| format!("    \"{n}\","))
         .collect::<Vec<_>>()
@@ -138,6 +160,8 @@ futures = "0.3"
             let substituted = code
                 .replace("{error_type}", err_type_name)
                 .replace("{not_found_variant}", not_found_variant)
+                .replace("{validation_variant}", validation_variant)
+                .replace("{external_variant}", external_variant)
                 .replace("{handler_names_entries}", &handler_entries);
             lib.push_str(&substituted);
             lib.push('\n');
