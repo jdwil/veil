@@ -165,7 +165,7 @@ pub async fn run_saga(steps: &[Box<dyn SagaStep + Send + Sync>]) -> Result<(), D
                     unwind(steps, i, state.clone()).await?;
                     return Err(e)
                 },
-            }
+            };
     }
     Ok(())
 }

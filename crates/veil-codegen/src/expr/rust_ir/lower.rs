@@ -1243,7 +1243,20 @@ fn lower_chain_receiver(expr: &Expr, ctx: &GenCtx) -> RustExpr {
                 };
                 let args_ir =
                     clone_args_ir(recv_lookup, &inner_call.method, &inner_call.args, ctx);
-                method(receiver_ir, method_name, args_ir)
+                let call_node = method(receiver_ir, method_name, args_ir);
+                // If this intermediate method has a bang, it's async+fallible —
+                // apply .await.map_err(...)? here to split the chain at this point.
+                if inner_call.method.ends_with('!') {
+                    let finish = receiver_call_finish(
+                        inner_recv,
+                        &inner_call.method,
+                        ctx,
+                    );
+                    if !finish.is_bare() {
+                        return apply_finish(call_node, finish, &ctx.error_model);
+                    }
+                }
+                call_node
             } else {
                 translate_call(inner_call, ctx)
             }

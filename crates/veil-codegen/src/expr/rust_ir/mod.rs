@@ -697,7 +697,9 @@ fn emit_block_expr(stmts: &[RustExpr], value: Option<&RustExpr>) -> String {
             .enumerate()
             .map(|(i, p)| {
                 let is_last = i + 1 == n;
-                let line = if !is_last && !p.ends_with('}') && !p.ends_with(';') {
+                let needs_semi = !is_last && !p.ends_with(';')
+                    && (!p.ends_with('}') || p.contains(" = ") || p.starts_with("let "));
+                let line = if needs_semi {
                     format!("{p};")
                 } else {
                     p
@@ -724,12 +726,21 @@ fn indent_lines(s: &str, indent: &str) -> String {
         .join("\n")
 }
 
+/// Whether a brace-terminated expression needs a trailing `;` in statement position.
+/// Match expressions, let bindings, and assignments used as statements need
+/// semicolons; control flow (if, for, while, loop) and bare blocks do not.
+fn needs_semi_despite_brace(expr: &RustExpr) -> bool {
+    matches!(expr, RustExpr::Match { .. } | RustExpr::Let { .. } | RustExpr::Assign { .. })
+}
+
 fn emit_block(stmts: &[RustExpr], indent: &str) -> String {
     stmts
         .iter()
         .map(|e| {
             let rendered = emit(e);
-            let line = if !rendered.ends_with('}') && !rendered.ends_with(';') {
+            let needs_semi = !rendered.ends_with(';')
+                && (!rendered.ends_with('}') || needs_semi_despite_brace(e));
+            let line = if needs_semi {
                 format!("{};", rendered)
             } else {
                 rendered
@@ -747,7 +758,9 @@ fn emit_value_block_ir(stmts: &[RustExpr], indent: &str) -> String {
         .map(|(i, e)| {
             let rendered = emit(e);
             let is_last = i + 1 == stmts.len();
-            let line = if !is_last && !rendered.ends_with('}') && !rendered.ends_with(';') {
+            let needs_semi = !is_last && !rendered.ends_with(';')
+                && (!rendered.ends_with('}') || needs_semi_despite_brace(e));
+            let line = if needs_semi {
                 format!("{};", rendered)
             } else {
                 rendered
