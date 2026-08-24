@@ -1916,3 +1916,102 @@ pkg App
         assert!(out.contains("handle: CreateItem"), "{out}");
     }
 }
+
+// ── Library Projects: inject_library_constructs ─────────────────────────
+
+#[test]
+fn library_constructs_injected_into_solution() {
+    use veil_ir::layer::LayerRegistry;
+
+    // Simulate a registry that has library_constructs loaded
+    let mut reg = LayerRegistry::builtin();
+    // Load a minimal layer that provides 'widget' keyword
+    let layer_src = "layer test_lib\n  construct Widget\n    kw widget\n    mt struct\n";
+    reg.load_content("test_lib", layer_src).unwrap();
+
+    // Add a companion .veil source as library constructs
+    let companion_src = "sol TestLib\n  use test_lib\n  widget DefaultWidget\n    name: Str\n";
+    reg.library_constructs.push(("test_lib".to_string(), companion_src.to_string()));
+
+    // Parse a consumer .veil file that uses the layer
+    let consumer_src = "sol Consumer\n  use test_lib\n  widget CustomWidget\n    color: Str\n";
+    let tokens = crate::lexer::lex(consumer_src);
+    let sol = crate::parse_with_registry(&tokens, reg).unwrap();
+
+    // The consumer should have its own CustomWidget
+    let custom = sol.items.iter().find(|i| match i {
+        veil_ir::ast::TopLevelItem::Construct(c) => c.name == "CustomWidget",
+        _ => false,
+    });
+    assert!(custom.is_some(), "Consumer's CustomWidget should be present");
+
+    // The library's DefaultWidget should also be injected
+    let default = sol.items.iter().find(|i| match i {
+        veil_ir::ast::TopLevelItem::Construct(c) => c.name == "DefaultWidget",
+        _ => false,
+    });
+    assert!(default.is_some(), "Library's DefaultWidget should be injected");
+
+    // DefaultWidget should be marked as layer_provided
+    if let Some(veil_ir::ast::TopLevelItem::Construct(c)) = default {
+        assert!(c.layer_provided, "Library constructs should be marked layer_provided");
+    }
+}
+
+#[test]
+fn library_constructs_consumer_overrides_library() {
+    use veil_ir::layer::LayerRegistry;
+
+    let mut reg = LayerRegistry::builtin();
+    let layer_src = "layer test_lib\n  construct Widget\n    kw widget\n    mt struct\n";
+    reg.load_content("test_lib", layer_src).unwrap();
+
+    // Library provides a "SharedWidget" construct
+    let companion_src = "sol TestLib\n  use test_lib\n  widget SharedWidget\n    name: Str\n";
+    reg.library_constructs.push(("test_lib".to_string(), companion_src.to_string()));
+
+    // Consumer defines the same name — should override
+    let consumer_src = "sol Consumer\n  use test_lib\n  widget SharedWidget\n    color: Str\n    size: Int\n";
+    let tokens = crate::lexer::lex(consumer_src);
+    let sol = crate::parse_with_registry(&tokens, reg).unwrap();
+
+    // Only ONE SharedWidget should exist (the consumer's version)
+    let shared_widgets: Vec<_> = sol.items.iter().filter(|i| match i {
+        veil_ir::ast::TopLevelItem::Construct(c) => c.name == "SharedWidget",
+        _ => false,
+    }).collect();
+    assert_eq!(shared_widgets.len(), 1, "Consumer override means only one SharedWidget");
+
+    // It should be the consumer's version (not layer_provided)
+    if let veil_ir::ast::TopLevelItem::Construct(c) = shared_widgets[0] {
+        assert!(!c.layer_provided, "Consumer's override should not be marked layer_provided");
+    }
+}
+
+#[test]
+fn library_constructs_test_blocks_not_injected() {
+    use veil_ir::layer::LayerRegistry;
+
+    let mut reg = LayerRegistry::builtin();
+    let layer_src = "layer test_lib\n  construct Widget\n    kw widget\n    mt struct\n";
+    reg.load_content("test_lib", layer_src).unwrap();
+
+    // Library companion includes test blocks that should NOT be injected
+    let companion_src = "sol TestLib\n  use test_lib\n  widget LibWidget\n    name: Str\n  tests LibWidget\n    test creates_widget\n      given w = LibWidget(name: \"test\")\n      assert w.name == \"test\"\n";
+    reg.library_constructs.push(("test_lib".to_string(), companion_src.to_string()));
+
+    let consumer_src = "sol Consumer\n  use test_lib\n  widget MyWidget\n    x: Int\n";
+    let tokens = crate::lexer::lex(consumer_src);
+    let sol = crate::parse_with_registry(&tokens, reg).unwrap();
+
+    // Test blocks from library should not be present
+    let test_blocks: Vec<_> = sol.items.iter().filter(|i| matches!(i, veil_ir::ast::TopLevelItem::TestBlock(_))).collect();
+    assert!(test_blocks.is_empty(), "Library test blocks should not be injected");
+
+    // But constructs should be
+    let lib_widget = sol.items.iter().find(|i| match i {
+        veil_ir::ast::TopLevelItem::Construct(c) => c.name == "LibWidget",
+        _ => false,
+    });
+    assert!(lib_widget.is_some(), "Library construct should be injected");
+}

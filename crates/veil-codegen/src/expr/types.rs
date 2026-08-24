@@ -306,7 +306,7 @@ pub fn rust_ty_is_option_or_result(ty: &str) -> bool {
 
 /// Whether a type string represents an Option type.
 pub fn is_option_type(ty: &str) -> bool {
-    ty.starts_with("Option<")
+    ty.starts_with("Option<") || ty.starts_with("Opt<")
 }
 
 /// Whether a type string represents a Result type.
@@ -473,7 +473,7 @@ pub fn wrap_as_option_value(expr: &Expr, rust: String, ctx: &GenCtx) -> String {
     if let Expr::Ident(n) = expr
         && ctx
             .local_type(n)
-            .is_some_and(|ty| ty.starts_with("Option<"))
+            .is_some_and(|ty| is_option_type(ty))
         {
             return rust;
         }

@@ -663,6 +663,10 @@ pub struct LayerRegistry {
     /// Populated from `harness_template <target>` blocks in layer files.
     /// Key: target (e.g. "rust_bin"), Value: template string.
     pub harness_render_templates: HashMap<String, String>,
+    /// Library constructs from companion .veil files declared via `library` directives.
+    /// Each entry is `(layer_name, veil_source)` — the raw source of the companion file.
+    /// These are parsed and merged into the consuming solution at codegen time.
+    pub library_constructs: Vec<(String, String)>,
 }
 
 /// Layer-declared bus message naming (no hard-coded `Handle` in the engine).
@@ -769,6 +773,7 @@ impl Default for LayerRegistry {
             method_lowers_to: HashMap::new(),
             shared_emit: Vec::new(),
             harness_render_templates: HashMap::new(),
+            library_constructs: Vec::new(),
         }
     }
 }
@@ -802,6 +807,7 @@ impl Clone for LayerRegistry {
             method_lowers_to: self.method_lowers_to.clone(),
             shared_emit: self.shared_emit.clone(),
             harness_render_templates: self.harness_render_templates.clone(),
+            library_constructs: self.library_constructs.clone(),
         }
     }
 }
@@ -1378,10 +1384,16 @@ impl LayerRegistry {
             self.layer_deps.remove(name);
             format!("layer '{}': {}", name, e)
         })?;
+        let library_file = raw.library.clone();
         if let Err(e) = self.merge_and_resolve(raw) {
             self.layers.retain(|l| l != name);
             self.layer_deps.remove(name);
             return Err(e);
+        }
+        // Library companion: resolve the .veil file and store its source for
+        // later injection into consuming solutions.
+        if let Some(ref lib_path) = library_file {
+            self.load_library_companion(name, lib_path, dir);
         }
         // INV-002 / INV-006: same policy install as load_content (load_layer is the
         // normal path for package `use` lines; without this, identity_policy never
@@ -1481,6 +1493,20 @@ impl LayerRegistry {
             }
         }
 
+        // 1e. VEIL_LIBRARY_PATH: colon-separated dirs containing library projects
+        if let Ok(lib_path_env) = std::env::var("VEIL_LIBRARY_PATH") {
+            let separator = if cfg!(windows) { ';' } else { ':' };
+            for root in lib_path_env.split(separator) {
+                let root = std::path::Path::new(root.trim());
+                if !root.is_dir() {
+                    continue;
+                }
+                if let Some(content) = Self::load_layer_from_product_root(name, root) {
+                    return Ok(content);
+                }
+            }
+        }
+
         // 2. Non-listed names may still live in the platform install (extensions)
         if let Some(content) = crate::platform_layers::resolve_platform_layer_content(name) {
             return Ok(content);
@@ -1574,10 +1600,15 @@ impl LayerRegistry {
             self.layer_deps.remove(name);
             format!("layer '{}': {}", name, e)
         })?;
+        let library_file = raw.library.clone();
         if let Err(e) = self.merge_and_resolve(raw) {
             self.layers.retain(|l| l != name);
             self.layer_deps.remove(name);
             return Err(e);
+        }
+        // Library companion: resolve the .veil file and store its source.
+        if let Some(ref lib_path) = library_file {
+            self.load_library_companion(name, lib_path, &cwd);
         }
         // INV-002: target layers may install constructor policy tables.
         if let Some(pol) = parse_constructor_policy(content) {
@@ -1619,6 +1650,81 @@ impl LayerRegistry {
                 crate::harness::merge_harness_policy(&self.harness_policy, &harness);
         }
         Ok(())
+    }
+
+    /// Load the companion .veil implementation file declared by a library layer.
+    ///
+    /// Resolution order:
+    /// 1. Relative to the layer file's directory on disk
+    /// 2. Via the external source resolver (runtime/S3)
+    /// 3. Via VEIL_LIBRARY_PATH directories
+    ///
+    /// The raw source is stored; parsing + injection happens in the consumer's
+    /// pipeline (see `inject_library_constructs`).
+    fn load_library_companion(&mut self, layer_name: &str, lib_path: &str, dir: &Path) {
+        // Already loaded a companion for this layer — skip.
+        if self.library_constructs.iter().any(|(n, _)| n == layer_name) {
+            return;
+        }
+
+        // 1. Try filesystem relative to layer location
+        let candidate = dir.join(lib_path);
+        if candidate.is_file() {
+            if let Ok(source) = std::fs::read_to_string(&candidate) {
+                self.library_constructs.push((layer_name.to_string(), source));
+                return;
+            }
+        }
+        // Also check layers/ subdir (layer might be at layers/<name>.layer, companion at layers/../main.veil)
+        let parent_candidate = dir.join("..").join(lib_path);
+        if parent_candidate.is_file() {
+            if let Ok(source) = std::fs::read_to_string(&parent_candidate) {
+                self.library_constructs.push((layer_name.to_string(), source));
+                return;
+            }
+        }
+
+        // 2. External source resolver (runtime provides package source from S3/DDB)
+        if let Some(resolver) = &self.source_resolver {
+            // Convention: resolver key for library companion is "layer_name/lib_path"
+            let key = format!("{}/{}", layer_name, lib_path);
+            if let Some(source) = resolver(&key) {
+                self.library_constructs.push((layer_name.to_string(), source));
+                return;
+            }
+        }
+
+        // 3. VEIL_LIBRARY_PATH: colon-separated dirs containing library projects
+        if let Ok(lib_path_env) = std::env::var("VEIL_LIBRARY_PATH") {
+            let separator = if cfg!(windows) { ';' } else { ':' };
+            for root in lib_path_env.split(separator) {
+                let root = Path::new(root.trim());
+                if !root.is_dir() {
+                    continue;
+                }
+                // Look for <root>/layers/<layer_name>.layer sibling to <root>/<lib_path>
+                let companion = root.join(lib_path);
+                if companion.is_file() {
+                    if let Ok(source) = std::fs::read_to_string(&companion) {
+                        self.library_constructs.push((layer_name.to_string(), source));
+                        return;
+                    }
+                }
+            }
+        }
+
+        // 4. extra_layer_roots (from veil.toml [dependencies])
+        for root in &self.extra_layer_roots.clone() {
+            let companion = root.join(lib_path);
+            if companion.is_file() {
+                if let Ok(source) = std::fs::read_to_string(&companion) {
+                    self.library_constructs.push((layer_name.to_string(), source));
+                    return;
+                }
+            }
+        }
+
+        // Not found — silently skip (library is optional / may only be available in runtime)
     }
 
     /// Build a registry for a `.veil` file: built-ins plus every layer the
@@ -3033,6 +3139,10 @@ pub struct RawLayer {
     /// Harness render templates per target (e.g. "rust_bin" → template string).
     /// Populated from `harness_template <target>` blocks in layer files.
     pub harness_render_templates: HashMap<String, String>,
+    /// Optional companion .veil implementation file path (relative to layer location).
+    /// When present, the layer acts as a library: the companion is parsed and its
+    /// constructs are merged into consuming projects.
+    pub library: Option<String>,
 }
 
 /// Pkg-level `use` names in a layer body (`use deploy`, `use harness`, …).
@@ -3116,6 +3226,8 @@ pub fn parse_layer_file(content: &str, layer_name: &str) -> Result<RawLayer, Str
     let mut pass_current_rule_name: Option<String> = None;
     let mut pass_current_when: String = String::new();
     let mut pass_current_actions: Vec<RuleAction> = Vec::new();
+    // Library companion file path (from `library <path>` directive)
+    let mut library_path: Option<String> = None;
     // In-progress `view` under `present` (flushed on next view / role / section).
     let mut present_view: Option<crate::presentation::ViewSpec> = None;
     let mut errors: Vec<String> = Vec::new();
@@ -3716,6 +3828,15 @@ pub fn parse_layer_file(content: &str, layer_name: &str) -> Result<RawLayer, Str
             }
         }
 
+        // Handle `library <path>` directive: companion .veil implementation file.
+        if let Some(path) = trimmed.strip_prefix("library ") {
+            let path = path.trim();
+            if !path.is_empty() {
+                library_path = Some(path.to_string());
+            }
+            continue;
+        }
+
         if trimmed.starts_with("construct ") {
             flush_present_view(&mut current, &mut present_view);
             if let Some(item) = current.take() {
@@ -4179,6 +4300,7 @@ pub fn parse_layer_file(content: &str, layer_name: &str) -> Result<RawLayer, Str
         method_lowers_to,
         shared_emit,
         harness_render_templates,
+        library: library_path,
     })
 }
 
@@ -6377,5 +6499,130 @@ pkg test v1
         assert_eq!(reg.passes.len(), 2);
         assert_eq!(reg.passes[0].name, "first_pass");
         assert_eq!(reg.passes[1].name, "second_pass");
+    }
+
+    // ── Library Projects ────────────────────────────────────────────────
+
+    #[test]
+    fn parse_layer_file_library_directive() {
+        let src = r#"
+layer test_lib
+  use base
+  library main.veil
+
+  construct Widget
+    kw widget
+    mt struct
+"#;
+        let raw = super::parse_layer_file(src, "test_lib").unwrap();
+        assert_eq!(raw.library, Some("main.veil".to_string()));
+        assert_eq!(raw.constructs.len(), 1);
+        assert_eq!(raw.constructs[0].keyword, "widget");
+    }
+
+    #[test]
+    fn parse_layer_file_no_library_directive() {
+        let src = r#"
+layer plain
+  construct Foo
+    kw foo
+    mt struct
+"#;
+        let raw = super::parse_layer_file(src, "plain").unwrap();
+        assert_eq!(raw.library, None);
+    }
+
+    #[test]
+    fn load_content_with_library_filesystem() {
+        use std::io::Write;
+        // Create a temp dir with a layer and companion .veil file
+        let tmp = std::env::temp_dir().join("veil_test_library");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        let layer_content = r#"layer test_lib
+  library companion.veil
+
+  construct Widget
+    kw widget
+    mt struct
+"#;
+        let companion_content = r#"sol TestLib
+  ctx Widgets
+    struct DefaultWidget
+      name: Str
+"#;
+        let layer_file = tmp.join("test_lib.layer");
+        let companion_file = tmp.join("companion.veil");
+        std::fs::File::create(&layer_file).unwrap().write_all(layer_content.as_bytes()).unwrap();
+        std::fs::File::create(&companion_file).unwrap().write_all(companion_content.as_bytes()).unwrap();
+
+        let mut reg = LayerRegistry::builtin();
+        reg.load_layer("test_lib", &tmp).unwrap();
+
+        // Library constructs should be loaded
+        assert_eq!(reg.library_constructs.len(), 1);
+        assert_eq!(reg.library_constructs[0].0, "test_lib");
+        assert!(reg.library_constructs[0].1.contains("DefaultWidget"));
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn load_content_library_via_env_path() {
+        use std::io::Write;
+        // Create a library project in a temp dir
+        let tmp = std::env::temp_dir().join("veil_test_lib_path");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(tmp.join("layers")).unwrap();
+
+        let layer_content = "layer env_lib\n  library main.veil\n\n  construct Gadget\n    kw gadget\n    mt struct\n";
+        let companion_content = "sol EnvLib\n  ctx Gadgets\n    struct SomeGadget\n      id: Int\n";
+
+        std::fs::File::create(tmp.join("layers").join("env_lib.layer"))
+            .unwrap().write_all(layer_content.as_bytes()).unwrap();
+        std::fs::File::create(tmp.join("main.veil"))
+            .unwrap().write_all(companion_content.as_bytes()).unwrap();
+
+        // Set VEIL_LIBRARY_PATH and load via load_content (which uses cwd)
+        let old_env = std::env::var("VEIL_LIBRARY_PATH").ok();
+        unsafe { std::env::set_var("VEIL_LIBRARY_PATH", tmp.display().to_string()); }
+
+        let mut reg = LayerRegistry::builtin();
+        // load_content doesn't find the companion from layers/ subdir relative path
+        // directly, but it does look at VEIL_LIBRARY_PATH
+        reg.load_content("env_lib", layer_content).unwrap();
+
+        // Should find via VEIL_LIBRARY_PATH
+        assert_eq!(reg.library_constructs.len(), 1);
+        assert_eq!(reg.library_constructs[0].0, "env_lib");
+
+        // Restore env
+        match old_env {
+            Some(val) => unsafe { std::env::set_var("VEIL_LIBRARY_PATH", val); },
+            None => unsafe { std::env::remove_var("VEIL_LIBRARY_PATH"); },
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn library_constructs_not_duplicated_on_reload() {
+        use std::io::Write;
+        let tmp = std::env::temp_dir().join("veil_test_lib_nodup");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        let layer_content = "layer nodup\n  library lib.veil\n\n  construct Thing\n    kw thing\n    mt struct\n";
+        let companion_content = "sol NoDup\n  ctx Things\n    struct AThing\n      x: Int\n";
+        std::fs::File::create(tmp.join("nodup.layer")).unwrap().write_all(layer_content.as_bytes()).unwrap();
+        std::fs::File::create(tmp.join("lib.veil")).unwrap().write_all(companion_content.as_bytes()).unwrap();
+
+        let mut reg = LayerRegistry::builtin();
+        reg.load_layer("nodup", &tmp).unwrap();
+        // Attempting to load again should not duplicate
+        reg.load_layer("nodup", &tmp).unwrap();
+        assert_eq!(reg.library_constructs.len(), 1);
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

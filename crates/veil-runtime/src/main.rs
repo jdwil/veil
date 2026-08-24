@@ -5,6 +5,7 @@
 //! Target: keep this file ≤ ~80 lines of process glue.
 
 mod artifact_registry;
+mod auth;
 mod function_invoke;
 mod local_ports;
 mod platform;
@@ -20,7 +21,55 @@ use axum::{
     Json, Router,
 };
 use futures::FutureExt;
-use veil_server::{resolve_static_dir, ProductHost};
+use veil_server::{resolve_ui_dir, ProductHost};
+
+/// Build CORS layer from VEIL_CORS_ORIGINS env var.
+///
+/// If `VEIL_CORS_ORIGINS` is not set or empty, defaults to permissive CORS (same behavior
+/// as before for local dev). If set to a comma-separated list of origins, only those
+/// origins are allowed.
+fn build_cors_layer() -> tower_http::cors::CorsLayer {
+    use axum::http::{header, Method};
+    use tower_http::cors::CorsLayer;
+
+    let origins_env = std::env::var("VEIL_CORS_ORIGINS").unwrap_or_default();
+
+    if origins_env.is_empty() {
+        return CorsLayer::permissive();
+    }
+
+    let origins: Vec<axum::http::HeaderValue> = origins_env
+        .split(',')
+        .filter_map(|s| {
+            let trimmed = s.trim();
+            if trimmed.is_empty() {
+                return None;
+            }
+            trimmed.parse().ok()
+        })
+        .collect();
+
+    if origins.is_empty() {
+        return CorsLayer::permissive();
+    }
+
+    CorsLayer::new()
+        .allow_origin(origins)
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::DELETE,
+            Method::PATCH,
+            Method::OPTIONS,
+        ])
+        .allow_headers([
+            header::AUTHORIZATION,
+            header::CONTENT_TYPE,
+            header::ACCEPT,
+        ])
+        .max_age(std::time::Duration::from_secs(86400))
+}
 
 #[derive(Debug)]
 enum BusError {
@@ -233,16 +282,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let platform_routes = platform_http::build_platform_router(platform_bus).await;
     let bus_routes = bus_routes.merge(platform_routes);
 
-    let static_dir = resolve_static_dir(Some(std::path::Path::new(env!("CARGO_MANIFEST_DIR"))));
+    let ui_dir = resolve_ui_dir(Some(std::path::Path::new(env!("CARGO_MANIFEST_DIR"))));
 
     // CAP-002: ProductHost = IDE multi-router + shell SPA + platform bus (single port).
-    ProductHost::new()
+    let host = ProductHost::new()
         .port(port)
-        .static_dir(static_dir)
+        .static_dir(ui_dir)
         .mount_bus_router(bus_routes)
-        .ensure_config(non_interactive)?
-        .listen()
-        .await?;
+        .ensure_config(non_interactive)?;
+
+    let projects_dir = host.projects_dir_path().to_path_buf();
+    let viewer = host.viewer_url_ref().to_string();
+
+    // Build the base router (IDE + shell + bus).
+    let app = host.build_router();
+
+    // Auth layer: protects /api/* and /bus/* when VEIL_AUTH_ENABLED=true.
+    let auth_config = auth::AuthConfig::from_env();
+    let auth_state = auth::AuthState::new(auth_config.clone()).await;
+    let app = app.layer(auth::AuthLayer::new(auth_state));
+
+    if auth_config.is_active() {
+        tracing::info!("auth enabled (provider: {:?})", auth_config.provider_name());
+    } else {
+        tracing::info!("auth disabled (local dev mode)");
+    }
+
+    // CORS layer: configurable via VEIL_CORS_ORIGINS.
+    let cors = build_cors_layer();
+    let app = app.layer(cors);
+
+    ProductHost::serve_app(app, port, &projects_dir, &viewer).await?;
 
     Ok(())
 }

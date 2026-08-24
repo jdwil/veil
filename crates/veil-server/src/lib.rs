@@ -70,7 +70,7 @@ pub use config::{
     needs_first_run, resolve_projects_dir, save_config, set_projects_dir, suggested_projects_dir,
     veil_home_dir, VeilConfig,
 };
-pub use product_host::{resolve_static_dir, ProductHost};
+pub use product_host::{resolve_ui_dir, ProductHost};
 
 /// Projects directory: env → config.json → ~/veil-projects.
 pub fn default_projects_dir() -> std::path::PathBuf {

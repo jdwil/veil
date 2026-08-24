@@ -6179,6 +6179,7 @@ dependencies = [
  "http-body-util",
  "hyper 1.10.1",
  "jsonwebtoken",
+ "reqwest 0.12.28",
  "serde",
  "serde_json",
  "storage",

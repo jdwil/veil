@@ -2211,18 +2211,12 @@ async fn list_registry_layers() -> Json<Value> {
 }
 
 async fn list_registry_stubs() -> Json<Value> {
-    let stubs = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../src/stubs");
-    let mut names = Vec::new();
-    if let Ok(rd) = std::fs::read_dir(&stubs) {
-        for e in rd.flatten() {
-            let p = e.path();
-            if p.extension().and_then(|x| x.to_str()) == Some("stub") {
-                if let Some(stem) = p.file_stem().and_then(|s| s.to_str()) {
-                    names.push(json!({ "crate_name": stem }));
-                }
-            }
-        }
-    }
+    veil_server::stub_ops::ensure_platform_stub_cache();
+    let entries = veil_ir::list_platform_stubs();
+    let names: Vec<Value> = entries
+        .iter()
+        .map(|e| json!({ "crate_name": e.name }))
+        .collect();
     Json(json!(names))
 }
 

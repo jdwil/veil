@@ -267,7 +267,7 @@ pub fn build_router<P: SourceProvider + 'static>(provider: P) -> Router {
 ///
 /// Same handlers as [`build_router`]; project scope via task-local name.
 ///
-/// **ProductHost / pure-runtime:** this is the single IDE kernel surface — no
+/// **ProductHost:** this is the single IDE kernel surface — no
 /// second `veil serve --multi` process. Shell agent uses hub routes under
 /// `/api/agent/*` and `/api/mcp` (platform UX tools work without a project;
 /// dual-loop tools need `/api/p/{project}/…` or CURRENT_PROJECT).
@@ -311,7 +311,7 @@ pub fn build_multi_router(hub: ProjectsHub) -> Router {
     let viewer_dir = std::env::var("VEIL_VIEWER_STATIC")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|_| {
-            let static_root = crate::product_host::resolve_static_dir(None);
+            let static_root = crate::product_host::resolve_ui_dir(None);
             static_root.join("viewer")
         });
     if viewer_dir.is_dir() {

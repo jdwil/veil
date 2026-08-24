@@ -8,18 +8,19 @@ use std::path::{Path, PathBuf};
 use axum::response::{Html, IntoResponse, Redirect};
 use axum::routing::get;
 use axum::{extract::Path as AxumPath, extract::State, Router};
-use tower_http::cors::CorsLayer;
-use tower_http::services::{ServeDir, ServeFile};
+use tower_http::services::ServeDir;
 
 use crate::api::build_multi_router;
 use crate::config::ensure_config;
 use crate::provider::hub::ProjectsHub;
 
-/// CAP-002: builder for the pure-runtime product HTTP surface.
+/// CAP-002: builder for the ProductHost HTTP surface.
 #[derive(Clone)]
 pub struct ProductHost {
     projects_dir: PathBuf,
-    static_dir: PathBuf,
+    /// Directory containing the built SPA (index.html + assets/).
+    /// Resolved from VEIL_UI_DIR env var, or falls back to `static/dist` for local dev.
+    ui_dir: PathBuf,
     show_core_layers: bool,
     port: u16,
     viewer_url: String,
@@ -29,12 +30,15 @@ pub struct ProductHost {
 
 impl Default for ProductHost {
     fn default() -> Self {
+        let ui_dir = std::env::var("VEIL_UI_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from("static/dist"));
         Self {
             projects_dir: crate::default_projects_dir(),
-            static_dir: PathBuf::from("static"),
+            ui_dir,
             show_core_layers: false,
             port: 8080,
-            // Same-origin embedded viewer (pure-runtime). Override with full URL for Vite dev.
+            // Same-origin embedded viewer (ProductHost). Override with full URL for Vite dev.
             viewer_url: std::env::var("VEIL_VIEWER_URL").unwrap_or_else(|_| "/viewer".into()),
             bus_router: None,
         }
@@ -52,7 +56,7 @@ impl ProductHost {
     }
 
     pub fn static_dir(mut self, dir: impl Into<PathBuf>) -> Self {
-        self.static_dir = dir.into();
+        self.ui_dir = dir.into();
         self
     }
 
@@ -77,6 +81,21 @@ impl ProductHost {
         self
     }
 
+    /// Access the projects directory.
+    pub fn projects_dir_path(&self) -> &std::path::Path {
+        &self.projects_dir
+    }
+
+    /// Access the viewer URL.
+    pub fn viewer_url_ref(&self) -> &str {
+        &self.viewer_url
+    }
+
+    /// Access the port.
+    pub fn port_val(&self) -> u16 {
+        self.port
+    }
+
     /// Ensure config exists (first-run) and resolve projects dir.
     pub fn ensure_config(self, non_interactive: bool) -> Result<Self, String> {
         let cfg = ensure_config(non_interactive)?;
@@ -85,6 +104,9 @@ impl ProductHost {
     }
 
     /// Build the full product router: shell + multi IDE + config + optional bus.
+    ///
+    /// Note: CORS and auth layers are NOT applied here — the caller (main.rs)
+    /// is responsible for layering those on top before serving.
     pub fn build_router(self) -> Router {
         // Warm platform language packs + stubs (monorepo or S3+DDB META → $TMP).
         crate::layer_ops::ensure_platform_layer_cache();
@@ -94,7 +116,7 @@ impl ProductHost {
         let ide = build_multi_router(hub);
 
         let shell_state = ShellState {
-            static_dir: self.static_dir.clone(),
+            ui_dir: self.ui_dir.clone(),
             viewer_url: self.viewer_url.clone(),
         };
 
@@ -122,9 +144,9 @@ impl ProductHost {
             .route("/review/{*rest}", get(shell_index))
             // Optional deep link: bare dual-loop viewer (standalone agent chrome).
             .route("/ide/{name}", get(ide_embed))
-            // SPA assets under /static/dist/ (index references absolute paths)
-            .nest_service("/static", ServeDir::new(&self.static_dir))
-            .nest_service("/assets", ServeDir::new(self.static_dir.join("assets")))
+            // SPA assets served from the UI dir
+            .nest_service("/static", ServeDir::new(&self.ui_dir))
+            .nest_service("/assets", ServeDir::new(self.ui_dir.join("assets")))
             .with_state(shell_state.clone());
 
         // IDE multi-router already includes GET+PATCH /api/config (CAP-007).
@@ -136,16 +158,35 @@ impl ProductHost {
         let spa_fb = Router::new()
             .fallback(get(spa_fallback))
             .with_state(shell_state);
-        app.merge(spa_fb).layer(CorsLayer::permissive())
+        app.merge(spa_fb)
     }
 
-    /// CAP-002: listen and serve until shutdown signal.
+    /// CAP-002: listen and serve until shutdown signal (simple path — no custom layers).
     pub async fn listen(self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let port = self.port;
         let projects_dir = self.projects_dir.clone();
         let viewer = self.viewer_url.clone();
         let app = self.build_router();
+        Self::serve(app, port, &projects_dir, &viewer).await
+    }
 
+    /// Serve a pre-built (and optionally layered) router. Use this when you need
+    /// to apply auth/CORS/etc. on the router before listen.
+    pub async fn serve_app(
+        app: Router,
+        port: u16,
+        projects_dir: &std::path::Path,
+        viewer: &str,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        Self::serve(app, port, projects_dir, viewer).await
+    }
+
+    async fn serve(
+        app: Router,
+        port: u16,
+        projects_dir: &std::path::Path,
+        viewer: &str,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let addr = SocketAddr::from(([0, 0, 0, 0], port));
         tracing::info!("veil product host listening on {addr}");
         tracing::info!("  shell:        http://127.0.0.1:{port}/");
@@ -184,7 +225,7 @@ impl ProductHost {
 
 #[derive(Clone)]
 struct ShellState {
-    static_dir: PathBuf,
+    ui_dir: PathBuf,
     viewer_url: String,
 }
 
@@ -214,18 +255,18 @@ async fn spa_fallback(
 
 fn serve_spa_html(st: &ShellState) -> axum::response::Response {
     // PVR-032 / CAP-005: generated SPA only — never handwritten static root shells.
-    let path = st.static_dir.join("dist/index.html");
+    let path = st.ui_dir.join("index.html");
     if path.is_file() {
         if let Ok(html) = std::fs::read_to_string(&path) {
             return Html(inject_viewer_url(html, &st.viewer_url)).into_response();
         }
     }
-    Html(
-        "<h1>veil-runtime</h1><p>Missing generated shell (<code>static/dist/index.html</code>). \
-         Run <code>make pure-runtime-build</code>. API: \
-         <a href=\"/api/projects\">/api/projects</a></p>"
-            .to_string(),
-    )
+    let dir_display = st.ui_dir.display();
+    Html(format!(
+        "<h1>veil-runtime</h1><p>UI not found at <code>{dir_display}/index.html</code>. \
+         Set <code>VEIL_UI_DIR</code> or build the UI (<code>cd ui &amp;&amp; npm run build</code>). \
+         API: <a href=\"/api/projects\">/api/projects</a></p>"
+    ))
     .into_response()
 }
 
@@ -234,7 +275,7 @@ fn serve_spa_html(st: &ShellState) -> axum::response::Response {
 /// The **product path** is shell embed: SPA route `/projects/{name}/ide` (iframe +
 /// AgentDock). Use this only for standalone / external deep links with IDE agent chrome.
 ///
-/// Same-origin pure-runtime: `/viewer/?project=…` (viewer uses `location.origin` for API).
+/// Same-origin ProductHost: `/viewer/?project=…` (viewer uses `location.origin` for API).
 /// Absolute `VEIL_VIEWER_URL` (e.g. Vite :5173): redirect there with `?api=` public URL.
 async fn ide_embed(
     State(st): State<ShellState>,
@@ -296,23 +337,35 @@ async fn shutdown_signal() {
     }
 }
 
-/// Resolve static directory for the product host (exe-relative, CARGO_MANIFEST, cwd).
-pub fn resolve_static_dir(manifest_dir: Option<&Path>) -> PathBuf {
+/// Resolve UI directory for the product host.
+///
+/// Priority: VEIL_UI_DIR env var → exe-relative static/dist → CARGO_MANIFEST relative → cwd.
+pub fn resolve_ui_dir(manifest_dir: Option<&Path>) -> PathBuf {
+    // Explicit env override takes priority (Docker / deployed).
+    if let Ok(dir) = std::env::var("VEIL_UI_DIR") {
+        let p = PathBuf::from(&dir);
+        if p.is_dir() {
+            return p;
+        }
+        tracing::warn!("VEIL_UI_DIR={dir} is not a directory; falling back to probing");
+    }
     let mut candidates: Vec<PathBuf> = Vec::new();
     if let Ok(exe) = std::env::current_exe() {
         if let Some(parent) = exe.parent() {
-            candidates.push(parent.join("static"));
+            candidates.push(parent.join("static/dist"));
         }
     }
     if let Some(m) = manifest_dir {
-        candidates.push(m.join("static"));
+        candidates.push(m.join("static/dist"));
     }
+    candidates.push(PathBuf::from("static/dist"));
+    candidates.push(PathBuf::from("crates/veil-runtime/static/dist"));
+    // Also probe the old `static` dir (backwards compat).
     candidates.push(PathBuf::from("static"));
-    candidates.push(PathBuf::from("crates/veil-runtime/static"));
     for c in candidates {
         if c.is_dir() {
             return c;
         }
     }
-    PathBuf::from("static")
+    PathBuf::from("static/dist")
 }

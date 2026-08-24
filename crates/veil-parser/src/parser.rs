@@ -138,6 +138,9 @@ pub fn parse_with_registry(
     // Inject layer declarations (e.g. `trait AuthService` from ddd.layer declare)
     inject_declarations(&mut sol, &registry);
 
+    // Inject library companion constructs (adapters, services from library projects)
+    inject_library_constructs(&mut sol, &registry);
+
     Ok(sol)
 }
 
@@ -199,6 +202,71 @@ fn indent_block(text: &str, n: usize) -> String {
         .map(|l| if l.is_empty() { String::new() } else { format!("{}{}", prefix, l) })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// Inject library companion constructs into the solution.
+///
+/// Library layers ship a companion `.veil` file (full package source). When a consumer
+/// `use`s the layer, the companion's constructs are parsed and merged into the consumer's
+/// solution. Consumer-defined constructs with the same name OVERRIDE library ones (the
+/// consumer's adapter wins over the library's default implementation).
+fn inject_library_constructs(sol: &mut Solution, registry: &LayerRegistry) {
+    use crate::lexer::lex;
+
+    if registry.library_constructs.is_empty() {
+        return;
+    }
+
+    // Collect existing construct names from the consumer's solution — these take priority.
+    let consumer_names: Vec<String> = sol.items.iter().filter_map(|item| {
+        match item {
+            TopLevelItem::Construct(c) => Some(c.name.clone()),
+            TopLevelItem::Function(f) => Some(f.name.clone()),
+            _ => None,
+        }
+    }).collect();
+
+    for (layer_name, source) in &registry.library_constructs {
+        let tokens = lex(source);
+        let parsed = parse_file_with_registry(&tokens, registry.clone());
+        let items = match parsed {
+            Ok(VeilFile::Solution(s)) => s.items,
+            Ok(VeilFile::Package(p)) => p.items,
+            _ => continue,
+        };
+        for mut item in items {
+            match &mut item {
+                TopLevelItem::Construct(c) => {
+                    // Consumer override: skip library constructs that match a
+                    // consumer-defined construct by name.
+                    if consumer_names.contains(&c.name) {
+                        continue;
+                    }
+                    // Mark as library-provided for review/IDE display.
+                    c.layer_provided = true;
+                    // Tag with source layer name via annotation for traceability.
+                    c.annotations.push(veil_ir::ast::Annotation {
+                        name: "library_source".to_string(),
+                        args: vec![layer_name.clone()],
+                        span: veil_ir::span::Span::default(),
+                    });
+                }
+                TopLevelItem::Function(f) => {
+                    if consumer_names.contains(&f.name) {
+                        continue;
+                    }
+                    f.layer_provided = true;
+                }
+                // Test blocks and other items from library are not injected
+                TopLevelItem::TestBlock(_)
+                | TopLevelItem::Fixture(_)
+                | TopLevelItem::Integration(_)
+                | TopLevelItem::Scenario(_) => continue,
+                _ => {}
+            }
+            sol.items.push(item);
+        }
+    }
 }
 
 /// Parse a token stream into a full VeilFile using only built-in core shapes.

@@ -369,7 +369,7 @@ pub fn wrap_as_option_ir(expr: &Expr, node: RustExpr, ctx: &GenCtx) -> RustExpr 
                 && n == name
             {
                 let local_ty = ctx.local_type(n);
-                if local_ty.is_some_and(|ty| ty.starts_with("Option<")) {
+                if local_ty.is_some_and(|ty| crate::expr::types::is_option_type(ty)) {
                     return node;
                 }
                 // Unknown type: skip wrapping to avoid double-Option when the
