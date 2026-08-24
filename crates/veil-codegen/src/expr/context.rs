@@ -141,6 +141,10 @@ pub struct StubContext {
     pub stub_pkg_crate: HashMap<String, String>,
     /// Stub free functions: (rust_crate, fn_name_without_bang) → fallible (Res!).
     pub stub_free_fns: HashMap<(String, String), bool>,
+    /// Method names that are always async on stub types (e.g. `send`, `text`).
+    /// When a bang method is in this set, it emits `.await` before `?`.
+    /// Populated from stub `async_methods` declarations.
+    pub stub_async_methods: HashSet<String>,
 }
 
 impl StubContext {
@@ -150,6 +154,7 @@ impl StubContext {
             stub_typed_ctors: HashMap::new(),
             stub_pkg_crate: HashMap::new(),
             stub_free_fns: HashMap::new(),
+            stub_async_methods: HashSet::new(),
         }
     }
 }
@@ -311,6 +316,30 @@ impl GenCtx {
                     return Some(strip_result_wrapper(t));
                 }
             }
+            // Strip generics from local type: QueryScalar<DB, O, A> → QueryScalar
+            if let Some(base) = type_name.split('<').next()
+                && base != type_name.as_str()
+            {
+                for m in &keys {
+                    if let Some(t) = self
+                        .types.method_returns
+                        .get(&(base.to_string(), m.clone()))
+                    {
+                        return Some(strip_result_wrapper(t));
+                    }
+                }
+            }
+        }
+        // Strip generics from the target itself: chained calls may pass
+        // "QueryScalar<DB, O, A>" as target when method_returns is keyed by "QueryScalar".
+        if let Some(base) = target.split('<').next()
+            && base != target
+        {
+            for m in &keys {
+                if let Some(t) = self.types.method_returns.get(&(base.to_string(), m.clone())) {
+                    return Some(strip_result_wrapper(t));
+                }
+            }
         }
         // Dep local registered as Trait shape but not in local_types — try snake_case target
         // (already covered by direct key) and PascalCase conversion is not needed.
@@ -339,6 +368,22 @@ impl GenCtx {
             if let Some(ret) = self.types.method_returns.get(key) {
                 if ret.starts_with("Result<") {
                     return true;
+                }
+            }
+        }
+        // Strip generics: QueryScalar<DB, O, A> → QueryScalar
+        if let Some(base) = type_name.split('<').next()
+            && base != type_name
+        {
+            let gen_keys = [
+                (base.to_string(), bare.to_string()),
+                (base.to_string(), method.to_string()),
+            ];
+            for key in &gen_keys {
+                if let Some(ret) = self.types.method_returns.get(key) {
+                    if ret.starts_with("Result<") {
+                        return true;
+                    }
                 }
             }
         }
@@ -372,6 +417,17 @@ impl GenCtx {
                 }
             }
         }
+        // Strip generics: QueryScalar<DB, O, A> → QueryScalar
+        if let Some(base) = type_name.split('<').next()
+            && base != type_name
+        {
+            let gen_key = (base.to_string(), bare.to_string());
+            if let Some(ret) = self.types.method_returns.get(&gen_key) {
+                if ret.starts_with("AsyncResult<") {
+                    return true;
+                }
+            }
+        }
         // Check lowers_to template
         for key in &keys {
             if let Some(targets) = self.method_lowers_to.get(key) {
@@ -399,9 +455,21 @@ impl GenCtx {
     }
 
     /// Is method `method` (by bare name) async from any source?
-    /// Global name-based check for TypeScript lowering where type context is unavailable.
+    /// Global name-based check when type context is unavailable.
     pub fn is_stub_method_async_global(&self, method: &str) -> bool {
         let bare = method.trim_end_matches(['!', '?']);
+        // Check explicit stub async_methods declarations
+        if self.stubs.stub_async_methods.contains(bare) {
+            return true;
+        }
+        // Check if any known type declares this method as async+fallible
+        let type_names: Vec<String> = self.types.method_returns.keys()
+            .filter(|(_, m)| m == bare)
+            .map(|(t, _)| t.clone())
+            .collect();
+        if type_names.iter().any(|t| self.is_method_async_fallible(t, bare)) {
+            return true;
+        }
         // Check all lowers_to templates for an async marker
         self.method_lowers_to.iter().any(|((_, m), targets)| {
             m == bare && targets.get("rust").map(|t| t.contains(".await")).unwrap_or(false)
@@ -646,6 +714,10 @@ pub fn build_ctx_from_solution(solution: &Solution, name_to_shape: HashMap<Strin
         if let Some(alias) = &stub.alias {
             ctx.stubs.stub_pkg_crate
                 .insert(alias.clone(), rust_crate.clone());
+        }
+        // Populate async method names from stub declarations.
+        for m in &stub.async_methods {
+            ctx.stubs.stub_async_methods.insert(m.clone());
         }
         for ff in &stub.free_fns {
             let bare = ff.name.trim_end_matches(['!', '?']).to_string();

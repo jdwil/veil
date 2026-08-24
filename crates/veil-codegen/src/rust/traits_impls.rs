@@ -865,6 +865,7 @@ pub fn gen_impls(
                 ctx.stubs.stub_type_crate = seeded.stubs.stub_type_crate;
                 ctx.stubs.stub_pkg_crate = seeded.stubs.stub_pkg_crate;
                 ctx.stubs.stub_free_fns = seeded.stubs.stub_free_fns;
+                ctx.stubs.stub_async_methods = seeded.stubs.stub_async_methods;
                 ctx.async_fns = seeded.async_fns;
                 ctx.types.ref_params = seeded.types.ref_params;
                 ctx.name_to_shape = seeded.name_to_shape;

@@ -2199,6 +2199,11 @@ pub struct StubCrate {
     #[serde(default)]
     pub free_fns: Vec<StubMethod>,
     /// Method names that are always async on this crate's types (e.g. `send`, `send_with`).
+    /// Line form: `async_methods send, send_with`.
+    /// When a bang method (e.g. `.send!()`) is in this list, it emits `.await` before `?`.
+    /// Methods NOT in this list with bang emit just `.map_err(...)?` (no `.await`).
+    #[serde(default)]
+    pub async_methods: Vec<String>,
     /// Field names that require borrow (`&self.field`) instead of clone.
     /// Line form: `borrow_fields pool`.
     /// Used when the type requires `&T` for trait impls (e.g. sqlx Executor for &Pool).
@@ -2602,9 +2607,16 @@ pub fn parse_stub_file(content: &str) -> Option<StubCrate> {
             continue;
         }
 
-        // async_methods send, send_with — DEPRECATED: templates carry this info now.
-        // Kept as no-op parser for backward compatibility with old stub files.
+        // async_methods send, send_with — method names that are async on this stub's types.
+        // When bang is used on these methods, .await is emitted before .map_err.
         if trimmed.starts_with("async_methods ") {
+            stub.async_methods = trimmed
+                .strip_prefix("async_methods ")
+                .unwrap_or("")
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
             continue;
         }
 

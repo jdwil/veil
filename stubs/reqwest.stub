@@ -6,6 +6,8 @@ stub reqwest 0.13.4
   # generated_at 2026-08-20T19:48:59Z
   # rustdoc_fingerprint 982f8a1c3953d1c4
   # Auto-inferred codegen policy from rustdoc (do not hand-edit; re-run veil stub-gen)
+  root_types Client
+  async_methods send, text, json, bytes, execute
   harness_field Client """
 {
     reqwest::Client::builder()

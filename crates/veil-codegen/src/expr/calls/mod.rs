@@ -54,14 +54,25 @@ pub fn receiver_call_finish(recv: &Expr, method: &str, ctx: &GenCtx) -> CallFini
                 };
             }
             if typed_fall {
+                // If the method is also known to be async (from async_methods or
+                // lowers_to templates), use AwaitMapErr. Otherwise just MapErrDebug.
+                if ctx.is_stub_method_async_global(method) {
+                    return CallFinish::AwaitMapErr;
+                }
                 return if should_own_str_result(ctx, Some(ty.as_str()), method) {
                     CallFinish::MapErrOwnStr
                 } else {
                     CallFinish::MapErrDebug
                 };
             }
+            // Bang on a struct method: check stub async_methods to decide
+            // whether this needs .await (async+fallible) or just ? (fallible-only).
             return if has_bang {
-                CallFinish::AwaitMapErr
+                if ctx.stubs.stub_async_methods.contains(method) {
+                    CallFinish::AwaitMapErr
+                } else {
+                    CallFinish::MapErrDebug
+                }
             } else {
                 CallFinish::Bare
             };
@@ -69,8 +80,16 @@ pub fn receiver_call_finish(recv: &Expr, method: &str, ctx: &GenCtx) -> CallFini
     }
 
     // Call-site `!` is VEIL fallible sugar, not a method-name special case.
+    // Check stub async_methods to determine if the method is async.
+    // Also check if ANY type declares this method as async+fallible via its return type.
     if has_bang {
-        CallFinish::AwaitMapErr
+        if ctx.stubs.stub_async_methods.contains(method) {
+            CallFinish::AwaitMapErr
+        } else if ctx.is_stub_method_async_global(method) {
+            CallFinish::AwaitMapErr
+        } else {
+            CallFinish::MapErrDebug
+        }
     } else {
         CallFinish::Bare
     }
