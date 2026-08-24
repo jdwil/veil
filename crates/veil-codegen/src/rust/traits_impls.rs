@@ -69,10 +69,13 @@ futures = "0.3"
         ("__VEIL_NO_ERROR_MODEL__".to_string(), "__NO_NOT_FOUND__".to_string(), "__NO_VALIDATION__".to_string(), "__NO_EXTERNAL__".to_string())
     };
     // Check if any layer shared_emit provides the error model (contains the
-    // error type name in a `pub enum` line). If so, skip engine generation —
-    // the layer controls the error enum format.
+    // error type name or the placeholder in a `pub enum` line). If so, skip
+    // engine generation — the layer controls the error enum format.
     let layer_provides_error_model = registry.shared_emit.iter().any(|(target, code)| {
-        target == "rust" && code.contains(&format!("pub enum {}", err_type))
+        target == "rust" && (
+            code.contains("pub enum {error_type}") ||
+            code.contains(&format!("pub enum {}", err_type))
+        )
     });
     if !layer_provides_error_model {
         // Fallback: engine generates the error model (backward compat).

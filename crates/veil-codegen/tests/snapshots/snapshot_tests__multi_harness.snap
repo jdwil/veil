@@ -50,40 +50,6 @@ futures = "0.3"
 use async_trait::async_trait;
 use uuid::Uuid;
 
-/// Domain error type.
-#[derive(Debug, thiserror::Error)]
-pub enum DomainError {
-    #[error("Not found")]
-    NotFound,
-    #[error("Validation failed: {0}")]
-    Validation(String),
-    #[error("External service error: {0}")]
-    External(String),
-}
-
-/// Validation error type.
-#[derive(Debug, thiserror::Error)]
-#[error("Validation error: {0}")]
-pub struct ValidationError(pub String);
-
-impl From<ValidationError> for DomainError {
-    fn from(e: ValidationError) -> Self {
-        DomainError::Validation(e.0)
-    }
-}
-
-impl From<serde_json::Error> for DomainError {
-    fn from(e: serde_json::Error) -> Self {
-        DomainError::External(e.to_string())
-    }
-}
-
-impl From<String> for DomainError {
-    fn from(e: String) -> Self {
-        DomainError::External(e)
-    }
-}
-
 /// trait: EntityRepo
 #[async_trait]
 pub trait EntityRepo<T>: Send + Sync
@@ -131,6 +97,40 @@ pub trait FileSystem: Send + Sync {
 pub trait GitRepo: Send + Sync {
     async fn branches(&self, repo: String) -> Result<Vec<String>, DomainError>;
     async fn log(&self, repo: String, limit: i64) -> Result<Vec<String>, DomainError>;
+}
+
+/// Domain error type (layer-provided).
+#[derive(Debug, thiserror::Error)]
+pub enum DomainError {
+    #[error("Not found")]
+    NotFound,
+    #[error("Validation failed: {0}")]
+    Validation(String),
+    #[error("External service error: {0}")]
+    External(String),
+}
+
+/// Validation error type.
+#[derive(Debug, thiserror::Error)]
+#[error("Validation error: {0}")]
+pub struct ValidationError(pub String);
+
+impl From<ValidationError> for DomainError {
+    fn from(e: ValidationError) -> Self {
+        DomainError::Validation(e.0)
+    }
+}
+
+impl From<serde_json::Error> for DomainError {
+    fn from(e: serde_json::Error) -> Self {
+        DomainError::External(e.to_string())
+    }
+}
+
+impl From<String> for DomainError {
+    fn from(e: String) -> Self {
+        DomainError::External(e)
+    }
 }
 
 /// Layer-provided struct: Principal
@@ -509,7 +509,9 @@ async fn storefront_create_widget_handler(    State(deps): State<Arc<storefront_
 }
 
 /// HTTP 400 Bad Request status — used in field extraction for parse errors.
+#[inline]
 pub fn veil_bad_request_status() -> StatusCode { StatusCode::BAD_REQUEST }
+
 /// Production-oriented auth:
 /// - `/health` + OPTIONS always open
 /// - `VEIL_DEV=1` → open (local dual-loop only)
@@ -536,19 +538,24 @@ async fn veil_api_key_middleware(
                 .and_then(|v| v.to_str().ok())
                 .and_then(|s| s.strip_prefix("Bearer ").map(|t| t.to_string()))
         });
+
     if dev && !require && admin_key.is_none() {
         return Ok(next.run(request).await);
     }
+
     let Some(presented) = presented else {
         eprintln!("error: missing X-Api-Key / Authorization Bearer");
         return Err(StatusCode::UNAUTHORIZED);
     };
+
     if admin_key.as_deref() != Some(presented.as_str()) {
         eprintln!("warn: unauthorized — key not recognized");
         return Err(StatusCode::UNAUTHORIZED);
     }
+
     Ok(next.run(request).await)
 }
+
 /// Restrict CORS: `CORS_ORIGINS=http://a,http://b` or localhost defaults (not *).
 pub fn veil_cors_layer() -> CorsLayer {
     use axum::http::{HeaderValue, Method};
@@ -592,6 +599,7 @@ pub fn veil_cors_layer() -> CorsLayer {
         ])
         .allow_headers(Any)
 }
+
 pub fn veil_domain_error_status(e: DomainError) -> StatusCode {
     match &e {
         DomainError::NotFound => {
@@ -608,6 +616,7 @@ pub fn veil_domain_error_status(e: DomainError) -> StatusCode {
         }
     }
 }
+
 /// Serialize for HTTP JSON, omitting fields annotated role:secret.
 /// Persistence (repos) uses full `Serialize` — secrets still round-trip to storage.
 pub fn veil_json_public<T: serde::Serialize>(value: &T) -> serde_json::Value {
@@ -615,6 +624,7 @@ pub fn veil_json_public<T: serde::Serialize>(value: &T) -> serde_json::Value {
     veil_redact_secrets(&mut v);
     v
 }
+
 pub fn veil_redact_secrets(v: &mut serde_json::Value) {
     // Scalar secret fields from role:secret annotations (INV-001).
     const SECRET_KEYS: &[&str] = &[];
@@ -642,6 +652,7 @@ pub fn veil_redact_secrets(v: &mut serde_json::Value) {
         _ => {}
     }
 }
+
 pub fn veil_redact_header_values(v: &mut serde_json::Value) {
     match v {
         serde_json::Value::Array(items) => {
@@ -665,6 +676,7 @@ pub fn veil_redact_header_values(v: &mut serde_json::Value) {
         _ => {}
     }
 }
+
 /// HTML `<input type="date">` and form empties → JSON values chrono/serde accept.
 /// `""` → null; bare `YYYY-MM-DD` → `YYYY-MM-DDT00:00:00Z`.
 pub fn veil_normalize_body_dt(v: Value) -> Value {

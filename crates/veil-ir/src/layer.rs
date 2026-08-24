@@ -3158,6 +3158,33 @@ pub fn parse_layer_file(content: &str, layer_name: &str) -> Result<RawLayer, Str
                     harness_template_lines.push(dedented.to_string());
                 }
             }
+            // Inside shared_emit blocks, blank lines and #-lines are code content
+            // (e.g. #[derive(Debug, thiserror::Error)], #[error("...")]).
+            // Only include lines that are indented within the block.
+            if in_shared_emit {
+                let line_indent = line.len() - line.trim_start().len();
+                if line_indent >= shared_emit_base_indent || trimmed.is_empty() {
+                    if trimmed.is_empty() {
+                        shared_emit_lines.push(String::new());
+                    } else {
+                        let dedented = if line.len() > shared_emit_base_indent {
+                            &line[shared_emit_base_indent..]
+                        } else {
+                            trimmed
+                        };
+                        shared_emit_lines.push(dedented.to_string());
+                    }
+                } else {
+                    // # at a lesser indent means we've left the shared_emit section.
+                    // Flush and fall through to normal parsing.
+                    if !shared_emit_lines.is_empty() {
+                        shared_emit.push((shared_emit_target.clone(), shared_emit_lines.join("\n")));
+                        shared_emit_lines.clear();
+                    }
+                    in_shared_emit = false;
+                    // This # line is a normal comment — skip it.
+                }
+            }
             continue;
         }
         let indent = line.len() - line.trim_start().len();
