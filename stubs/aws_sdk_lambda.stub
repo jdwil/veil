@@ -32396,3 +32396,9 @@ aws_sdk_lambda::Client::from_conf(conf)
     fn into_shared_resolver() -> SharedAuthSchemeOptionResolver
       lowers_to
         rust: "{{self}}.into_shared_resolver({{args}})"
+
+  struct Blob
+    path primitives
+    fn new(input: Bytes) -> Blob
+      lowers_to
+        rust: "aws_sdk_lambda::primitives::Blob::new({{input}})"
