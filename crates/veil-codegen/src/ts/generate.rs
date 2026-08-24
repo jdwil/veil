@@ -86,6 +86,19 @@ pub fn generate_ts_ir(solution: &Solution, registry: &LayerRegistry) -> TsProjec
     // template in the layer, interpolate it and emit the file.
     files.extend(gen_construct_files(&modules, solution, registry));
 
+    // Deduplicate by path: when both the template system (emit_file) and
+    // gen_construct_files (lowers_to) produce the same file path, keep only one.
+    // Later entries (gen_construct_files) win over earlier template output.
+    let mut seen_paths: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut deduped = Vec::new();
+    for file in files.into_iter().rev() {
+        if seen_paths.insert(file.path.clone()) {
+            deduped.push(file);
+        }
+    }
+    deduped.reverse();
+    let files = deduped;
+
     TsProject { files }
 }
 
