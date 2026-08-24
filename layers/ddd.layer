@@ -563,11 +563,11 @@ pkg ddd v1
     # state forward and, on the first failure, replays the completed steps'
     # compensations in reverse. Messaging is a product port, not this coordinator.
     trait SagaStep
-      action(state: Json) -> Res!<Json>
-      compensate(state: Json) -> Res!
+      async action(state: Json) -> Res!<Json>
+      async compensate(state: Json) -> Res!
 
     # Replay compensations for the first `upto` steps, most-recent first.
-    fn unwind(steps: List<SagaStep>, upto: Int, state: Json) -> Res!
+    async fn unwind(steps: List<SagaStep>, upto: Int, state: Json) -> Res!
       mut i = upto
       while i > 0
         i = i - 1
@@ -575,7 +575,7 @@ pkg ddd v1
       ret Ok
 
     # Run steps forward, threading state; on failure, unwind and propagate.
-    fn run_saga(steps: List<SagaStep>) -> Res!
+    async fn run_saga(steps: List<SagaStep>) -> Res!
       mut state = {}
       mut i = 0
       while i < steps.len()

@@ -1481,6 +1481,7 @@ mod tests {
             params: Vec::new(),
             return_type: None,
             span: Span::new(0, 0),
+            is_async: false,
         });
         let mut svc = Construct::new("svc", "Service", Shape::Fn, "Create".into(), Span::new(0, 0));
         svc.steps.push(FlowStep::Step(step_with_body(vec![Expr::Call(CallExpr {
@@ -1544,6 +1545,7 @@ mod tests {
             params: Vec::new(),
             return_type: None,
             span: Span::new(0, 0),
+            is_async: false,
         });
         let mut svc = Construct::new("svc", "Service", Shape::Fn, "Create".into(), Span::new(0, 0));
         svc.steps.push(FlowStep::Step(step_with_body(vec![Expr::Call(CallExpr {
@@ -1727,6 +1729,7 @@ mod tests {
                 "Opt".into(),
                 vec![TypeExpr::Named("T".into())],
             )),
+            is_async: false,
         });
         repo.methods.push(Method {
             name: "save!".into(),
@@ -1737,6 +1740,7 @@ mod tests {
                 span: Span::new(0, 0),
             }],
             return_type: None,
+            is_async: false,
         });
         repo.methods.push(Method {
             name: "list_by_tenant!".into(),
@@ -1750,6 +1754,7 @@ mod tests {
                 "List".into(),
                 vec![TypeExpr::Named("T".into())],
             )),
+            is_async: false,
         });
         let diags = check_names(&sol(vec![TopLevelItem::Construct(repo)]), &reg);
         assert!(
@@ -1783,6 +1788,7 @@ mod tests {
             span: Span::new(0, 0),
             params: Vec::new(),
             return_type: Some(TypeExpr::Named("T".into())),
+            is_async: false,
         });
         let diags = check_names(&sol(vec![TopLevelItem::Construct(repo)]), &reg);
         assert!(
@@ -1807,6 +1813,7 @@ mod tests {
             params: Vec::new(),
             return_type: Some(TypeExpr::Optional(Box::new(TypeExpr::Named("User".into())))),
             span: Span::new(0, 0),
+            is_async: false,
         });
         let mut user = Construct::new("agg", "Aggregate", Shape::Struct, "User".into(), Span::new(0, 0));
         user.fns.push(FnDef {
@@ -1818,6 +1825,7 @@ mod tests {
             body: Vec::new(),
             layer_provided: false,
             steps: Vec::new(),
+            is_async: false,
         });
         let mut svc = Construct::new("svc", "Service", Shape::Fn, "Greet".into(), Span::new(0, 0));
         svc.steps.push(FlowStep::Step(step_with_body(vec![

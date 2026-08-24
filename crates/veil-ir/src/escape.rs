@@ -1116,6 +1116,7 @@ mod tests {
                 span: Span::new(0, 0),
             }],
             return_type: None,
+            is_async: false,
         });
         let diags = check_escape_hatches(&sol(vec![TopLevelItem::Construct(port)]), &reg());
         assert!(

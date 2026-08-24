@@ -2695,6 +2695,7 @@ mod tests {
                 span: Span::new(0, 0),
             }],
             return_type: None,
+            is_async: false,
         });
         let mut ad = Construct::new(
             "adapter",
@@ -2745,6 +2746,7 @@ mod tests {
                 span: Span::new(0, 0),
             }],
             return_type: None,
+            is_async: false,
         });
         let mut svc = Construct::new("svc", "Service", Shape::Fn, "S".into(), Span::new(0, 0));
         svc.steps.push(step(vec![Expr::Call(CallExpr {
@@ -2806,6 +2808,7 @@ mod tests {
                 span: Span::new(0, 0),
             }],
             return_type: Some(TypeExpr::Optional(Box::new(TypeExpr::Named("User".into())))),
+            is_async: false,
         });
         port.methods.push(Method {
             name: "save!".into(),
@@ -2816,6 +2819,7 @@ mod tests {
                 span: Span::new(0, 0),
             }],
             return_type: None,
+            is_async: false,
         });
         let mut svc = Construct::new("svc", "Service", Shape::Fn, "S".into(), Span::new(0, 0));
         svc.inputs.push(Field {
@@ -2881,6 +2885,7 @@ mod tests {
                 span: Span::new(0, 0),
             }],
             return_type: Some(TypeExpr::Optional(Box::new(TypeExpr::Named("User".into())))),
+            is_async: false,
         });
         let mut svc = Construct::new("svc", "Service", Shape::Fn, "S".into(), Span::new(0, 0));
         svc.inputs.push(Field {
@@ -2964,6 +2969,7 @@ mod tests {
             span: Span::new(0, 0),
             params: Vec::new(),
             return_type: Some(TypeExpr::Result(Some(Box::new(TypeExpr::Named("User".into()))))),
+            is_async: false,
         });
         // load! with return Res already — also ! suffix
         let mut svc = Construct::new("svc", "Service", Shape::Fn, "S".into(), Span::new(0, 0));
@@ -3317,6 +3323,7 @@ root_types Client
                 span: Span::new(0, 0),
             }],
             return_type: None,
+            is_async: false,
         });
         port.methods.push(Method {
             name: "publish!".into(),
@@ -3327,6 +3334,7 @@ root_types Client
                 span: Span::new(0, 0),
             }],
             return_type: None,
+            is_async: false,
         });
         let mut ad = Construct::new(
             "adapter",
@@ -3376,6 +3384,7 @@ root_types Client
             return_type: Some(TypeExpr::Optional(Box::new(TypeExpr::Named(
                 "RoutingEntry".into(),
             )))),
+            is_async: false,
         });
         let mut store = Construct::new("port", "Port", Shape::Trait, "Items".into(), Span::new(0, 0));
         store.methods.push(Method {
@@ -3390,6 +3399,7 @@ root_types Client
                 Box::new(TypeExpr::Named("Str".into())),
                 Box::new(TypeExpr::Named("AttributeValue".into())),
             )))),
+            is_async: false,
         });
         let mut ad = Construct::new(
             "adapter",
@@ -3518,6 +3528,7 @@ root_types Client
             return_type: Some(TypeExpr::Optional(Box::new(TypeExpr::Named(
                 "Record".into(),
             )))),
+            is_async: false,
         });
         let mut ad = Construct::new(
             "adapter",
@@ -3594,6 +3605,7 @@ root_types Client
             return_type: Some(TypeExpr::Optional(Box::new(TypeExpr::Named(
                 "Token".into(),
             )))),
+            is_async: false,
         });
         let mut mode = Construct::new("enum", "Enum", Shape::Enum, "Mode".into(), Span::new(0, 0));
         mode.variants = vec!["Fast".into(), "Slow".into()];
@@ -3692,6 +3704,7 @@ root_types Client
             )],
             steps: Vec::new(),
             layer_provided: false,
+            is_async: false,
         });
         let diags = check_types(
             &sol(vec![
@@ -3720,6 +3733,7 @@ root_types Client
                 span: Span::new(0, 0),
             }],
             return_type: None,
+            is_async: false,
         });
         let mut ad = Construct::new(
             "adapter",
@@ -3780,6 +3794,7 @@ root_types Client
             return_type: Some(TypeExpr::Optional(Box::new(TypeExpr::Named(
                 "Record".into(),
             )))),
+            is_async: false,
         });
         let mut ad = Construct::new(
             "adapter",
@@ -3825,6 +3840,7 @@ stub example-sdk 1.0.0
             span: Span::new(0, 0),
             params: Vec::new(),
             return_type: Some(TypeExpr::Named("Str".into())),
+            is_async: false,
         });
         let mut ad = Construct::new(
             "adapter",
@@ -3907,6 +3923,7 @@ stub example-http 1.0.0
                 },
             ],
             return_type: Some(TypeExpr::Named("Str".into())),
+            is_async: false,
         });
         let mut ad = Construct::new(
             "adapter",
@@ -3961,6 +3978,7 @@ stub example-http 1.0.0
             span: Span::new(0, 0),
             params: Vec::new(),
             return_type: Some(TypeExpr::Named("Str".into())),
+            is_async: false,
         });
         let mut ad = Construct::new(
             "adapter",
@@ -4059,6 +4077,7 @@ stub example-http 1.0.0
             return_type: Some(TypeExpr::Optional(Box::new(TypeExpr::Named(
                 "Str".into(),
             )))),
+            is_async: false,
         });
         let get = |recv: Expr, method: &str, args: Vec<Expr>| {
             Expr::Call(CallExpr {

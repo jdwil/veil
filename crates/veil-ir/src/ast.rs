@@ -493,6 +493,10 @@ pub struct FnDef {
     /// (e.g. the saga coordinator). Not re-emitted by the serializer.
     #[serde(default)]
     pub layer_provided: bool,
+    /// True when declared with `async fn` in a layer declare block.
+    /// Codegen emits `async fn` instead of plain `fn`.
+    #[serde(default)]
+    pub is_async: bool,
 }
 
 /// A method signature on a trait-shaped construct.
@@ -502,6 +506,9 @@ pub struct Method {
     pub span: Span,
     pub params: Vec<Param>,
     pub return_type: Option<TypeExpr>,
+    /// True when declared with `async` prefix in a layer declare block.
+    #[serde(default)]
+    pub is_async: bool,
 }
 
 /// A method implementation within an impl-shaped construct.

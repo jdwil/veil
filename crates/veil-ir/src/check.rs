@@ -534,6 +534,7 @@ items: vec![TopLevelItem::Construct(root)],
             params: Vec::new(),
             return_type: None,
             span: Span::new(0, 0),
+            is_async: false,
         });
         let mut impl_c = Construct::new(
             "adapter",
@@ -715,6 +716,7 @@ items: vec![TopLevelItem::Construct(root)],
             params: Vec::new(),
             return_type: Some(TypeExpr::Result(Some(Box::new(TypeExpr::Named("Order".into()))))),
             span: Span::new(0, 0),
+            is_async: false,
         });
         let sol = sol_with(svc);
         // Direct check of our function:
@@ -751,6 +753,7 @@ items: vec![TopLevelItem::Construct(root)],
             params: Vec::new(),
             return_type: Some(TypeExpr::Result(Some(Box::new(TypeExpr::Named("Order".into()))))),
             span: Span::new(0, 0),
+            is_async: false,
         });
         let result = check_solution(&sol_with(svc), &reg);
         assert!(
@@ -769,6 +772,7 @@ items: vec![TopLevelItem::Construct(root)],
             params: Vec::new(),
             return_type: Some(TypeExpr::Named("String".into())),
             span: Span::new(0, 0),
+            is_async: false,
         });
         let result = check_solution(&sol_with(svc), &reg);
         assert!(

@@ -1919,6 +1919,7 @@ mod tests {
                 span: span(),
             }],
             return_type: Some(TypeExpr::Named("Order".into())),
+            is_async: false,
         });
         let result = render(
             &c,
@@ -1947,6 +1948,7 @@ mod tests {
                 },
             ],
             return_type: None,
+            is_async: false,
         });
         let result = render(
             &c,

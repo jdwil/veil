@@ -250,6 +250,7 @@ fn parse_file_with_guidance(
                 TokenKind::Use
                     | TokenKind::Ident
                     | TokenKind::Fn
+                    | TokenKind::Async
                     | TokenKind::Struct
                     | TokenKind::Enum
                     | TokenKind::Trait
@@ -369,6 +370,7 @@ impl<'a> Parser<'a> {
             | TokenKind::Struct
             | TokenKind::Enum
             | TokenKind::Fn
+            | TokenKind::Async
             | TokenKind::Trait
             | TokenKind::Mod
             | TokenKind::Impl
@@ -557,7 +559,7 @@ impl<'a> Parser<'a> {
             TokenKind::Ins | TokenKind::Rfn | TokenKind::Rpl |
             TokenKind::Omit | TokenKind::Ren | TokenKind::Lang |
             TokenKind::Expose | TokenKind::Flow | TokenKind::Fn |
-            TokenKind::Group | TokenKind::TypeKw | TokenKind::ConstKw |
+            TokenKind::Async | TokenKind::Group | TokenKind::TypeKw | TokenKind::ConstKw |
             TokenKind::Export | TokenKind::Plus | TokenKind::Macro => true,
             // Annotation starts a new annotated construct
             TokenKind::Annotation => true,
@@ -896,7 +898,7 @@ impl<'a> Parser<'a> {
                             flow.annotations = all;
                             items.push(TopLevelItem::Flow(flow));
                         }
-                        TokenKind::Fn if self.is_free_function_header() => {
+                        TokenKind::Fn | TokenKind::Async if self.is_free_function_header() => {
                             let mut func = self.parse_fn_def()?;
                             let mut all = annotations.clone();
                             all.extend(func.annotations);
@@ -1059,7 +1061,7 @@ impl<'a> Parser<'a> {
                         }
                         // Free function: `fn name(params) -> T` (layer declare coordinators).
                         // Construct-shaped `fn Name` with steps → fall through to construct parse.
-                        TokenKind::Fn if self.is_free_function_header() => {
+                        TokenKind::Fn | TokenKind::Async if self.is_free_function_header() => {
                             let mut func = self.parse_fn_def()?;
                             let mut all = annotations.clone();
                             all.extend(func.annotations);
@@ -1124,15 +1126,23 @@ impl<'a> Parser<'a> {
         matches!(self.current().text.as_str(), "author" | "license" | "repo")
     }
 
-    /// True when the current token is `fn` followed by `name (` — a free function
+    /// True when the current token is `fn` (or `async fn`) followed by `name (` — a free function
     /// with a parameter list. Distinguishes from construct-shaped `fn Name` blocks
     /// (flow/svc-like) that use an indented body of steps.
     fn is_free_function_header(&self) -> bool {
-        if self.peek_kind() != &TokenKind::Fn {
+        // Handle `async fn name(` — skip past async to find fn + name + (
+        let offset = if self.peek_kind() == &TokenKind::Async {
+            if self.tokens.get(self.pos + 1).map(|t| &t.kind) != Some(&TokenKind::Fn) {
+                return false;
+            }
+            2 // skip async, fn → name at pos+2
+        } else if self.peek_kind() == &TokenKind::Fn {
+            1 // skip fn → name at pos+1
+        } else {
             return false;
-        }
-        let name = self.tokens.get(self.pos + 1);
-        let after = self.tokens.get(self.pos + 2);
+        };
+        let name = self.tokens.get(self.pos + offset);
+        let after = self.tokens.get(self.pos + offset + 1);
         matches!(name.map(|t| &t.kind), Some(TokenKind::Ident))
             && matches!(after.map(|t| &t.kind), Some(TokenKind::LParen))
     }
@@ -1322,7 +1332,7 @@ impl<'a> Parser<'a> {
                     });
                     continue;
                 }
-                if self.at(&TokenKind::Fn) && self.is_free_function_header() {
+                if (self.at(&TokenKind::Fn) || self.at(&TokenKind::Async)) && self.is_free_function_header() {
                     items.push(AdaptInsItem::Function(self.parse_fn_def()?));
                     continue;
                 }
@@ -2089,7 +2099,7 @@ impl<'a> Parser<'a> {
                     continue;
                 }
                 // Nested fn (business logic)
-                if self.at(&TokenKind::Fn) {
+                if self.at(&TokenKind::Fn) || self.at(&TokenKind::Async) {
                     c.fns.push(self.parse_fn_def()?);
                     continue;
                 }
@@ -2463,7 +2473,7 @@ impl<'a> Parser<'a> {
                 if self.at_block_end() {
                     break;
                 }
-                if self.at(&TokenKind::Ident) {
+                if self.at(&TokenKind::Ident) || self.at(&TokenKind::Async) {
                     c.methods.push(self.parse_method_signature()?);
                 } else {
                     self.advance();
@@ -2477,6 +2487,13 @@ impl<'a> Parser<'a> {
 
     fn parse_method_signature(&mut self) -> Result<Method, ParseError> {
         let start_span = self.current().span;
+        // Support `async method_name(...)` — consume the async keyword if present.
+        let is_async = if self.at(&TokenKind::Async) {
+            self.advance();
+            true
+        } else {
+            false
+        };
         let name = self.expect_ident()?;
 
         // Check for ! shorthand: `name!(params)` means returns Res!
@@ -2526,6 +2543,7 @@ impl<'a> Parser<'a> {
             span: start_span.merge(self.current().span),
             params,
             return_type,
+            is_async,
         })
     }
 
@@ -2747,6 +2765,13 @@ impl<'a> Parser<'a> {
     fn parse_fn_def(&mut self) -> Result<FnDef, ParseError> {
         let start_span = self.current().span;
         let annotations = self.parse_annotations();
+        // Support `async fn` — consume the async keyword if present.
+        let is_async = if self.at(&TokenKind::Async) {
+            self.advance();
+            true
+        } else {
+            false
+        };
         self.expect(&TokenKind::Fn)?;
         let name = self.expect_ident()?;
 
@@ -2820,6 +2845,7 @@ impl<'a> Parser<'a> {
             body,
             steps,
             layer_provided: false,
+            is_async,
         })
     }
 }

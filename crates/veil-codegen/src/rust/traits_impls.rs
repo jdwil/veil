@@ -196,8 +196,11 @@ futures = "0.3"
         };
         ctx.expected_return_rust = Some(ret.clone());
         let fn_mod = layer_fn_attrs.unwrap_or("pub");
+        // Emit `async fn` if the declare block says `async fn` OR if the layer
+        // template already provides `pub async` via fn_attrs. Avoid doubling.
+        let async_kw = if f.is_async && !fn_mod.contains("async") { "async " } else { "" };
         lib.push_str(&format!(
-            "/// Layer-declared coordinator.\n{fn_mod} fn {}({}) -> {} {{\n",
+            "/// Layer-declared coordinator.\n{fn_mod} {async_kw}fn {}({}) -> {} {{\n",
             to_snake(&f.name),
             params,
             ret,

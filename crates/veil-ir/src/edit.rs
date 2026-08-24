@@ -449,6 +449,7 @@ where
                         Some(parse_type_str(&m.return_type))
                     },
                     span: Span::new(0, 0),
+                    is_async: false,
                 })
                 .collect();
             Ok(())

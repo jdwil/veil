@@ -1917,6 +1917,7 @@ items: vec![TopLevelItem::Construct(member)],
             ],
             steps: vec![],
             layer_provided: false,
+            is_async: false,
         };
         c.fns.push(f);
         let sol = Solution {

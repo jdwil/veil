@@ -1077,7 +1077,9 @@ impl LayerRegistry {
         for decl in &self.declarations {
             for line in decl.lines() {
                 let t = line.trim();
-                if let Some(rest) = t.strip_prefix("fn ") {
+                let rest = t.strip_prefix("fn ")
+                    .or_else(|| t.strip_prefix("async fn "));
+                if let Some(rest) = rest {
                     let name: String = rest
                         .chars()
                         .take_while(|c| c.is_alphanumeric() || *c == '_')
@@ -3305,8 +3307,10 @@ pub fn parse_layer_file(content: &str, layer_name: &str) -> Result<RawLayer, Str
                 // Track current type name (trait/struct at base indent)
                 if indent == declare_base_indent {
                     decl_in_lowers_to = false;
-                    // Free function at base indent: `fn name(...)`
-                    if let Some(rest) = trimmed.strip_prefix("fn ") {
+                    // Free function at base indent: `fn name(...)` or `async fn name(...)`
+                    let fn_rest = trimmed.strip_prefix("fn ")
+                        .or_else(|| trimmed.strip_prefix("async fn "));
+                    if let Some(rest) = fn_rest {
                         let fn_name: String = rest
                             .chars()
                             .take_while(|c| c.is_alphanumeric() || *c == '_')
@@ -3332,7 +3336,11 @@ pub fn parse_layer_file(content: &str, layer_name: &str) -> Result<RawLayer, Str
                 // Track current method name (fn or bare method at base+2 indent)
                 if indent == declare_base_indent + 2 && !decl_current_type.is_empty() {
                     decl_in_lowers_to = false;
-                    let method_line = trimmed.strip_prefix("fn ").unwrap_or(trimmed);
+                    let method_line = trimmed
+                        .strip_prefix("async fn ")
+                        .or_else(|| trimmed.strip_prefix("fn "))
+                        .or_else(|| trimmed.strip_prefix("async "))
+                        .unwrap_or(trimmed);
                     let method_name: String = method_line
                         .chars()
                         .take_while(|c| c.is_alphanumeric() || *c == '_')
