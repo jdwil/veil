@@ -171,12 +171,25 @@ pub async fn get_project_infra(
     let rid = RepoId { value: id.clone() };
     let repo = deps.metadata_store.get_repo(rid.clone()).await?;
     let s3_key = format!("repos/{}/{}/veil.toml", repo.id.value, repo.default_branch);
-    let mut source = "disk".to_string();
+    let source;
+    let snap_str;
     if deps.object_storage.exists(s3_key.clone()).await? {
         source = "s3".to_string();
-    };
-    let snap_str = veil_local_fs::LocalFs::read_project_deploy(repo.slug.clone())
+        let raw_bytes = deps.object_storage.get(s3_key.clone()).await?;
+        let content = String::from_utf8_lossy(&raw_bytes).into_owned();
+        let parsed = veil_local_fs::parse_veil_toml_deploy_snap_from_content(
+            &content,
+            &repo.slug,
+            "s3",
+            &s3_key,
+        )
         .map_err(|e| DomainError::External(e.to_string()))?;
+        snap_str = parsed.to_string();
+    } else {
+        source = "disk".to_string();
+        snap_str = veil_local_fs::LocalFs::read_project_deploy(repo.slug.clone())
+            .map_err(|e| DomainError::External(e.to_string()))?;
+    };
     let mut snap: serde_json::Value = serde_json::from_str::<_>(&snap_str)?;
     let mut env_catalog: serde_json::Value = serde_json::from_str::<_>(&"{\"default\":\"dev\",\"environments\":[{\"name\":\"dev\",\"region\":\"us-west-2\",\"account_id\":null,\"has_assume_role\":false,\"assume_role_arn\":null,\"lambda_execution_role_arn\":null,\"gateways\":[{\"logical\":\"http-api\",\"patterns\":[\"*-http-api\",\"*-dev-service-api\"]}]},{\"name\":\"staging\",\"region\":\"us-west-2\",\"account_id\":null,\"has_assume_role\":false,\"assume_role_arn\":null,\"lambda_execution_role_arn\":null,\"gateways\":[{\"logical\":\"http-api\",\"patterns\":[\"*-staging-service-api\"]}]},{\"name\":\"prod\",\"region\":\"us-west-2\",\"account_id\":null,\"has_assume_role\":false,\"assume_role_arn\":null,\"lambda_execution_role_arn\":null,\"gateways\":[{\"logical\":\"http-api\",\"patterns\":[\"*-prod-service-api\"]}]}],\"config_path\":\"config/deploy.toml\"}".to_string())?;
     let mut env_name = "dev".to_string();

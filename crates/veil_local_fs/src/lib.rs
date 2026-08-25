@@ -309,6 +309,17 @@ impl LocalFs {
 
 // ─── veil.toml [deploy] → JSON snap (GetProjectInfra / plan_provision) ───────
 
+/// Public entry point for parsing veil.toml deploy config from content string.
+/// Used by the storage layer when reading from S3 instead of local disk.
+pub fn parse_veil_toml_deploy_snap_from_content(
+    content: &str,
+    slug: &str,
+    projects_dir: &str,
+    toml_path: &str,
+) -> Result<serde_json::Value, FsError> {
+    parse_veil_toml_deploy_snap(content, slug, projects_dir, toml_path)
+}
+
 fn parse_veil_toml_deploy_snap(
     content: &str,
     slug: &str,
