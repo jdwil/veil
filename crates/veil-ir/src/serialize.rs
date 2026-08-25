@@ -143,6 +143,9 @@ impl Serializer {
 
     fn emit_link(&mut self, link: &LinkDecl) {
         let mut line = format!("link {}", link.name);
+        if let Some(ver) = &link.version {
+            line.push_str(&format!("@{}", ver));
+        }
         if let Some(path) = &link.path {
             line.push_str(&format!(" path \"{}\"", path));
         }

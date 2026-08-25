@@ -19,6 +19,7 @@
 mod generate;
 mod harness;
 mod harness_template;
+mod linked_loader;
 mod workspace;
 mod types;
 mod shared;
@@ -30,6 +31,7 @@ mod type_convert;
 pub use generate::*;
 pub use harness::*;
 pub use harness_template::*;
+pub use linked_loader::*;
 pub use workspace::*;
 pub use types::*;
 pub use shared::*;

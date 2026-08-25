@@ -12,6 +12,11 @@ use serde::{Deserialize, Serialize};
 use crate::layer::{Shape, StmtShape};
 use crate::span::Span;
 
+/// Serde helper: skip serializing `false` booleans.
+fn is_false(v: &bool) -> bool {
+    !v
+}
+
 /// Root of a VEIL file — solution, package, or composition.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum VeilFile {
@@ -188,28 +193,41 @@ pub struct Composition {
 pub struct UseImport {
     pub package_name: String,
     pub alias: Option<String>,
+    /// Pinned version from `@x.y.z` suffix (LAY-011/LAY-012).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
     pub span: Span,
 }
 
-/// External Cargo dependency declared with `link` (CAP-001).
+/// External dependency declared with `link` (CAP-001).
 ///
-/// ```veil
-/// link veil_server
-/// link veil_local path "../../crates/veil-local" features "local"
-/// ```
+/// Two forms:
+/// 1. **Raw Cargo dep** — `link veil_server path "../../crates/veil-server"`
+///    Codegen emits path deps into generated `Cargo.toml`.
+/// 2. **VEIL project link** — `link dlx_auth` / `link dlx_auth@2.1.0`
+///    Codegen generates a shared-object loader. The linked project is compiled
+///    as a cdylib and loaded at runtime via `libloading`.
 ///
-/// Codegen emits path deps into generated `Cargo.toml`. Unallowlisted crates
-/// require an explicit relative `path`. Absolute paths are rejected.
+/// Distinction: if no `path` keyword AND the name is not in the monorepo
+/// allowlist, it's a VEIL project link. The `@version` suffix is only valid
+/// for project links.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LinkDecl {
-    /// Crate name as written (`veil_server` or `veil-server`).
+    /// Crate/project name as written (`veil_server` or `dlx_auth`).
     pub name: String,
-    /// Optional path relative to the generated workspace root.
+    /// Optional path relative to the generated workspace root (Cargo dep only).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
-    /// Optional Cargo features.
+    /// Optional Cargo features (Cargo dep only).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub features: Vec<String>,
+    /// True when this is a VEIL project link (shared object), not a raw Cargo dep.
+    /// Project links generate loader structs + factory-based .so loading.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub is_project_link: bool,
+    /// Pinned version for project links (`link dlx_auth@2.1.0`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
     pub span: Span,
 }
 

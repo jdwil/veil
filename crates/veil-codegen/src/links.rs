@@ -172,6 +172,8 @@ mod tests {
             name: name.into(),
             path: path.map(str::to_string),
             features: features.iter().map(|s| s.to_string()).collect(),
+            is_project_link: false,
+            version: None,
             span: Span::new(0, 0),
         }
     }

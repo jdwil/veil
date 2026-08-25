@@ -625,6 +625,9 @@ pub struct LayerRegistry {
     /// External package source resolver — resolves `use X` package .veil content
     /// when not found on filesystem (DDB/S3 in deployed environments).
     pub source_resolver: Option<Box<dyn Fn(&str) -> Option<String> + Send + Sync>>,
+    /// External stub resolver — resolves `.stub` content by crate name when not
+    /// found on local disk or system paths (DDB/S3 in deployed environments).
+    pub stub_resolver: Option<Box<dyn Fn(&str) -> Option<String> + Send + Sync>>,
     /// Smart-constructor / field-default policy (INV-002). Filled from target layers.
     pub constructor_policy: ConstructorPolicy,
     /// UI framework reactivity forms (Svelte runes, etc.). From layers only.
@@ -649,6 +652,9 @@ pub struct LayerRegistry {
     pub extra_layer_roots: Vec<std::path::PathBuf>,
     /// True when `veil.toml` `[codegen] http_*` was present (warn after flip).
     pub codegen_http_from_toml: bool,
+    /// Output type for the project: "bin" (default) or "cdylib" (shared library).
+    /// Set from `veil.toml` `[codegen] output_type = "cdylib"`.
+    pub output_type: Option<String>,
     /// Per-target lowering templates for declared trait/struct methods.
     /// Key: `(TypeName, MethodName)`, Value: `{ target → template }`.
     /// Populated from `declare` blocks with `lowers_to` on methods.
@@ -759,6 +765,7 @@ impl Default for LayerRegistry {
             stubs: Vec::new(),
             external_resolver: None,
             source_resolver: None,
+            stub_resolver: None,
             constructor_policy: ConstructorPolicy::default(),
             reactivity_policy: ReactivityPolicy::default(),
             review_policies: HashMap::new(),
@@ -770,6 +777,7 @@ impl Default for LayerRegistry {
             harness_policy: crate::harness::HarnessPolicy::documented_defaults(),
             extra_layer_roots: Vec::new(),
             codegen_http_from_toml: false,
+            output_type: None,
             method_lowers_to: HashMap::new(),
             shared_emit: Vec::new(),
             harness_render_templates: HashMap::new(),
@@ -793,6 +801,7 @@ impl Clone for LayerRegistry {
             stubs: self.stubs.clone(),
             external_resolver: None, // resolver is not cloneable — cleared on clone
             source_resolver: None, // resolver is not cloneable — cleared on clone
+            stub_resolver: None, // resolver is not cloneable — cleared on clone
             constructor_policy: self.constructor_policy.clone(),
             reactivity_policy: self.reactivity_policy.clone(),
             review_policies: self.review_policies.clone(),
@@ -804,6 +813,7 @@ impl Clone for LayerRegistry {
             harness_policy: self.harness_policy.clone(),
             extra_layer_roots: self.extra_layer_roots.clone(),
             codegen_http_from_toml: self.codegen_http_from_toml,
+            output_type: self.output_type.clone(),
             method_lowers_to: self.method_lowers_to.clone(),
             shared_emit: self.shared_emit.clone(),
             harness_render_templates: self.harness_render_templates.clone(),
@@ -822,6 +832,7 @@ impl std::fmt::Debug for LayerRegistry {
             .field("stubs", &self.stubs.len())
             .field("external_resolver", &self.external_resolver.is_some())
             .field("source_resolver", &self.source_resolver.is_some())
+            .field("stub_resolver", &self.stub_resolver.is_some())
             .finish()
     }
 }
@@ -1189,6 +1200,9 @@ impl LayerRegistry {
         }
         if let Some(v) = crate::deps::CodegenToml::normalize_opt(&o.http_delete_prefix) {
             self.http_name_policy.delete_prefix = v;
+        }
+        if let Some(v) = &o.output_type {
+            self.output_type = Some(v.clone());
         }
     }
 
@@ -1730,21 +1744,24 @@ impl LayerRegistry {
     /// Build a registry for a `.veil` file: built-ins plus every layer the
     /// file references via `use` lines. Layer resolution is transitive.
     pub fn for_veil_file(veil_path: &Path) -> Result<Self, String> {
-        Self::for_veil_file_with_resolvers(veil_path, None, None)
+        Self::for_veil_file_with_resolvers(veil_path, None, None, None)
     }
 
     /// Build a registry with optional external resolvers for deployed environments.
     ///
     /// - `layer_resolver`: called when a layer isn't found on disk (e.g. DDB lookup)
     /// - `pkg_source_resolver`: called to get package .veil source for cross-package deps
+    /// - `stub_resolver`: called to get .stub content by crate name when not found on disk
     pub fn for_veil_file_with_resolvers(
         veil_path: &Path,
         layer_resolver: Option<Box<dyn Fn(&str) -> Option<String> + Send + Sync>>,
         pkg_source_resolver: Option<Box<dyn Fn(&str) -> Option<String> + Send + Sync>>,
+        stub_resolver: Option<Box<dyn Fn(&str) -> Option<String> + Send + Sync>>,
     ) -> Result<Self, String> {
         let mut reg = LayerRegistry::builtin();
         reg.external_resolver = layer_resolver;
         reg.source_resolver = pkg_source_resolver;
+        reg.stub_resolver = stub_resolver;
         // R20: product deps from veil.toml feed layer search roots
         reg.extra_layer_roots = crate::deps::resolve_dependency_roots_for(veil_path);
         let dir = veil_path.parent().unwrap_or(Path::new("."));
@@ -1766,7 +1783,7 @@ impl LayerRegistry {
                 let _ = reg.load_layer(name, dir);
 
                 // Also check for .stub files: local → stubs/ → system (VEIL_STUBS_DIR /
-                // runtime/src/stubs next to layers). Same resolution idea as layers.
+                // runtime/src/stubs next to layers) → runtime (DDB/S3).
                 let stub_path = dir.join(format!("{}.stub", name));
                 let stub_subdir_path = dir.join("stubs").join(format!("{}.stub", name));
                 let found_stub = if stub_path.exists() {
@@ -1778,6 +1795,14 @@ impl LayerRegistry {
                 };
                 if let Some(path) = found_stub {
                     if let Ok(stub_content) = std::fs::read_to_string(&path) {
+                        if let Some(mut stub) = parse_stub_file(&stub_content) {
+                            stub.alias = alias;
+                            reg.stubs.push(stub);
+                        }
+                    }
+                } else if let Some(resolver) = &reg.stub_resolver {
+                    // Runtime fallback: resolve stub content from DDB/S3
+                    if let Some(stub_content) = resolver(name) {
                         if let Some(mut stub) = parse_stub_file(&stub_content) {
                             stub.alias = alias;
                             reg.stubs.push(stub);

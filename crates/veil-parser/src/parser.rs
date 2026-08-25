@@ -1249,6 +1249,14 @@ impl<'a> Parser<'a> {
         self.expect(&TokenKind::Use)?;
         let package_name = self.expect_ident()?;
 
+        // Parse optional @version suffix: `use aws_sdk_dynamodb@1.140.0`
+        let version = if self.at(&TokenKind::At) {
+            self.advance(); // consume @
+            Some(self.parse_version_string()?)
+        } else {
+            None
+        };
+
         let alias = if self.at(&TokenKind::As) {
             self.advance();
             Some(self.expect_ident()?)
@@ -1259,8 +1267,35 @@ impl<'a> Parser<'a> {
         Ok(UseImport {
             package_name,
             alias,
+            version,
             span: start_span.merge(self.current().span),
         })
+    }
+
+    /// Parse a dotted version string like `1.140.0` or `2.0`.
+    /// Handles both `IntLit.IntLit.IntLit` and `FloatLit.IntLit` patterns
+    /// (the lexer may produce `FloatLit("1.140")` for `1.140`).
+    fn parse_version_string(&mut self) -> Result<String, ParseError> {
+        // The lexer may lex `1.140` as FloatLit or `1` as IntLit.
+        if !self.at(&TokenKind::IntLit) && !self.at(&TokenKind::FloatLit) {
+            return Err(self.error(format!(
+                "expected version number after '@', got {:?}",
+                self.peek_kind()
+            )));
+        }
+        let mut version = self.advance().text;
+        // Consume `.digit` segments (handles trailing segments like .0 in 1.140.0)
+        while self.at(&TokenKind::Dot) {
+            // Peek ahead: must be followed by IntLit for it to be part of version
+            if self.tokens.get(self.pos + 1).map(|t| &t.kind) == Some(&TokenKind::IntLit) {
+                self.advance(); // consume .
+                version.push('.');
+                version.push_str(&self.advance().text);
+            } else {
+                break;
+            }
+        }
+        Ok(version)
     }
 
     /// `adapt wear_test` (package name may be a keyword e.g. `adapt stock`)
@@ -1554,6 +1589,14 @@ impl<'a> Parser<'a> {
             name
         };
 
+        // Optional @version suffix: `link dlx_auth@2.1.0`
+        let version = if self.at(&TokenKind::At) {
+            self.advance(); // consume @
+            Some(self.parse_version_string()?)
+        } else {
+            None
+        };
+
         let mut path = None;
         let mut features = Vec::new();
 
@@ -1607,11 +1650,28 @@ impl<'a> Parser<'a> {
         }
 
         Ok(LinkDecl {
-            name,
-            path,
-            features,
+            name: name.clone(),
+            path: path.clone(),
+            features: features.clone(),
+            // A VEIL project link: no `path` keyword, not in the Cargo allowlist,
+            // and not a string-literal crate name. If it has a @version suffix,
+            // it's always a project link.
+            is_project_link: version.is_some() || (path.is_none() && features.is_empty() && !Self::is_cargo_allowlisted(&name)),
+            version,
             span: start_span.merge(self.current().span),
         })
+    }
+
+    /// Check if a link name is a known monorepo Cargo crate (not a VEIL project link).
+    fn is_cargo_allowlisted(name: &str) -> bool {
+        matches!(
+            name,
+            "veil_server" | "veil-server"
+                | "veil_local" | "veil-local"
+                | "veil_parser" | "veil-parser"
+                | "veil_ir" | "veil-ir"
+                | "veil_codegen" | "veil-codegen"
+        )
     }
 
     fn parse_lang_block(&mut self) -> Result<LangBlock, ParseError> {

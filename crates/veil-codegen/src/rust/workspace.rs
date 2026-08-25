@@ -227,6 +227,11 @@ pub fn gen_workspace_toml(
                 .or_insert(line.trim_end().to_string());
         }
     }
+    // Linked VEIL projects need libloading for .so loading.
+    if sol.links.iter().any(|l| l.is_project_link) {
+        dep_map.entry("libloading".to_string())
+            .or_insert_with(|| "libloading = \"0.8\"".to_string());
+    }
     let extra_deps: String = dep_map.values().map(|v| format!("{v}\n")).collect();
 
     let content = format!(

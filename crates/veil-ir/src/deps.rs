@@ -66,6 +66,10 @@ struct VeilTomlFile {
     /// layer `harness_policy`. Codegen does not emit from this yet.
     #[serde(default)]
     harness: Option<HarnessToml>,
+    /// Infrastructure deployment configuration — links to a Terraform template
+    /// project and provides variable overrides.
+    #[serde(default)]
+    deploy: Option<DeployToml>,
 }
 
 /// `[codegen]` section in `veil.toml` — product knobs over layer policies.
@@ -102,6 +106,11 @@ pub struct CodegenToml {
     pub http_update_prefix: Option<String>,
     #[serde(default)]
     pub http_delete_prefix: Option<String>,
+    /// Output type: "bin" (default) or "cdylib" (shared library for `link` consumers).
+    /// When "cdylib", codegen adds `[lib]\ncrate-type = ["cdylib"]` and generates
+    /// factory functions for each adapter.
+    #[serde(default)]
+    pub output_type: Option<String>,
 }
 
 impl CodegenToml {
@@ -115,6 +124,7 @@ impl CodegenToml {
             && self.http_create_prefix.is_none()
             && self.http_update_prefix.is_none()
             && self.http_delete_prefix.is_none()
+            && self.output_type.is_none()
     }
 
     /// Normalize a optional string field: empty / `-` / `none` → clear (None).
@@ -284,6 +294,458 @@ pub fn load_harness_overrides(project_root: &Path) -> Result<Option<HarnessToml>
 pub fn load_harness_overrides_for(veil_path: &Path) -> Option<HarnessToml> {
     let root = find_project_root(veil_path)?;
     load_harness_overrides(&root).ok().flatten()
+}
+
+// ─── Deploy Configuration ────────────────────────────────────────────────────
+
+/// `[deploy]` section in `veil.toml` — infrastructure template reference + variable overrides.
+///
+/// ```toml
+/// [deploy]
+/// template = "dlx-service-template"    # project slug of the infra template
+///
+/// [deploy.uses.ecs_cluster]
+/// project = "veil-ecs-cluster"
+///
+/// [deploy.uses.dlx_bus]
+/// project = "dlx-bus"
+/// vars.ecs_cluster_arn = "{{ecs_cluster.outputs.cluster_arn}}"
+///
+/// [deploy.vars]
+/// service_name = "{{slug}}"            # interpolated at deploy time
+/// environment = "{{env}}"
+/// enable_daemon = true
+///
+/// [deploy.suppress]
+/// sns = true
+/// ```
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct DeployToml {
+    /// Project slug of the Terraform template to use.
+    #[serde(default)]
+    pub template: Option<String>,
+    /// Infrastructure dependencies on other projects. Each key is an alias used
+    /// in `{{alias.outputs.output_name}}` references.
+    #[serde(default)]
+    pub uses: BTreeMap<String, DeployUsesToml>,
+    /// Variable overrides passed to terraform. Values can be strings (with
+    /// `{{token}}` or `{{alias.outputs.name}}` interpolation), booleans, or numbers.
+    #[serde(default)]
+    pub vars: BTreeMap<String, toml::Value>,
+    /// Suppress inherited infra resources (e.g. `sns = true` to skip SNS topic).
+    #[serde(default)]
+    pub suppress: BTreeMap<String, bool>,
+}
+
+/// One `[deploy.uses.<alias>]` entry — an infrastructure dependency on another project.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct DeployUsesToml {
+    /// Project slug that provides the infrastructure (e.g. "veil-ecs-cluster").
+    pub project: String,
+    /// Variable overrides to pass when applying that project's shared terraform.
+    /// These may reference outputs from OTHER uses entries: `{{other_alias.outputs.x}}`.
+    #[serde(default)]
+    pub vars: BTreeMap<String, toml::Value>,
+}
+
+impl DeployToml {
+    /// True when at least one meaningful key is present.
+    pub fn is_empty(&self) -> bool {
+        self.template.is_none()
+            && self.uses.is_empty()
+            && self.vars.is_empty()
+            && self.suppress.is_empty()
+    }
+
+    /// Render vars with interpolation context and resolved outputs.
+    ///
+    /// `outputs` maps `alias → output_name → value` (from prior terraform applies).
+    /// Falls back to `""` for unresolved `{{alias.outputs.x}}` references.
+    pub fn render_vars(
+        &self,
+        ctx: &DeployContext,
+        outputs: &BTreeMap<String, BTreeMap<String, String>>,
+    ) -> BTreeMap<String, String> {
+        let mut out = BTreeMap::new();
+        for (k, v) in &self.vars {
+            let rendered = match v {
+                toml::Value::String(s) => render_deploy_value(s, ctx, outputs),
+                toml::Value::Boolean(b) => b.to_string(),
+                toml::Value::Integer(i) => i.to_string(),
+                toml::Value::Float(f) => f.to_string(),
+                _ => v.to_string(),
+            };
+            out.insert(k.clone(), rendered);
+        }
+        out
+    }
+
+    /// Extract which `uses` aliases this deploy config depends on (by scanning
+    /// `{{alias.outputs.x}}` references in vars).
+    pub fn output_dependencies(&self) -> Vec<String> {
+        let mut deps = Vec::new();
+        for v in self.vars.values() {
+            if let toml::Value::String(s) = v {
+                collect_output_refs(s, &mut deps);
+            }
+        }
+        // Also scan uses.*.vars for inter-uses dependencies.
+        for entry in self.uses.values() {
+            for v in entry.vars.values() {
+                if let toml::Value::String(s) = v {
+                    collect_output_refs(s, &mut deps);
+                }
+            }
+        }
+        deps.sort();
+        deps.dedup();
+        deps
+    }
+}
+
+impl DeployUsesToml {
+    /// Extract which other `uses` aliases this entry depends on (by scanning
+    /// `{{alias.outputs.x}}` references in its vars).
+    pub fn output_dependencies(&self) -> Vec<String> {
+        let mut deps = Vec::new();
+        for v in self.vars.values() {
+            if let toml::Value::String(s) = v {
+                collect_output_refs(s, &mut deps);
+            }
+        }
+        deps.sort();
+        deps.dedup();
+        deps
+    }
+}
+
+/// Context available for `{{token}}` interpolation in deploy vars.
+#[derive(Debug, Clone, Default)]
+pub struct DeployContext {
+    /// Project slug (e.g. "agent-core").
+    pub slug: String,
+    /// Deploy environment (e.g. "dev", "staging", "prod").
+    pub env: String,
+    /// AWS region (e.g. "us-west-2").
+    pub region: String,
+    /// AWS account ID (e.g. "086261225885").
+    pub account_id: String,
+    /// Runtime S3 bucket name.
+    pub bucket: String,
+    /// Runtime DynamoDB table name.
+    pub table: String,
+}
+
+/// Render a deploy value string with context interpolation AND output references.
+///
+/// Handles both simple tokens (`{{slug}}`) and output references (`{{alias.outputs.name}}`).
+pub fn render_deploy_value(
+    template: &str,
+    ctx: &DeployContext,
+    outputs: &BTreeMap<String, BTreeMap<String, String>>,
+) -> String {
+    // First pass: resolve output references (they may contain dots that look like tokens).
+    let mut result = resolve_output_refs(template, outputs);
+    // Second pass: resolve simple context tokens.
+    result = result.replace("{{slug}}", &ctx.slug);
+    result = result.replace("{{env}}", &ctx.env);
+    result = result.replace("{{region}}", &ctx.region);
+    result = result.replace("{{account_id}}", &ctx.account_id);
+    result = result.replace("{{bucket}}", &ctx.bucket);
+    result = result.replace("{{table}}", &ctx.table);
+    result
+}
+
+/// Interpolate simple `{{token}}` patterns (no output refs). Legacy compat.
+pub fn interpolate_deploy_var(template: &str, ctx: &DeployContext) -> String {
+    render_deploy_value(template, ctx, &BTreeMap::new())
+}
+
+/// Resolve `{{alias.outputs.output_name}}` patterns from a resolved outputs map.
+fn resolve_output_refs(
+    template: &str,
+    outputs: &BTreeMap<String, BTreeMap<String, String>>,
+) -> String {
+    let mut result = String::with_capacity(template.len());
+    let mut rest = template;
+    while let Some(start) = rest.find("{{") {
+        result.push_str(&rest[..start]);
+        let after_open = &rest[start + 2..];
+        if let Some(end) = after_open.find("}}") {
+            let token = &after_open[..end];
+            // Check if this is an output reference: alias.outputs.name
+            if let Some(resolved) = try_resolve_output_ref(token, outputs) {
+                result.push_str(&resolved);
+            } else {
+                // Not an output ref — leave it for the context pass.
+                result.push_str("{{");
+                result.push_str(token);
+                result.push_str("}}");
+            }
+            rest = &after_open[end + 2..];
+        } else {
+            // No closing }} — pass through literally.
+            result.push_str("{{");
+            rest = after_open;
+        }
+    }
+    result.push_str(rest);
+    result
+}
+
+/// Try to resolve a single token as an output reference (`alias.outputs.name`).
+/// Returns None if it's not an output reference pattern.
+fn try_resolve_output_ref(
+    token: &str,
+    outputs: &BTreeMap<String, BTreeMap<String, String>>,
+) -> Option<String> {
+    let parts: Vec<&str> = token.splitn(3, '.').collect();
+    if parts.len() == 3 && parts[1] == "outputs" {
+        let alias = parts[0];
+        let output_name = parts[2];
+        let value = outputs
+            .get(alias)
+            .and_then(|m| m.get(output_name))
+            .cloned()
+            .unwrap_or_default();
+        Some(value)
+    } else {
+        None
+    }
+}
+
+/// Collect alias names from `{{alias.outputs.x}}` references in a string.
+fn collect_output_refs(s: &str, out: &mut Vec<String>) {
+    let mut rest = s;
+    while let Some(start) = rest.find("{{") {
+        let after_open = &rest[start + 2..];
+        if let Some(end) = after_open.find("}}") {
+            let token = &after_open[..end];
+            let parts: Vec<&str> = token.splitn(3, '.').collect();
+            if parts.len() == 3 && parts[1] == "outputs" {
+                let alias = parts[0].to_string();
+                if !out.contains(&alias) {
+                    out.push(alias);
+                }
+            }
+            rest = &after_open[end + 2..];
+        } else {
+            break;
+        }
+    }
+}
+
+// ─── Deploy DAG ──────────────────────────────────────────────────────────────
+
+/// A node in the deploy DAG.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeployNode {
+    /// Alias name (key in `[deploy.uses]`).
+    pub alias: String,
+    /// Project slug being deployed.
+    pub project: String,
+    /// Aliases this node depends on (from `{{alias.outputs.x}}` references).
+    pub depends_on: Vec<String>,
+}
+
+/// Error from DAG construction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeployDagError {
+    /// Circular dependency detected. Contains the cycle path.
+    CyclicDependency(Vec<String>),
+    /// A `{{alias.outputs.x}}` reference points to an alias not declared in `[deploy.uses]`.
+    UnknownAlias { reference: String, available: Vec<String> },
+}
+
+impl std::fmt::Display for DeployDagError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DeployDagError::CyclicDependency(path) => {
+                write!(
+                    f,
+                    "circular infrastructure dependency detected: {}",
+                    path.join(" → ")
+                )
+            }
+            DeployDagError::UnknownAlias { reference, available } => {
+                write!(
+                    f,
+                    "unknown deploy alias '{}' referenced in outputs; available: [{}]",
+                    reference,
+                    available.join(", ")
+                )
+            }
+        }
+    }
+}
+
+/// Build a deploy DAG from the `[deploy.uses]` entries. Returns nodes in
+/// topological order (dependencies first). Errors on cycles or unknown aliases.
+pub fn build_deploy_dag(deploy: &DeployToml) -> Result<Vec<DeployNode>, DeployDagError> {
+    if deploy.uses.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let aliases: Vec<String> = deploy.uses.keys().cloned().collect();
+
+    // Build nodes with their dependencies.
+    let mut nodes: BTreeMap<String, DeployNode> = BTreeMap::new();
+    for (alias, entry) in &deploy.uses {
+        let deps = entry.output_dependencies();
+        // Validate that all referenced aliases exist.
+        for dep in &deps {
+            if !aliases.contains(dep) {
+                return Err(DeployDagError::UnknownAlias {
+                    reference: dep.clone(),
+                    available: aliases.clone(),
+                });
+            }
+        }
+        nodes.insert(
+            alias.clone(),
+            DeployNode {
+                alias: alias.clone(),
+                project: entry.project.clone(),
+                depends_on: deps,
+            },
+        );
+    }
+
+    // Also check top-level vars for output refs that point to uses entries.
+    // These don't create extra nodes, but validate alias references.
+    for v in deploy.vars.values() {
+        if let toml::Value::String(s) = v {
+            let mut refs = Vec::new();
+            collect_output_refs(s, &mut refs);
+            for r in &refs {
+                if !aliases.contains(r) {
+                    return Err(DeployDagError::UnknownAlias {
+                        reference: r.clone(),
+                        available: aliases.clone(),
+                    });
+                }
+            }
+        }
+    }
+
+    // Topological sort with cycle detection (Kahn's algorithm).
+    topological_sort(&nodes)
+}
+
+/// Topological sort via Kahn's algorithm. Returns nodes in dependency order.
+fn topological_sort(
+    nodes: &BTreeMap<String, DeployNode>,
+) -> Result<Vec<DeployNode>, DeployDagError> {
+    let mut in_degree: BTreeMap<String, usize> = BTreeMap::new();
+    for alias in nodes.keys() {
+        in_degree.entry(alias.clone()).or_insert(0);
+    }
+    for node in nodes.values() {
+        for dep in &node.depends_on {
+            *in_degree.entry(dep.clone()).or_insert(0); // ensure dep is in map
+            // dep → node means node has an incoming edge from dep
+        }
+    }
+    // Actually compute in-degrees properly.
+    let mut in_deg: BTreeMap<String, usize> = nodes.keys().map(|k| (k.clone(), 0)).collect();
+    for node in nodes.values() {
+        for dep in &node.depends_on {
+            if nodes.contains_key(dep) {
+                *in_deg.entry(node.alias.clone()).or_insert(0) += 1;
+            }
+        }
+    }
+
+    let mut queue: std::collections::VecDeque<String> = std::collections::VecDeque::new();
+    for (alias, &deg) in &in_deg {
+        if deg == 0 {
+            queue.push_back(alias.clone());
+        }
+    }
+
+    let mut sorted = Vec::new();
+    while let Some(alias) = queue.pop_front() {
+        sorted.push(nodes[&alias].clone());
+        // For each node that depends on `alias`, reduce its in-degree.
+        for (other_alias, node) in nodes {
+            if node.depends_on.contains(&alias) {
+                let deg = in_deg.get_mut(other_alias).unwrap();
+                *deg -= 1;
+                if *deg == 0 {
+                    queue.push_back(other_alias.clone());
+                }
+            }
+        }
+    }
+
+    if sorted.len() != nodes.len() {
+        // Cycle detected — find the cycle for error reporting.
+        let remaining: Vec<String> = nodes
+            .keys()
+            .filter(|k| !sorted.iter().any(|n| &n.alias == *k))
+            .cloned()
+            .collect();
+        let cycle = find_cycle(nodes, &remaining);
+        return Err(DeployDagError::CyclicDependency(cycle));
+    }
+
+    Ok(sorted)
+}
+
+/// Find a cycle in the remaining (unsorted) nodes for error reporting.
+fn find_cycle(nodes: &BTreeMap<String, DeployNode>, remaining: &[String]) -> Vec<String> {
+    if remaining.is_empty() {
+        return Vec::new();
+    }
+    // DFS from the first remaining node to find the cycle.
+    let start = &remaining[0];
+    let mut path = vec![start.clone()];
+    let mut visited = std::collections::BTreeSet::new();
+    visited.insert(start.clone());
+
+    let mut current = start.clone();
+    loop {
+        let node = match nodes.get(&current) {
+            Some(n) => n,
+            None => break,
+        };
+        let next = node
+            .depends_on
+            .iter()
+            .find(|d| remaining.contains(d));
+        match next {
+            Some(n) => {
+                if visited.contains(n) {
+                    path.push(n.clone());
+                    break;
+                }
+                visited.insert(n.clone());
+                path.push(n.clone());
+                current = n.clone();
+            }
+            None => break,
+        }
+    }
+    path
+}
+
+/// Load `[deploy]` from a product root's `veil.toml` (None if missing/empty).
+pub fn load_deploy_config(project_root: &Path) -> Result<Option<DeployToml>, String> {
+    let toml_path = project_root.join("veil.toml");
+    if !toml_path.is_file() {
+        return Ok(None);
+    }
+    let content = std::fs::read_to_string(&toml_path)
+        .map_err(|e| format!("cannot read {}: {e}", toml_path.display()))?;
+    let parsed: VeilTomlFile =
+        toml::from_str(&content).map_err(|e| format!("veil.toml parse error: {e}"))?;
+    Ok(parsed.deploy.filter(|d| !d.is_empty()))
+}
+
+/// Walk from a `.veil` path to project root and load `[deploy]` if present.
+pub fn load_deploy_config_for(veil_path: &Path) -> Option<DeployToml> {
+    let root = find_project_root(veil_path)?;
+    load_deploy_config(&root).ok().flatten()
 }
 
 /// `[package]` entry in veil.toml (R21).
@@ -894,6 +1356,321 @@ item_repo = "PgItemRepo"
         let pol = o.to_policy();
         assert_eq!(pol.emit_bin, Some(crate::harness::EmitBin::Never));
         assert_eq!(pol.health.as_deref(), Some(crate::harness::HARNESS_CLEAR));
+    }
+
+    #[test]
+    fn parse_deploy_config() {
+        let dir = tempfile_dir();
+        std::fs::write(
+            dir.join("veil.toml"),
+            r#"
+name = "agent-core"
+
+[deploy]
+template = "dlx-service-template"
+
+[deploy.vars]
+service_name = "{{slug}}"
+environment = "{{env}}"
+enable_daemon = true
+enable_daemon_queue = true
+api_memory = 256
+api_timeout = 30
+consumer_timeout = 900
+
+[deploy.suppress]
+sns = true
+"#,
+        )
+        .unwrap();
+        let deploy = load_deploy_config(&dir).unwrap().expect("deploy");
+        assert_eq!(deploy.template.as_deref(), Some("dlx-service-template"));
+        assert_eq!(deploy.vars.len(), 7);
+        assert_eq!(
+            deploy.vars.get("service_name").and_then(|v| v.as_str()),
+            Some("{{slug}}")
+        );
+        assert_eq!(
+            deploy.vars.get("enable_daemon").and_then(|v| v.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            deploy.vars.get("api_memory").and_then(|v| v.as_integer()),
+            Some(256)
+        );
+        assert_eq!(deploy.suppress.get("sns"), Some(&true));
+    }
+
+    #[test]
+    fn deploy_variable_interpolation() {
+        let ctx = DeployContext {
+            slug: "agent-core".into(),
+            env: "dev".into(),
+            region: "us-west-2".into(),
+            account_id: "123456789012".into(),
+            bucket: "veil-runtime-dev".into(),
+            table: "veil-runtime-dev".into(),
+        };
+
+        assert_eq!(interpolate_deploy_var("{{slug}}", &ctx), "agent-core");
+        assert_eq!(interpolate_deploy_var("{{env}}", &ctx), "dev");
+        assert_eq!(
+            interpolate_deploy_var("veil-{{slug}}-{{env}}", &ctx),
+            "veil-agent-core-dev"
+        );
+        assert_eq!(
+            interpolate_deploy_var("no tokens here", &ctx),
+            "no tokens here"
+        );
+        assert_eq!(
+            interpolate_deploy_var("arn:aws:lambda:{{region}}:{{account_id}}:function:test", &ctx),
+            "arn:aws:lambda:us-west-2:123456789012:function:test"
+        );
+    }
+
+    #[test]
+    fn deploy_render_vars_mixed_types() {
+        let dir = tempfile_dir();
+        std::fs::write(
+            dir.join("veil.toml"),
+            r#"
+name = "myapp"
+
+[deploy]
+template = "dlx-service-template"
+
+[deploy.vars]
+service_name = "{{slug}}"
+environment = "{{env}}"
+enable_daemon = true
+api_memory = 512
+"#,
+        )
+        .unwrap();
+        let deploy = load_deploy_config(&dir).unwrap().expect("deploy");
+        let ctx = DeployContext {
+            slug: "myapp".into(),
+            env: "prod".into(),
+            region: "us-east-1".into(),
+            ..Default::default()
+        };
+        let rendered = deploy.render_vars(&ctx, &BTreeMap::new());
+        assert_eq!(rendered.get("service_name").unwrap(), "myapp");
+        assert_eq!(rendered.get("environment").unwrap(), "prod");
+        assert_eq!(rendered.get("enable_daemon").unwrap(), "true");
+        assert_eq!(rendered.get("api_memory").unwrap(), "512");
+    }
+
+    #[test]
+    fn parse_deploy_uses() {
+        let dir = tempfile_dir();
+        std::fs::write(
+            dir.join("veil.toml"),
+            r#"
+name = "agent-core"
+
+[deploy]
+template = "dlx-service-template"
+
+[deploy.uses.ecs_cluster]
+project = "veil-ecs-cluster"
+
+[deploy.uses.dlx_bus]
+project = "dlx-bus"
+vars.ecs_cluster_arn = "{{ecs_cluster.outputs.cluster_arn}}"
+vars.api_gateway_id = "{{ecs_cluster.outputs.api_gateway_id}}"
+
+[deploy.vars]
+service_name = "{{slug}}"
+environment = "{{env}}"
+enable_daemon = true
+"#,
+        )
+        .unwrap();
+        let deploy = load_deploy_config(&dir).unwrap().expect("deploy");
+        assert_eq!(deploy.uses.len(), 2);
+        let ecs = deploy.uses.get("ecs_cluster").unwrap();
+        assert_eq!(ecs.project, "veil-ecs-cluster");
+        assert!(ecs.vars.is_empty());
+        let bus = deploy.uses.get("dlx_bus").unwrap();
+        assert_eq!(bus.project, "dlx-bus");
+        assert_eq!(bus.vars.len(), 2);
+        assert_eq!(
+            bus.vars.get("ecs_cluster_arn").and_then(|v| v.as_str()),
+            Some("{{ecs_cluster.outputs.cluster_arn}}")
+        );
+    }
+
+    #[test]
+    fn deploy_output_interpolation() {
+        let mut outputs: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
+        let mut ecs_outputs = BTreeMap::new();
+        ecs_outputs.insert("cluster_arn".into(), "arn:aws:ecs:us-west-2:123:cluster/my-cluster".into());
+        ecs_outputs.insert("api_gateway_id".into(), "gw-abc123".into());
+        outputs.insert("ecs_cluster".into(), ecs_outputs);
+
+        let ctx = DeployContext {
+            slug: "agent-core".into(),
+            env: "dev".into(),
+            region: "us-west-2".into(),
+            ..Default::default()
+        };
+
+        // Output ref resolves
+        assert_eq!(
+            render_deploy_value("{{ecs_cluster.outputs.cluster_arn}}", &ctx, &outputs),
+            "arn:aws:ecs:us-west-2:123:cluster/my-cluster"
+        );
+        // Mixed: output ref + context token
+        assert_eq!(
+            render_deploy_value("{{slug}}-{{ecs_cluster.outputs.api_gateway_id}}", &ctx, &outputs),
+            "agent-core-gw-abc123"
+        );
+        // Unknown output ref resolves to empty string
+        assert_eq!(
+            render_deploy_value("{{unknown.outputs.foo}}", &ctx, &outputs),
+            ""
+        );
+        // Simple context tokens still work
+        assert_eq!(
+            render_deploy_value("{{slug}}-{{env}}", &ctx, &outputs),
+            "agent-core-dev"
+        );
+    }
+
+    #[test]
+    fn deploy_dag_ordering() {
+        let dir = tempfile_dir();
+        std::fs::write(
+            dir.join("veil.toml"),
+            r#"
+name = "agent-core"
+
+[deploy]
+template = "dlx-service-template"
+
+[deploy.uses.ecs_cluster]
+project = "veil-ecs-cluster"
+
+[deploy.uses.dlx_bus]
+project = "dlx-bus"
+vars.ecs_cluster_arn = "{{ecs_cluster.outputs.cluster_arn}}"
+
+[deploy.vars]
+service_name = "{{slug}}"
+"#,
+        )
+        .unwrap();
+        let deploy = load_deploy_config(&dir).unwrap().expect("deploy");
+        let dag = build_deploy_dag(&deploy).unwrap();
+        assert_eq!(dag.len(), 2);
+        // ecs_cluster has no deps → comes first
+        assert_eq!(dag[0].alias, "ecs_cluster");
+        assert_eq!(dag[0].project, "veil-ecs-cluster");
+        assert!(dag[0].depends_on.is_empty());
+        // dlx_bus depends on ecs_cluster → comes second
+        assert_eq!(dag[1].alias, "dlx_bus");
+        assert_eq!(dag[1].project, "dlx-bus");
+        assert_eq!(dag[1].depends_on, vec!["ecs_cluster"]);
+    }
+
+    #[test]
+    fn deploy_dag_cycle_detection() {
+        let mut deploy = DeployToml::default();
+        deploy.uses.insert(
+            "a".into(),
+            DeployUsesToml {
+                project: "proj-a".into(),
+                vars: {
+                    let mut m = BTreeMap::new();
+                    m.insert("x".into(), toml::Value::String("{{b.outputs.foo}}".into()));
+                    m
+                },
+            },
+        );
+        deploy.uses.insert(
+            "b".into(),
+            DeployUsesToml {
+                project: "proj-b".into(),
+                vars: {
+                    let mut m = BTreeMap::new();
+                    m.insert("y".into(), toml::Value::String("{{a.outputs.bar}}".into()));
+                    m
+                },
+            },
+        );
+        let result = build_deploy_dag(&deploy);
+        assert!(result.is_err());
+        match result {
+            Err(DeployDagError::CyclicDependency(path)) => {
+                // The cycle should mention both a and b
+                assert!(path.contains(&"a".to_string()) || path.contains(&"b".to_string()));
+            }
+            _ => panic!("expected CyclicDependency error"),
+        }
+    }
+
+    #[test]
+    fn deploy_dag_unknown_alias() {
+        let mut deploy = DeployToml::default();
+        deploy.uses.insert(
+            "a".into(),
+            DeployUsesToml {
+                project: "proj-a".into(),
+                vars: {
+                    let mut m = BTreeMap::new();
+                    m.insert("x".into(), toml::Value::String("{{nonexistent.outputs.foo}}".into()));
+                    m
+                },
+            },
+        );
+        let result = build_deploy_dag(&deploy);
+        assert!(result.is_err());
+        match result {
+            Err(DeployDagError::UnknownAlias { reference, .. }) => {
+                assert_eq!(reference, "nonexistent");
+            }
+            _ => panic!("expected UnknownAlias error"),
+        }
+    }
+
+    #[test]
+    fn deploy_dag_three_level_chain() {
+        let mut deploy = DeployToml::default();
+        deploy.uses.insert(
+            "network".into(),
+            DeployUsesToml {
+                project: "veil-network".into(),
+                vars: BTreeMap::new(),
+            },
+        );
+        deploy.uses.insert(
+            "cluster".into(),
+            DeployUsesToml {
+                project: "veil-ecs-cluster".into(),
+                vars: {
+                    let mut m = BTreeMap::new();
+                    m.insert("vpc_id".into(), toml::Value::String("{{network.outputs.vpc_id}}".into()));
+                    m
+                },
+            },
+        );
+        deploy.uses.insert(
+            "bus".into(),
+            DeployUsesToml {
+                project: "dlx-bus".into(),
+                vars: {
+                    let mut m = BTreeMap::new();
+                    m.insert("cluster_arn".into(), toml::Value::String("{{cluster.outputs.cluster_arn}}".into()));
+                    m
+                },
+            },
+        );
+        let dag = build_deploy_dag(&deploy).unwrap();
+        assert_eq!(dag.len(), 3);
+        assert_eq!(dag[0].alias, "network");
+        assert_eq!(dag[1].alias, "cluster");
+        assert_eq!(dag[2].alias, "bus");
     }
 
     #[test]

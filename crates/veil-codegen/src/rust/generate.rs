@@ -28,23 +28,26 @@ pub fn generate(solution: &Solution, registry: &LayerRegistry) -> GeneratedProje
 
     let mut files = Vec::new();
 
-    // CAP-001: resolve external crate links (skip invalid with warning-style omit:
-    // only emit successfully resolved links; invalid ones are dropped so gen still
+    // CAP-001: resolve external crate links (skip project links — those are .so).
+    // Only emit successfully resolved links; invalid ones are dropped so gen still
     // produces a workspace — CLI can surface resolve errors separately later).
-    let resolved_links = match crate::links::resolve_links(&solution.links) {
+    let cargo_links: Vec<_> = solution.links.iter().filter(|l| !l.is_project_link).cloned().collect();
+    let resolved_links = match crate::links::resolve_links(&cargo_links) {
         Ok(links) => links,
         Err(errs) => {
             for e in &errs {
                 eprintln!("warning: {e}");
             }
             // Best-effort: resolve each independently
-            solution
-                .links
+            cargo_links
                 .iter()
                 .filter_map(|l| crate::links::resolve_link(l).ok())
                 .collect()
         }
     };
+
+    // Collect VEIL project links (shared object loaders).
+    let linked_projects = collect_linked_projects(solution, registry);
 
     files.push(gen_workspace_toml(solution, registry, &resolved_links));
 
@@ -135,6 +138,11 @@ pub fn generate(solution: &Solution, registry: &LayerRegistry) -> GeneratedProje
         layer_fn_attrs.as_deref(),
     ));
 
+    // Generate loader module for VEIL project links (shared object loading).
+    if let Some((path, content)) = gen_linked_loader_module(&linked_projects) {
+        files.push(GeneratedFile { path, content });
+    }
+
     // Impl-shaped constructs may live at top level or inside other modules;
     // collect all of them so each crate can pick up impls targeting its traits.
     let all_impls: Vec<&Construct> = collect_by_shape(solution, Shape::Impl);
@@ -206,7 +214,8 @@ pub fn generate(solution: &Solution, registry: &LayerRegistry) -> GeneratedProje
         let main_body = if wants_product_host {
             gen_product_host_main(solution, &handler_names, registry)
         } else if !modules.is_empty() {
-            let tpl_data = compute_harness_template_data(solution, &modules, registry, &harness_ir);
+            let mut tpl_data = compute_harness_template_data(solution, &modules, registry, &harness_ir);
+            augment_with_linked_projects(&mut tpl_data, &linked_projects);
             if let Some(layer_tpl) = registry.harness_render_templates.get("rust_bin") {
                 render_harness_from_layer_template(layer_tpl, &tpl_data)
             } else {
@@ -249,6 +258,35 @@ pub fn generate(solution: &Solution, registry: &LayerRegistry) -> GeneratedProje
             path: tpl_file.path,
             content: tpl_file.content,
         });
+    }
+
+    // cdylib mode: generate factory functions and adjust Cargo.toml for .so output.
+    if registry.output_type.as_deref() == Some("cdylib") {
+        let factory_content = gen_cdylib_factory_functions(solution, registry);
+        // Add factory.rs to the first module crate (or shared crate if no modules)
+        if let Some(module) = modules.first() {
+            let crate_name = module_crate_name(module, solution);
+            let factory_path = format!("crates/{}/src/factory.rs", crate_name);
+            files.push(GeneratedFile { path: factory_path, content: factory_content });
+            // Add `pub mod factory;` to the module's lib.rs
+            if let Some(lib_file) = files.iter_mut().find(|f| f.path == format!("crates/{}/src/lib.rs", crate_name)) {
+                lib_file.content.push_str("\npub mod factory;\n");
+            }
+            // Add crate-type = ["cdylib"] to Cargo.toml
+            if let Some(cargo_file) = files.iter_mut().find(|f| f.path == format!("crates/{}/Cargo.toml", crate_name)) {
+                cargo_file.content.push_str("\n[lib]\ncrate-type = [\"cdylib\"]\n");
+            }
+        } else {
+            // No modules → add to veil_shared directly
+            let factory_path = "crates/veil_shared/src/factory.rs".to_string();
+            files.push(GeneratedFile { path: factory_path, content: factory_content });
+            if let Some(lib_file) = files.iter_mut().find(|f| f.path == "crates/veil_shared/src/lib.rs") {
+                lib_file.content.push_str("\npub mod factory;\n");
+            }
+            if let Some(cargo_file) = files.iter_mut().find(|f| f.path == "crates/veil_shared/Cargo.toml") {
+                cargo_file.content.push_str("\n[lib]\ncrate-type = [\"cdylib\"]\n");
+            }
+        }
     }
 
     GeneratedProject { files }

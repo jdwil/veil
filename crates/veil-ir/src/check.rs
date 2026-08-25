@@ -72,6 +72,7 @@ pub fn check_solution(sol: &Solution, registry: &LayerRegistry) -> CheckResult {
     diagnostics.extend(crate::typecheck::check_types(sol, registry));
     diagnostics.extend(crate::escape::check_escape_hatches(sol, registry));
     diagnostics.extend(crate::test_lint::check_tests(sol));
+    diagnostics.extend(crate::version_pin::check_version_pins(sol, registry));
     diagnostics.extend(check_error_model(sol, registry));
 
     // Parser-emitted notes. `sol` is removed — treat as a hard error so agents

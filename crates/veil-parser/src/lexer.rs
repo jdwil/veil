@@ -136,6 +136,8 @@ pub enum TokenKind {
     Impl,
     /// Macro definition: `macro name(params) body`
     Macro,
+    /// Bare `@` when followed by a digit (version pin: `use foo@1.2.3`).
+    At,
 }
 
 /// Lex VEIL source code into a token stream.
@@ -179,7 +181,15 @@ impl Lexer {
                     self.at_line_start = true;
                 }
                 '#' => self.lex_comment(),
-                '@' => self.lex_annotation(),
+                '@' => {
+                    // Version pin: `@1.2.3` — emit bare At token when followed by digit.
+                    if self.peek().map_or(false, |c| c.is_ascii_digit()) {
+                        self.emit(TokenKind::At, self.pos, self.pos + 1);
+                        self.pos += 1;
+                    } else {
+                        self.lex_annotation();
+                    }
+                }
                 '"' => self.lex_string(),
                 '\'' => self.lex_single_quote_string(),
                 '-' if self.peek() == Some('>') => {

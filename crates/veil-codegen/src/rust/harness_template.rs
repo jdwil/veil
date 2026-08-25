@@ -706,6 +706,56 @@ pub fn compute_harness_template_data(
     }
 }
 
+/// Augment harness template data with linked project (shared-object) loading.
+/// Adds loader initialization to stub_lets and trait-object fields to deps_fields
+/// for each DepsWiringData entry whose Deps struct references ports provided by
+/// linked projects.
+pub fn augment_with_linked_projects(
+    data: &mut HarnessTemplateData,
+    linked_projects: &[super::linked_loader::LinkedProjectInfo],
+) {
+    if linked_projects.is_empty() {
+        return;
+    }
+
+    // For each linked project, add a loader initialization let-binding.
+    // These go into the first DepsWiringData's stub_lets (or a synthetic one).
+    let mut loader_lets: Vec<String> = Vec::new();
+    for proj in linked_projects {
+        loader_lets.push(format!(
+            "    let {slug}_linked = veil_shared::linked_loaders::{loader}::load_from_env()\n        .expect(\"failed to load {name} shared library\");",
+            slug = proj.slug,
+            loader = proj.loader_struct_name,
+            name = proj.link.name,
+        ));
+    }
+
+    // Add loader lets to the first wiring entry's stub_lets
+    if let Some(first_wiring) = data.deps_wiring.first_mut() {
+        first_wiring.stub_lets.extend(loader_lets);
+    }
+
+    // For each wiring entry, check if its deps_fields reference any port traits
+    // provided by linked projects. If so, replace the adapter_inst with the
+    // linked loader's field.
+    for wiring in &mut data.deps_wiring {
+        for proj in linked_projects {
+            for trait_name in &proj.port_traits {
+                let field_name = super::linked_loader::to_snake_case_pub(trait_name);
+                // Check if this deps wiring expects this field
+                if !wiring.deps_fields.iter().any(|(f, _)| *f == field_name) {
+                    // If the deps struct has this port as a field, add it
+                    // (the harness will wire it from the linked loader)
+                    wiring.deps_fields.push((
+                        field_name.clone(),
+                        format!("Arc::from({slug}_linked.{field_name})", slug = proj.slug, field_name = field_name),
+                    ));
+                }
+            }
+        }
+    }
+}
+
 /// Query field extraction helper — mirrors the logic in gen_local_harness_main.
 fn query_field_extraction(field: &str, rust_type: &str) -> String {
     match rust_type {

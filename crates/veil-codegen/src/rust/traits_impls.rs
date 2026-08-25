@@ -45,6 +45,10 @@ futures = "0.3"
     for link in links {
         shared_cargo.push_str(&crate::links::cargo_workspace_dep_line(link));
     }
+    // Linked VEIL projects need libloading in veil_shared for the loader module.
+    if solution.links.iter().any(|l| l.is_project_link) {
+        shared_cargo.push_str("libloading = { workspace = true }\n");
+    }
     files.push(GeneratedFile {
         path: "crates/veil_shared/Cargo.toml".to_string(),
         content: shared_cargo,
@@ -54,6 +58,10 @@ futures = "0.3"
     lib.push_str("//! Shared types across all context crates — common errors and\n");
     lib.push_str("//! layer-provided infrastructure traits (routing ports, etc.).\n\n");
     lib.push_str("#![allow(unused_imports)]\n\n");
+    // Declare linked_loaders module if project links exist.
+    if solution.links.iter().any(|l| l.is_project_link) {
+        lib.push_str("pub mod linked_loaders;\n\n");
+    }
     lib.push_str("use async_trait::async_trait;\nuse uuid::Uuid;\n\n");
 
     // ── Error model: generate from registry (layer-declared) ────────────

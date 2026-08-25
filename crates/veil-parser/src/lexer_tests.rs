@@ -317,4 +317,25 @@ mod tests {
             ]
         );
     }
+
+    #[test]
+    fn test_at_token_before_digit() {
+        // `@` followed by a digit emits At (version pin syntax).
+        // The lexer produces FloatLit("1.140") because of greedy number parsing.
+        let toks = tokens_text("use aws_sdk_dynamodb@1.140.0");
+        assert_eq!(toks[0], (TokenKind::Use, "use".into()));
+        assert_eq!(toks[1], (TokenKind::Ident, "aws_sdk_dynamodb".into()));
+        assert_eq!(toks[2], (TokenKind::At, "@".into()));
+        assert_eq!(toks[3], (TokenKind::FloatLit, "1.140".into()));
+        assert_eq!(toks[4], (TokenKind::Dot, ".".into()));
+        assert_eq!(toks[5], (TokenKind::IntLit, "0".into()));
+    }
+
+    #[test]
+    fn test_annotation_still_works() {
+        // `@retry` (letter after @) still lexes as Annotation.
+        let toks = tokens_text("@retry(3)");
+        assert_eq!(toks[0].0, TokenKind::Annotation);
+        assert_eq!(toks[0].1, "@retry(3)");
+    }
 }

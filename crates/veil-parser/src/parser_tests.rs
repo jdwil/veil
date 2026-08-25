@@ -97,6 +97,41 @@ pkg Host
         assert!(out.contains("features \"local, http\"") || out.contains("features \"local,http\""), "{out}");
     }
 
+    /// VEIL project links: no `path` + not allowlisted = project link; @version suffix.
+    #[test]
+    fn test_parse_project_links() {
+        let src = r#"
+pkg AgentCore
+  use ddd
+  link dlx_auth
+  link dlx_bus@2.1.0
+  link veil_server
+"#;
+        let sol = parse_src(src);
+        assert_eq!(sol.links.len(), 3, "expected 3 links, got {:?}", sol.links);
+
+        // dlx_auth — no path, not allowlisted → project link
+        assert_eq!(sol.links[0].name, "dlx_auth");
+        assert!(sol.links[0].is_project_link);
+        assert_eq!(sol.links[0].version, None);
+
+        // dlx_bus@2.1.0 — version pin → always project link
+        assert_eq!(sol.links[1].name, "dlx_bus");
+        assert!(sol.links[1].is_project_link);
+        assert_eq!(sol.links[1].version.as_deref(), Some("2.1.0"));
+
+        // veil_server — allowlisted → NOT a project link (Cargo dep)
+        assert_eq!(sol.links[2].name, "veil_server");
+        assert!(!sol.links[2].is_project_link);
+        assert_eq!(sol.links[2].version, None);
+
+        // Serializer round-trip
+        let out = veil_ir::serialize::serialize_solution(&sol);
+        assert!(out.contains("link dlx_auth"), "missing dlx_auth: {out}");
+        assert!(out.contains("link dlx_bus@2.1.0"), "missing dlx_bus@2.1.0: {out}");
+        assert!(out.contains("link veil_server"), "missing veil_server: {out}");
+    }
+
     #[test]
     fn test_parse_empty_solution() {
         let sol = parse_src("sol MyApp");
@@ -2014,4 +2049,44 @@ fn library_constructs_test_blocks_not_injected() {
         _ => false,
     });
     assert!(lib_widget.is_some(), "Library construct should be injected");
+}
+
+#[test]
+fn use_with_version_pin() {
+    let src = "pkg App\n  use aws_sdk_dynamodb@1.140.0\n\n";
+    let tokens = crate::lexer::lex(src);
+    let sol = crate::parse(&tokens).unwrap();
+    assert_eq!(sol.uses.len(), 1);
+    assert_eq!(sol.uses[0].package_name, "aws_sdk_dynamodb");
+    assert_eq!(sol.uses[0].version.as_deref(), Some("1.140.0"));
+}
+
+#[test]
+fn use_without_version_pin() {
+    let src = "pkg App\n  use ddd_fullstack\n\n";
+    let tokens = crate::lexer::lex(src);
+    let sol = crate::parse(&tokens).unwrap();
+    assert_eq!(sol.uses.len(), 1);
+    assert_eq!(sol.uses[0].package_name, "ddd_fullstack");
+    assert_eq!(sol.uses[0].version, None);
+}
+
+#[test]
+fn use_version_with_alias() {
+    let src = "pkg App\n  use aws_sdk_s3@1.78.0 as s3\n\n";
+    let tokens = crate::lexer::lex(src);
+    let sol = crate::parse(&tokens).unwrap();
+    assert_eq!(sol.uses.len(), 1);
+    assert_eq!(sol.uses[0].package_name, "aws_sdk_s3");
+    assert_eq!(sol.uses[0].version.as_deref(), Some("1.78.0"));
+    assert_eq!(sol.uses[0].alias.as_deref(), Some("s3"));
+}
+
+#[test]
+fn use_version_two_segment() {
+    // Two-segment version (major.minor) is also valid.
+    let src = "pkg App\n  use reqwest@0.12\n\n";
+    let tokens = crate::lexer::lex(src);
+    let sol = crate::parse(&tokens).unwrap();
+    assert_eq!(sol.uses[0].version.as_deref(), Some("0.12"));
 }

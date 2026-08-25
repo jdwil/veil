@@ -340,8 +340,8 @@ enum AgentCmd {
 
 /// Load the layer registry for a .veil file, exiting on layer errors.
 fn registry_for(file: &std::path::Path) -> LayerRegistry {
-    let (layer_resolver, source_resolver) = build_external_resolvers();
-    match LayerRegistry::for_veil_file_with_resolvers(file, layer_resolver, source_resolver) {
+    let (layer_resolver, source_resolver, stub_resolver) = build_external_resolvers();
+    match LayerRegistry::for_veil_file_with_resolvers(file, layer_resolver, source_resolver, stub_resolver) {
         Ok(reg) => reg,
         Err(e) => {
             eprintln!("Layer error: {}", e);
@@ -355,9 +355,10 @@ fn registry_for(file: &std::path::Path) -> LayerRegistry {
 fn build_external_resolvers() -> (
     Option<Box<dyn Fn(&str) -> Option<String> + Send + Sync>>,
     Option<Box<dyn Fn(&str) -> Option<String> + Send + Sync>>,
+    Option<Box<dyn Fn(&str) -> Option<String> + Send + Sync>>,
 ) {
     let Some(resolver) = veil_local::SourceResolver::from_env() else {
-        return (None, None);
+        return (None, None, None);
     };
     if std::env::var("VEIL_DEV").is_ok() {
         eprintln!("  [resolver] DDB-backed source resolver active (table: {})",
@@ -365,7 +366,8 @@ fn build_external_resolvers() -> (
     }
     let resolver = std::sync::Arc::new(resolver);
     let r1 = resolver.clone();
-    let r2 = resolver;
+    let r2 = resolver.clone();
+    let r3 = resolver;
     let layer_resolver: Box<dyn Fn(&str) -> Option<String> + Send + Sync> =
         Box::new(move |name| {
             let result = r1.resolve_layer(name);
@@ -384,7 +386,16 @@ fn build_external_resolvers() -> (
             }
             result
         });
-    (Some(layer_resolver), Some(source_resolver))
+    let stub_resolver: Box<dyn Fn(&str) -> Option<String> + Send + Sync> =
+        Box::new(move |name| {
+            let result = r3.resolve_stub(name);
+            if std::env::var("VEIL_DEV").is_ok() {
+                eprintln!("  [resolver] stub '{}' → {}", name,
+                    if result.is_some() { "found" } else { "not found" });
+            }
+            result
+        });
+    (Some(layer_resolver), Some(source_resolver), Some(stub_resolver))
 }
 
 /// After single-file `veil gen`, remove `crates/<name>/` directories that this

@@ -1277,6 +1277,8 @@ pkg HostApp
         name: "not_allowlisted".into(),
         path: None,
         features: vec![],
+        is_project_link: false,
+        version: None,
         span: veil_ir::span::Span::new(0, 0),
     };
     assert!(veil_codegen::resolve_link(&bad).is_err());
@@ -3051,5 +3053,128 @@ pkg Inventory
         out.contains("fn url(&self)"),
         "@immutable annotation must produce &self methods:\n{}",
         out.lines().filter(|l| l.contains("fn url")).collect::<Vec<_>>().join("\n")
+    );
+}
+
+/// Project links generate linked_loaders.rs and add libloading dependency.
+#[test]
+fn project_link_generates_loader_module() {
+    let src = r#"
+pkg AgentCore
+  use ddd_fullstack
+  link dlx_auth
+  ctx Auth
+    port JwksProvider
+      fn validate_token(token: Str) -> Bool
+"#;
+    let out = generate_example(src);
+
+    // Should add libloading to workspace deps
+    assert!(
+        out.contains("libloading"),
+        "workspace should include libloading dep:\n{}",
+        out.lines().filter(|l| l.contains("libloading") || l.contains("[workspace.dependencies]")).take(5).collect::<Vec<_>>().join("\n")
+    );
+
+    // Should generate linked_loaders.rs file
+    assert!(
+        out.contains("linked_loaders.rs"),
+        "should generate linked_loaders.rs file"
+    );
+
+    // Should declare linked_loaders module in veil_shared lib.rs
+    assert!(
+        out.contains("pub mod linked_loaders;"),
+        "veil_shared lib.rs should declare linked_loaders module"
+    );
+}
+
+/// Project links are excluded from Cargo dep resolution (no path required).
+#[test]
+fn project_link_not_resolved_as_cargo_dep() {
+    let src = r#"
+pkg AgentCore
+  use ddd_fullstack
+  link dlx_auth@2.1.0
+  link veil_server
+  ctx Auth
+    port JwksProvider
+      fn validate_token(token: Str) -> Bool
+"#;
+    let out = generate_example(src);
+    // veil_server should be resolved as Cargo dep (allowlisted)
+    assert!(
+        out.contains("veil-server"),
+        "veil_server should resolve as Cargo dep"
+    );
+    // dlx_auth should NOT appear as a workspace path dep (it's a project link)
+    let workspace_toml = out.lines()
+        .skip_while(|l| !l.contains("==== Cargo.toml ===="))
+        .take_while(|l| !l.starts_with("// ====") || l.contains("Cargo.toml"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        !workspace_toml.contains("dlx_auth") && !workspace_toml.contains("dlx-auth = { path"),
+        "project link dlx_auth should NOT appear as a Cargo path dep in workspace:\n{}",
+        workspace_toml
+    );
+}
+
+/// cdylib output_type generates factory functions and [lib] section.
+#[test]
+fn cdylib_output_generates_factory() {
+    let src = r#"
+pkg DlxAuth
+  use ddd_fullstack
+  ctx Auth
+    port JwksProvider
+      fn validate_token(token: Str) -> Bool
+    adapter HttpJwksProvider for JwksProvider
+      impl validate_token(token)
+        ret true
+"#;
+    let mut reg = LayerRegistry::builtin();
+    reg.load_content("base", include_str!("../../../layers/base.layer")).unwrap();
+    reg.load_content("rust", include_str!("../../../layers/rust.layer")).unwrap();
+    reg.load_content("tokio", include_str!("../../../layers/tokio.layer")).unwrap();
+    reg.load_content("di", include_str!("../../../layers/di.layer")).unwrap();
+    reg.load_content("rest_english", include_str!("../../../layers/rest_english.layer")).unwrap();
+    reg.load_content("bus", include_str!("../../../layers/bus.layer")).unwrap();
+    reg.load_content("bus_handle", include_str!("../../../layers/bus_handle.layer")).unwrap();
+    reg.load_content("auth_local", include_str!("../../../layers/auth_local.layer")).unwrap();
+    reg.load_content("harness", include_str!("../../../layers/harness.layer")).unwrap();
+    reg.load_content("deploy", include_str!("../../../layers/deploy.layer")).unwrap();
+    reg.load_content("ddd", include_str!("../../../layers/ddd.layer")).unwrap();
+    reg.load_content("tokio_ddd", include_str!("../../../layers/tokio_ddd.layer")).unwrap();
+    reg.load_content("ddd_fullstack", include_str!("../../../layers/ddd_fullstack.layer")).unwrap();
+
+    // Set cdylib output mode
+    reg.output_type = Some("cdylib".to_string());
+
+    let tokens = veil_parser::lex(src);
+    let sol = veil_parser::parse_with_registry(&tokens, reg.clone()).expect("parse failed");
+    let project = veil_codegen::generate(&sol, &reg);
+    let out: String = project.files.iter()
+        .map(|f| format!("// ==== {} ====\n{}", f.path, f.content))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    // Should generate factory.rs
+    assert!(
+        out.contains("factory.rs"),
+        "cdylib mode should generate factory.rs"
+    );
+
+    // Should contain extern "C" factory function
+    assert!(
+        out.contains("extern \"C\"") && out.contains("#[no_mangle]"),
+        "factory.rs should contain #[no_mangle] extern C functions:\n{}",
+        out.lines().filter(|l| l.contains("extern") || l.contains("no_mangle")).collect::<Vec<_>>().join("\n")
+    );
+
+    // Should add crate-type = ["cdylib"] to Cargo.toml
+    assert!(
+        out.contains("crate-type = [\"cdylib\"]"),
+        "Cargo.toml should specify cdylib crate-type"
     );
 }

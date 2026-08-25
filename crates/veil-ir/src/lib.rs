@@ -29,6 +29,7 @@ pub mod platform_layers;
 pub mod coverage;
 pub mod test_lint;
 pub mod validate;
+pub mod version_pin;
 
 pub use adapt::{
     build_adapt_chain, default_adapt_search_paths, find_package_source, inject_implicit_adapts,
@@ -36,13 +37,14 @@ pub use adapt::{
     AdaptError, MergeResult, ADAPT_DENYLIST,
 };
 pub use deps::{
-    adapt_search_paths_for_file, deps_cache_dir, find_project_root, layer_source_in_root,
-    load_codegen_overrides, load_codegen_overrides_for, load_harness_overrides,
-    load_harness_overrides_for, load_package_entry, load_product_deps, missing_package_hint,
-    package_source_in_root, product_provides_use, projects_hub, resolve_dep_root,
-    resolve_dependency_graph, resolve_dependency_roots, resolve_dependency_roots_for, CodegenToml,
-    HarnessToml,
-    PackageEntry, ProductDep,
+    adapt_search_paths_for_file, build_deploy_dag, deps_cache_dir, find_project_root,
+    interpolate_deploy_var, layer_source_in_root, load_codegen_overrides,
+    load_codegen_overrides_for, load_deploy_config, load_deploy_config_for,
+    load_harness_overrides, load_harness_overrides_for, load_package_entry, load_product_deps,
+    missing_package_hint, package_source_in_root, product_provides_use, projects_hub,
+    render_deploy_value, resolve_dep_root, resolve_dependency_graph, resolve_dependency_roots,
+    resolve_dependency_roots_for, CodegenToml, DeployContext, DeployDagError, DeployNode,
+    DeployToml, DeployUsesToml, HarnessToml, PackageEntry, ProductDep,
 };
 pub use deploy_hooks::{
     collect_construct_inventory, collect_deploy_hooks, constructs_json, is_deploy_hook,
