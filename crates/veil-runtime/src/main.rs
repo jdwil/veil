@@ -6,6 +6,7 @@
 
 mod artifact_registry;
 mod auth;
+mod deploy;
 mod function_invoke;
 mod local_ports;
 mod platform;

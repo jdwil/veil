@@ -2188,6 +2188,106 @@ async fn deployment_status(
     }
 }
 
+// ─── Deploy Pipeline (Terraform + Build + Deploy lifecycle) ─────────────────
+
+#[derive(Clone)]
+struct PipelineRouterState {
+    pipeline: Arc<crate::deploy::PipelineState>,
+}
+
+async fn trigger_pipeline_deploy(
+    State(st): State<PipelineRouterState>,
+    Path(slug): Path<String>,
+    Json(body): Json<crate::deploy::TriggerDeployRequest>,
+) -> Result<Json<Value>, StatusCode> {
+    // Triggered_by would come from auth context in production.
+    let triggered_by = "user".to_string();
+
+    match st.pipeline.trigger_deploy(slug, body, triggered_by).await {
+        Ok(resp) => Ok(Json(json!({
+            "job_id": resp.job_id,
+            "status": resp.status,
+        }))),
+        Err(e) => Ok(Json(json!({
+            "ok": false,
+            "error": e,
+        }))),
+    }
+}
+
+async fn pipeline_deploy_status(
+    State(st): State<PipelineRouterState>,
+    Path(slug): Path<String>,
+) -> Json<Value> {
+    let status = st.pipeline.get_status(&slug).await;
+    Json(serde_json::to_value(status).unwrap_or(json!({})))
+}
+
+async fn pipeline_deploy_plan(
+    State(st): State<PipelineRouterState>,
+    Path(slug): Path<String>,
+) -> Json<Value> {
+    match st.pipeline.get_drift(&slug).await {
+        Some(drift) => Json(json!({
+            "plan_output": drift.plan_output,
+            "changes": [],
+            "drift_detected": drift.detected,
+            "change_count": drift.changes,
+        })),
+        None => Json(json!({
+            "plan_output": "",
+            "changes": [],
+            "drift_detected": false,
+            "message": "No plan available — run drift check first",
+        })),
+    }
+}
+
+async fn pipeline_deploy_history(
+    State(st): State<PipelineRouterState>,
+    Path(slug): Path<String>,
+) -> Json<Value> {
+    let history = st.pipeline.get_history(&slug).await;
+    Json(serde_json::to_value(history).unwrap_or(json!([])))
+}
+
+#[derive(Deserialize)]
+struct ApproveParams {
+    #[allow(dead_code)]
+    slug: String,
+    job_id: String,
+}
+
+async fn pipeline_deploy_approve(
+    State(st): State<PipelineRouterState>,
+    Path(params): Path<ApproveParams>,
+) -> Result<Json<Value>, StatusCode> {
+    match st.pipeline.approve_job(&params.job_id).await {
+        Ok(()) => Ok(Json(json!({
+            "ok": true,
+            "status": "running",
+            "job_id": params.job_id,
+        }))),
+        Err(e) => Ok(Json(json!({
+            "ok": false,
+            "error": e,
+        }))),
+    }
+}
+
+async fn pipeline_check_drift(
+    State(st): State<PipelineRouterState>,
+    Path(slug): Path<String>,
+) -> Json<Value> {
+    match st.pipeline.check_drift(&slug).await {
+        Ok(drift) => Json(serde_json::to_value(drift).unwrap_or(json!({}))),
+        Err(e) => Json(json!({
+            "ok": false,
+            "error": e,
+        })),
+    }
+}
+
 // ─── Registry (lightweight local listing) ───────────────────────────────────
 
 async fn list_registry_layers() -> Json<Value> {
@@ -3077,8 +3177,9 @@ pub(crate) fn build_artifact_cors_layer() -> tower_http::cors::CorsLayer {
 pub async fn build_platform_router(
     bus: Arc<dyn veil_shared::Bus + Send + Sync>,
 ) -> Router {
+    let storage_deps = Arc::new(resolve_storage_deps().await);
     let storage = StorageState {
-        deps: Arc::new(resolve_storage_deps().await),
+        deps: storage_deps.clone(),
     };
     let cm = CmState {
         deps: Arc::new(crate::local_ports::change_management_deps().await),
@@ -3245,10 +3346,42 @@ pub async fn build_platform_router(
         )
         .with_state(fn_invoke_state);
 
+    // ─── Deploy Pipeline (Terraform + Build + Deploy lifecycle) ────────────
+    let pipeline_state = PipelineRouterState {
+        pipeline: Arc::new(crate::deploy::PipelineState::new(storage_deps).await),
+    };
+    let pipeline_r = Router::new()
+        .route(
+            "/api/projects/{slug}/deploy",
+            post(trigger_pipeline_deploy),
+        )
+        .route(
+            "/api/projects/{slug}/deploy/status",
+            get(pipeline_deploy_status),
+        )
+        .route(
+            "/api/projects/{slug}/deploy/plan",
+            get(pipeline_deploy_plan),
+        )
+        .route(
+            "/api/projects/{slug}/deploy/history",
+            get(pipeline_deploy_history),
+        )
+        .route(
+            "/api/projects/{slug}/deploy/{job_id}/approve",
+            post(pipeline_deploy_approve),
+        )
+        .route(
+            "/api/projects/{slug}/deploy/drift",
+            post(pipeline_check_drift),
+        )
+        .with_state(pipeline_state);
+
     storage_r
         .merge(cm_r)
         .merge(deploy_r)
         .merge(registry_r)
         .merge(artifact_registry_r)
         .merge(function_invoke_r)
+        .merge(pipeline_r)
 }
