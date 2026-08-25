@@ -145,6 +145,7 @@ impl ProductHost {
             // Optional deep link: bare dual-loop viewer (standalone agent chrome).
             .route("/ide/{name}", get(ide_embed))
             // SPA assets served from the UI dir
+            .nest_service("/_app", ServeDir::new(self.ui_dir.join("_app")))
             .nest_service("/static", ServeDir::new(&self.ui_dir))
             .nest_service("/assets", ServeDir::new(self.ui_dir.join("assets")))
             .with_state(shell_state.clone());
