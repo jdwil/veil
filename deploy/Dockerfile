@@ -66,8 +66,8 @@ COPY --from=builder /build/target/release/veil /usr/local/bin/veil
 # Platform layers
 COPY --from=builder /build/layers /opt/veil/layers
 
-# UI (pre-built SvelteKit app — .svelte-kit/output from npm run build)
-COPY ui/.svelte-kit/output /opt/veil/ui
+# UI (pre-built SvelteKit app — static SPA from npm run build)
+COPY ui/build /opt/veil/ui
 
 # Environment
 ENV VEIL_LAYERS_DIR=/opt/veil/layers
