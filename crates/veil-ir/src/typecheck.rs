@@ -1802,8 +1802,16 @@ fn field_ty_of(base: &Ty, field: &str, env: &TypeEnv) -> Ty {
             })
             .unwrap_or(Ty::Unknown),
         Ty::Opt(_) if field == "is_some" || field == "is_none" => Ty::Named("Bool".into()),
-        Ty::Opt(inner) => field_ty_of(inner, field, env),
-        Ty::Res(Some(inner)) => field_ty_of(inner, field, env),
+        Ty::Opt(inner) => match field_ty_of(inner, field, env) {
+            Ty::Unknown => Ty::Unknown,
+            Ty::Opt(t) => Ty::Opt(t),
+            other => Ty::Opt(Box::new(other)),
+        },
+        Ty::Res(_) if field == "is_ok" || field == "is_err" => Ty::Named("Bool".into()),
+        Ty::Res(Some(inner)) => match field_ty_of(inner, field, env) {
+            Ty::Unknown => Ty::Unknown,
+            other => Ty::Res(Some(Box::new(other))),
+        },
         _ => Ty::Unknown,
     }
 }
@@ -2868,6 +2876,94 @@ mod tests {
         assert!(
             diags.iter().any(|d| d.code == "type_mismatch"),
             "portable bang keeps Opt — save(User) with Opt should mismatch: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn opt_field_access_stays_opt_not_inner() {
+        let mut user = Construct::new("struct", "Struct", Shape::Struct, "User".into(), Span::new(0, 0));
+        user.fields.push(Field {
+            name: "name".into(),
+            type_expr: TypeExpr::Named("Str".into()),
+            span: Span::new(0, 0),
+            annotations: Vec::new(),
+            default_expr: None,
+        });
+        let mut port = Construct::new("port", "Port", Shape::Trait, "Repo".into(), Span::new(0, 0));
+        port.methods.push(Method {
+            name: "find!".into(),
+            span: Span::new(0, 0),
+            params: vec![Param {
+                name: "id".into(),
+                type_expr: TypeExpr::Named("Id".into()),
+                span: Span::new(0, 0),
+            }],
+            return_type: Some(TypeExpr::Optional(Box::new(TypeExpr::Named("User".into())))),
+            is_async: false,
+        });
+        port.methods.push(Method {
+            name: "by_name!".into(),
+            span: Span::new(0, 0),
+            params: vec![Param {
+                name: "name".into(),
+                type_expr: TypeExpr::Named("Str".into()),
+                span: Span::new(0, 0),
+            }],
+            return_type: None,
+            is_async: false,
+        });
+        let mut svc = Construct::new("svc", "Service", Shape::Fn, "S".into(), Span::new(0, 0));
+        svc.inputs.push(Field {
+            name: "repo".into(),
+            type_expr: TypeExpr::Named("Repo".into()),
+            span: Span::new(0, 0),
+            annotations: Vec::new(),
+            default_expr: None,
+        });
+        svc.inputs.push(Field {
+            name: "id".into(),
+            type_expr: TypeExpr::Named("Id".into()),
+            span: Span::new(0, 0),
+            annotations: Vec::new(),
+            default_expr: None,
+        });
+        svc.steps.push(step(vec![
+            Expr::Assign(
+                "u".into(),
+                Box::new(Expr::Call(CallExpr {
+                    target: "repo".into(),
+                    method: "find!".into(),
+                    args: vec![Expr::Ident("id".into())],
+                    receiver: None,
+                    sugar: None,
+                    span: Span::new(0, 0),
+                })),
+                None,
+            ),
+            Expr::Call(CallExpr {
+                target: "repo".into(),
+                method: "by_name!".into(),
+                args: vec![Expr::FieldAccess(
+                    Box::new(Expr::Ident("u".into())),
+                    "name".into(),
+                )],
+                receiver: None,
+                sugar: None,
+                span: Span::new(10, 20),
+            }),
+        ]));
+        let diags = check_types(
+            &sol(vec![
+                TopLevelItem::Construct(user),
+                TopLevelItem::Construct(port),
+                TopLevelItem::Construct(svc),
+            ]),
+            &reg(),
+        );
+        assert!(
+            diags.iter().any(|d| d.code == "type_mismatch"),
+            "Opt<User>.name is Opt<Str>, not Str: {:?}",
             diags
         );
     }

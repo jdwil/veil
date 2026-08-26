@@ -13,6 +13,32 @@ use super::{Arm, RustExpr};
 /// Apply ownership semantics to a `RustExpr`: wrap in `Clone` when the value
 /// is non-Copy, multi-use, and not already owned.
 pub fn apply_ownership(expr: RustExpr, ctx: &GenCtx) -> RustExpr {
+    match expr {
+        RustExpr::FnCall { path, args, ty } => RustExpr::FnCall {
+            path,
+            args: args.into_iter().map(|a| apply_ownership(a, ctx)).collect(),
+            ty,
+        },
+        RustExpr::MethodCall {
+            receiver,
+            method,
+            args,
+            ty,
+            is_async,
+            is_fallible,
+        } => RustExpr::MethodCall {
+            receiver: Box::new(apply_ownership(*receiver, ctx)),
+            method,
+            args: args.into_iter().map(|a| apply_ownership(a, ctx)).collect(),
+            ty,
+            is_async,
+            is_fallible,
+        },
+        other => apply_ownership_leaf(other, ctx),
+    }
+}
+
+fn apply_ownership_leaf(expr: RustExpr, ctx: &GenCtx) -> RustExpr {
     if is_already_owned(&expr) {
         return expr;
     }

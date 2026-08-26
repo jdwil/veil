@@ -91,11 +91,7 @@ pub fn check_solution(sol: &Solution, registry: &LayerRegistry) -> CheckResult {
             message: g.message.clone(),
             node_id: None,
             node_name: None,
-            code: if g.code == "prefer_terse" {
-                "sol_removed".into()
-            } else {
-                g.code.clone()
-            },
+            code: g.code.clone(),
             constraint: g.code.clone(),
             parent: None,
             hint: Some(g.hint.clone()),
@@ -386,6 +382,36 @@ items: vec![TopLevelItem::Construct(root)],
                 d.code == "sol_removed" && matches!(d.severity, Severity::Error)
             }),
             "{:?}",
+            r.diagnostics
+        );
+    }
+
+    #[test]
+    fn prefer_terse_keeps_its_code() {
+        let mut sol = sol_with(Construct::new(
+            "struct",
+            "Struct",
+            Shape::Struct,
+            "User".into(),
+            Span::new(0, 0),
+        ));
+        sol.guidance.push(crate::ast::GuidanceDiagnostic {
+            code: "prefer_terse".into(),
+            message: "prefer terse form".into(),
+            hint: "use pkg".into(),
+            span: Span::new(0, 3),
+        });
+        let r = check_solution(&sol, &LayerRegistry::builtin());
+        assert!(
+            r.diagnostics.iter().any(|d| {
+                d.code == "prefer_terse" && matches!(d.severity, Severity::Error)
+            }),
+            "{:?}",
+            r.diagnostics
+        );
+        assert!(
+            r.diagnostics.iter().all(|d| d.code != "sol_removed"),
+            "prefer_terse must not be rewritten to sol_removed: {:?}",
             r.diagnostics
         );
     }
