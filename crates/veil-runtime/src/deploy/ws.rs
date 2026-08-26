@@ -278,51 +278,39 @@ pub async fn run_lambda_deploy_ws(
         }
     }
 
-    // ─── BUILD (cargo build --release --target) ──────────────────────────────
+    // ─── BUILD (cargo lambda build — handles glibc compat + zip packaging) ───
+    // cargo-lambda cross-compiles with the correct toolchain so the binary runs
+    // on Lambda's provided.al2023 runtime (avoids GLIBC version mismatches from
+    // building directly against the host's newer glibc).
     let _ = send(ws, json!({"type": "step_start", "step": "build"})).await;
     match run_streaming(ws, "build", &work_dir, "cargo", &[
-        "build", "--release", "--target", &config.rust_target,
+        "lambda", "build", "--release", "--x86-64", "--output-format", "zip",
     ]).await {
         Ok(_) => {
             let _ = send(ws, json!({"type": "step_done", "step": "build", "ok": true})).await;
         }
         Err(e) => {
             let _ = send(ws, json!({"type": "step_done", "step": "build", "ok": false, "error": &e})).await;
-            let _ = send(ws, json!({"type": "error", "message": format!("cargo build failed: {e}")})).await;
+            let _ = send(ws, json!({"type": "error", "message": format!("cargo lambda build failed: {e}")})).await;
             return;
         }
     }
 
-    // ─── PACKAGE (zip the bootstrap binary) ──────────────────────────────────
+    // ─── PACKAGE (locate the cargo-lambda zip output) ────────────────────────
     let _ = send(ws, json!({"type": "step_start", "step": "package"})).await;
-    let binary_path = work_dir.join(format!("target/{}/release/bootstrap", config.rust_target));
-    let zip_dir = std::path::Path::new("/tmp/deploy").join(slug).join("artifacts");
-    if let Err(e) = tokio::fs::create_dir_all(&zip_dir).await {
-        let _ = send(ws, json!({"type": "error", "message": format!("Failed to create artifact dir: {e}")})).await;
-        return;
-    }
 
-    // Copy binary as 'bootstrap' and zip it
-    let bootstrap_path = zip_dir.join("bootstrap");
-    if let Err(e) = tokio::fs::copy(&binary_path, &bootstrap_path).await {
-        let _ = send(ws, json!({"type": "step_done", "step": "package", "ok": false, "error": format!("Binary not found at {:?}: {e}", binary_path)})).await;
-        let _ = send(ws, json!({"type": "error", "message": format!("Binary not found. Did cargo build produce target/{}/release/bootstrap?", config.rust_target)})).await;
-        return;
-    }
-
-    let zip_path = zip_dir.join("bootstrap.zip");
-    match run_streaming(ws, "package", &zip_dir, "zip", &[
-        "-j", zip_path.to_str().unwrap_or("bootstrap.zip"), "bootstrap",
-    ]).await {
-        Ok(_) => {
-            let _ = send(ws, json!({"type": "step_done", "step": "package", "ok": true})).await;
-        }
-        Err(e) => {
-            let _ = send(ws, json!({"type": "step_done", "step": "package", "ok": false, "error": &e})).await;
-            let _ = send(ws, json!({"type": "error", "message": format!("zip failed: {e}")})).await;
+    // cargo-lambda writes zips to target/lambda/{binary_name}/bootstrap.zip
+    let lambda_out = work_dir.join("target/lambda");
+    let zip_path = match find_lambda_zip(&lambda_out).await {
+        Some(p) => p,
+        None => {
+            let _ = send(ws, json!({"type": "step_done", "step": "package", "ok": false, "error": format!("No bootstrap.zip found under {:?}", lambda_out)})).await;
+            let _ = send(ws, json!({"type": "error", "message": "cargo lambda build did not produce a bootstrap.zip"})).await;
             return;
         }
-    }
+    };
+    let _ = send(ws, json!({"type": "log", "step": "package", "line": format!("Found Lambda package: {:?}", zip_path)})).await;
+    let _ = send(ws, json!({"type": "step_done", "step": "package", "ok": true})).await;
 
     // ─── DEPLOY (upload to S3 + update Lambda function code) ─────────────────
     let _ = send(ws, json!({"type": "step_start", "step": "deploy"})).await;
@@ -332,7 +320,7 @@ pub async fn run_lambda_deploy_ws(
     let s3_key_consumer = format!("{}/consumer/bootstrap.zip", config.artifact_prefix);
     let zip_str = zip_path.to_str().unwrap_or("");
 
-    match run_streaming(ws, "deploy", &zip_dir, "aws", &[
+    match run_streaming(ws, "deploy", &work_dir, "aws", &[
         "s3", "cp", zip_str, &format!("s3://{}/{}", config.artifact_bucket, s3_key_api),
     ]).await {
         Ok(_) => {
@@ -344,7 +332,7 @@ pub async fn run_lambda_deploy_ws(
         }
     }
 
-    match run_streaming(ws, "deploy", &zip_dir, "aws", &[
+    match run_streaming(ws, "deploy", &work_dir, "aws", &[
         "s3", "cp", zip_str, &format!("s3://{}/{}", config.artifact_bucket, s3_key_consumer),
     ]).await {
         Ok(_) => {
@@ -357,7 +345,7 @@ pub async fn run_lambda_deploy_ws(
     }
 
     // Update Lambda function code
-    match run_streaming(ws, "deploy", &zip_dir, "aws", &[
+    match run_streaming(ws, "deploy", &work_dir, "aws", &[
         "lambda", "update-function-code",
         "--function-name", &config.api_function_name,
         "--s3-bucket", &config.artifact_bucket,
@@ -372,7 +360,7 @@ pub async fn run_lambda_deploy_ws(
         }
     }
 
-    match run_streaming(ws, "deploy", &zip_dir, "aws", &[
+    match run_streaming(ws, "deploy", &work_dir, "aws", &[
         "lambda", "update-function-code",
         "--function-name", &config.consumer_function_name,
         "--s3-bucket", &config.artifact_bucket,
@@ -717,6 +705,23 @@ fn strip_ansi(s: &str) -> String {
         }
     }
     result
+}
+
+/// Find the bootstrap.zip produced by `cargo lambda build --output-format zip`.
+/// cargo-lambda writes to target/lambda/{binary_name}/bootstrap.zip — there may
+/// be multiple binaries, so return the first bootstrap.zip found.
+async fn find_lambda_zip(lambda_dir: &std::path::Path) -> Option<std::path::PathBuf> {
+    let mut entries = tokio::fs::read_dir(lambda_dir).await.ok()?;
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        let path = entry.path();
+        if entry.metadata().await.map(|m| m.is_dir()).unwrap_or(false) {
+            let candidate = path.join("bootstrap.zip");
+            if tokio::fs::try_exists(&candidate).await.unwrap_or(false) {
+                return Some(candidate);
+            }
+        }
+    }
+    None
 }
 
 /// Resolve the veil CLI binary path.
