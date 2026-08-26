@@ -242,8 +242,22 @@ async fn write_tf_files(tf_dir: &Path, tf_files: &[(String, Vec<u8>)]) -> Result
         .await
         .map_err(|e| format!("Failed to create terraform dir: {e}"))?;
 
+    let tf_root = tf_dir
+        .canonicalize()
+        .unwrap_or_else(|_| tf_dir.to_path_buf());
     for (filename, content) in tf_files {
-        let path = tf_dir.join(filename);
+        let name = std::path::Path::new(filename);
+        if name.is_absolute()
+            || name
+                .components()
+                .any(|c| matches!(c, std::path::Component::ParentDir))
+        {
+            return Err(format!("invalid terraform path: {filename}"));
+        }
+        let path = tf_root.join(name);
+        if !path.starts_with(&tf_root) {
+            return Err(format!("terraform path escapes work dir: {filename}"));
+        }
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent).await.ok();
         }

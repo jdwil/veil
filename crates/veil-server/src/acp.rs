@@ -3,7 +3,7 @@
 //! Env:
 //! - `VEIL_MODEL_PROVIDER=acp`
 //! - `VEIL_ACP_COMMAND` (default `kiro-cli`)
-//! - `VEIL_ACP_ARGS` (default `acp --trust-all-tools`)
+//! - `VEIL_ACP_ARGS` (default `acp`; set `acp --trust-all-tools` explicitly if needed)
 //! - `VEIL_ACP_CWD` — disk-mode fallback only. **Ignored when
 //!   `VEIL_SOURCE_MODE` is s3/prefer_s3** so Kiro cannot grep staged
 //!   checkouts under `$TMP/veil-ws` / `$TMP/veil-s3-ws`.
@@ -62,15 +62,13 @@ impl Drop for AcpProcess {
 impl AcpProcess {
     fn spawn() -> Result<Self, String> {
         let cmd = std::env::var("VEIL_ACP_COMMAND").unwrap_or_else(|_| "kiro-cli".into());
-        let args_raw = std::env::var("VEIL_ACP_ARGS")
-            .unwrap_or_else(|_| "acp --trust-all-tools".into());
+        let args_raw = std::env::var("VEIL_ACP_ARGS").unwrap_or_else(|_| "acp".into());
         let mut args: Vec<String> = args_raw
             .split_whitespace()
             .map(|s| s.to_string())
             .collect();
         if args.is_empty() {
             args.push("acp".into());
-            args.push("--trust-all-tools".into());
         }
         // Workspace mcp.json only (never rewrite ~/.kiro/agents/*.json).
         let cwd_pre = resolve_acp_cwd();
@@ -877,7 +875,7 @@ pub fn acp_info() -> serde_json::Value {
     json!({
         "provider": "acp",
         "command": std::env::var("VEIL_ACP_COMMAND").unwrap_or_else(|_| "kiro-cli".into()),
-        "args": std::env::var("VEIL_ACP_ARGS").unwrap_or_else(|_| "acp --trust-all-tools".into()),
+        "args": std::env::var("VEIL_ACP_ARGS").unwrap_or_else(|_| "acp".into()),
         "cwd": std::env::var("VEIL_ACP_CWD").ok(),
         "model": model_arg.clone().unwrap_or_else(|| "(kiro default / auto)".into()),
         "model_flag": model_arg,

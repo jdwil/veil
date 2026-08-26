@@ -3331,8 +3331,10 @@ struct RegisterArtifactBody {
     #[serde(default)]
     contributions: Vec<crate::artifact_registry::Contribution>,
     #[serde(default)]
+    #[allow(dead_code)]
     signed_off_by: Option<String>,
     #[serde(default)]
+    #[allow(dead_code)]
     signed_off_at: Option<chrono::DateTime<chrono::Utc>>,
     #[serde(default)]
     blob_key: Option<String>,
@@ -3357,8 +3359,8 @@ async fn register_artifact(
         artifact_type: body.artifact_type,
         tenant_visibility: body.tenant_visibility,
         contributions: body.contributions,
-        signed_off_by: body.signed_off_by,
-        signed_off_at: body.signed_off_at,
+        signed_off_by: None,
+        signed_off_at: None,
         blob_key: body.blob_key,
         content_hash: body.content_hash,
         bundle_path: body.bundle_path,

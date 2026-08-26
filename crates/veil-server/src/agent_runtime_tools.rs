@@ -628,7 +628,13 @@ fn validate_local_url(url: &str, project_root: &Path) -> Result<(), String> {
         .and_then(|p| p.parse().ok())
         .ok_or_else(|| "could not parse port from url".to_string())?;
     let allowed = allowed_ports(project_root);
-    if !allowed.is_empty() && !allowed.contains(&port) {
+    if allowed.is_empty() {
+        return Err(
+            "http_request has no allowlist — set veil.toml [[targets]] dev_port or VEIL_AGENT_HTTP_PORTS"
+                .into(),
+        );
+    }
+    if !allowed.contains(&port) {
         return Err(format!(
             "port {port} not allowed; configured dev_ports: {allowed:?}"
         ));

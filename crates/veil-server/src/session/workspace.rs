@@ -62,12 +62,7 @@ pub fn resolve_under_root(root: &Path, rel: &str) -> Result<PathBuf, String> {
         parent_c.join(file)
     };
     if !abs.starts_with(&root_c) && abs != root_c {
-        // also allow if root not yet canonical equal
-        let abs_s = abs.to_string_lossy();
-        let root_s = root_c.to_string_lossy();
-        if !abs_s.starts_with(root_s.as_ref()) {
-            return Err(format!("path escapes workspace: {rel}"));
-        }
+        return Err(format!("path escapes workspace: {rel}"));
     }
     Ok(abs)
 }
@@ -436,6 +431,20 @@ mod tests {
             "escape should fail: {esc:?}"
         );
         let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn jail_rejects_prefix_sibling_dir() {
+        let base = std::env::temp_dir().join(format!("veil-jail-pfx-{}", std::process::id()));
+        let proj = base.join("proj");
+        let sibling = base.join("proj2");
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&proj).unwrap();
+        fs::create_dir_all(&sibling).unwrap();
+        fs::write(sibling.join("secret.txt"), "no").unwrap();
+        let escaped = path_jail(&proj, "../proj2/secret.txt");
+        assert!(escaped.is_err(), "prefix sibling must not pass: {escaped:?}");
+        let _ = fs::remove_dir_all(&base);
     }
 
     #[test]
