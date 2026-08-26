@@ -293,10 +293,11 @@ async fn run_streaming(
             line = stderr_reader.next_line() => {
                 match line {
                     Ok(Some(text)) => {
+                        let clean = strip_ansi(&text);
                         let _ = send(ws, json!({
                             "type": "log",
                             "step": step,
-                            "line": text,
+                            "line": clean,
                             "stream": "stderr",
                         })).await;
                     }
@@ -309,10 +310,11 @@ async fn run_streaming(
 
     // Drain remaining stderr
     while let Ok(Some(text)) = stderr_reader.next_line().await {
+        let clean = strip_ansi(&text);
         let _ = send(ws, json!({
             "type": "log",
             "step": step,
-            "line": text,
+            "line": clean,
             "stream": "stderr",
         })).await;
     }
@@ -332,7 +334,8 @@ async fn run_streaming(
 
 /// Parse a terraform output line into a structured websocket event.
 fn parse_terraform_line(step: &str, line: &str) -> serde_json::Value {
-    let trimmed = line.trim();
+    let trimmed = strip_ansi(line).trim().to_string();
+    let trimmed = trimmed.as_str();
 
     // Apply phase: "aws_s3_bucket.frontend: Creating..."
     if trimmed.contains(": Creating...") {
@@ -504,6 +507,37 @@ async fn send(ws: &mut WebSocket, msg: serde_json::Value) -> Result<(), ()> {
     ws.send(Message::Text(msg.to_string().into()))
         .await
         .map_err(|_| ())
+}
+
+/// Strip ANSI escape sequences from a string (colors, bold, dim, etc.)
+fn strip_ansi(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            // Skip ESC + '[' + params + final byte
+            if chars.peek() == Some(&'[') {
+                chars.next(); // consume '['
+                // Consume all parameter bytes (0x30-0x3F) and intermediate bytes (0x20-0x2F)
+                while let Some(&next) = chars.peek() {
+                    if (next >= '0' && next <= '?') || (next >= ' ' && next <= '/') {
+                        chars.next();
+                    } else {
+                        break;
+                    }
+                }
+                // Consume final byte (0x40-0x7E)
+                if let Some(&next) = chars.peek() {
+                    if next >= '@' && next <= '~' {
+                        chars.next();
+                    }
+                }
+            }
+        } else {
+            result.push(c);
+        }
+    }
+    result
 }
 
 /// Resolve the veil CLI binary path.

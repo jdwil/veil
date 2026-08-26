@@ -570,6 +570,12 @@ fn collect_construct_files(
     if let Some(template) = registry.construct_lowers_to(c, "typescript") {
         let content = interpolate_construct_template(template, c);
         let path = construct_output_path(c, registry);
+        // For .svelte files: auto-inject imports for referenced components
+        let content = if path.ends_with(".svelte") {
+            inject_svelte_component_imports(&content, &path)
+        } else {
+            content
+        };
         files.push(TsFile { path, content });
     }
 
@@ -614,6 +620,42 @@ fn interpolate_construct_template(template: &str, c: &Construct) -> String {
     result = result.replace("{{template}}", template_content);
     result = result.replace("{{style}}", style_content);
 
+    // {{props_decl}} — single $props() destructure with all prop fields
+    if result.contains("{{props_decl}}") {
+        let props_block = c.blocks.iter().find(|b| b.keyword == "props");
+        let props_script = if let Some(props) = props_block {
+            if props.fields.is_empty() {
+                String::new()
+            } else {
+                let names: Vec<&str> = props.fields.iter().map(|f| f.name.as_str()).collect();
+                let types: Vec<String> = props.fields.iter()
+                    .map(|f| format!("{}: {}", f.name, ts_type_for_field(&f.type_expr)))
+                    .collect();
+                format!("  let {{ {} }}: {{ {} }} = $props();\n", names.join(", "), types.join("; "))
+            }
+        } else {
+            String::new()
+        };
+        result = result.replace("{{props_decl}}", &props_script);
+    }
+
+    // {{state_decl}} — individual $state() declarations per field
+    if result.contains("{{state_decl}}") {
+        let state_block = c.blocks.iter().find(|b| b.keyword == "state");
+        let state_script = if let Some(state) = state_block {
+            let mut s = String::new();
+            for field in &state.fields {
+                let ty = ts_type_for_field(&field.type_expr);
+                let default = ts_default_for_type(&field.type_expr);
+                s.push_str(&format!("  let {}: {} = $state({});\n", field.name, ty, default));
+            }
+            s
+        } else {
+            String::new()
+        };
+        result = result.replace("{{state_decl}}", &state_script);
+    }
+
     // Conditional blocks: {{#if style}}...{{/if}}
     result = process_conditionals(&result, "style", !style_content.is_empty());
     result = process_conditionals(&result, "script", !script_content.is_empty());
@@ -624,6 +666,89 @@ fn interpolate_construct_template(template: &str, c: &Construct) -> String {
     result = process_for_loop(&result, "state", &collect_block_fields(c, "state"));
 
     result
+}
+
+/// Scan a .svelte file for PascalCase component tags (e.g. `<Header ...>`) and inject
+/// import statements into the `<script>` block. Skips standard HTML elements and
+/// Svelte built-ins ({#if}, {#each}, {@render}, etc.).
+fn inject_svelte_component_imports(content: &str, file_path: &str) -> String {
+    use std::collections::BTreeSet;
+
+    // Find all PascalCase tags: <ComponentName or <ComponentName>
+    let mut components = BTreeSet::new();
+    let mut i = 0;
+    let bytes = content.as_bytes();
+    while i < bytes.len() {
+        if bytes[i] == b'<' && i + 1 < bytes.len() && bytes[i + 1].is_ascii_uppercase() {
+            // Extract tag name
+            let start = i + 1;
+            let mut end = start;
+            while end < bytes.len() && (bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_') {
+                end += 1;
+            }
+            let tag = &content[start..end];
+            // Skip if already imported or if it's a Svelte built-in
+            if !tag.is_empty() && tag.chars().next().unwrap().is_uppercase() {
+                components.insert(tag.to_string());
+            }
+            i = end;
+        } else {
+            i += 1;
+        }
+    }
+
+    if components.is_empty() {
+        return content.to_string();
+    }
+
+    // Remove components that are already imported
+    let already_imported: BTreeSet<String> = content.lines()
+        .filter(|l| l.trim_start().starts_with("import"))
+        .filter_map(|l| {
+            // Match: import X from or import { X } from
+            let trimmed = l.trim();
+            if let Some(after) = trimmed.strip_prefix("import ") {
+                let name = after.split_whitespace().next().unwrap_or("");
+                if name.chars().next().map_or(false, |c| c.is_uppercase()) {
+                    return Some(name.to_string());
+                }
+            }
+            None
+        })
+        .collect();
+
+    let to_import: Vec<&String> = components.iter()
+        .filter(|c| !already_imported.contains(*c))
+        .collect();
+
+    if to_import.is_empty() {
+        return content.to_string();
+    }
+
+    // Determine relative import path based on file location
+    // Files in src/routes/ import from $lib/components/
+    let import_prefix = "$lib/components";
+
+    // Build import lines
+    let imports: String = to_import.iter()
+        .map(|name| format!("  import {name} from '{import_prefix}/{name}.svelte';"))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    // Inject after <script lang="ts"> line
+    if let Some(script_pos) = content.find("<script") {
+        if let Some(close_pos) = content[script_pos..].find('>') {
+            let inject_at = script_pos + close_pos + 1;
+            let mut result = String::with_capacity(content.len() + imports.len() + 2);
+            result.push_str(&content[..inject_at]);
+            result.push('\n');
+            result.push_str(&imports);
+            result.push_str(&content[inject_at..]);
+            return result;
+        }
+    }
+
+    content.to_string()
 }
 
 /// Process `{{#if name}}...{{/if}}` conditionals.
@@ -877,4 +1002,42 @@ fn to_kebab(s: &str) -> String {
         }
     }
     result
+}
+
+/// Convert a VEIL TypeExpr to a TypeScript type string.
+fn ts_type_for_field(ty: &veil_ir::TypeExpr) -> String {
+    use veil_ir::TypeExpr;
+    match ty {
+        TypeExpr::Named(n) => match n.as_str() {
+            "Str" | "String" => "string".into(),
+            "Bool" => "boolean".into(),
+            "Int" | "F64" | "Float" => "number".into(),
+            "Json" => "any".into(),
+            "Id" | "UUID" => "string".into(),
+            "Dt" | "DateTime" => "string".into(),
+            other => other.to_string(),
+        },
+        TypeExpr::List(inner) => format!("{}[]", ts_type_for_field(inner)),
+        TypeExpr::Optional(inner) => format!("{} | null", ts_type_for_field(inner)),
+        TypeExpr::Map(_, v) => format!("Record<string, {}>", ts_type_for_field(v)),
+        _ => "any".into(),
+    }
+}
+
+/// Get a sensible default value for a TypeExpr in TypeScript.
+fn ts_default_for_type(ty: &veil_ir::TypeExpr) -> String {
+    use veil_ir::TypeExpr;
+    match ty {
+        TypeExpr::Named(n) => match n.as_str() {
+            "Str" | "String" => "''".into(),
+            "Bool" => "false".into(),
+            "Int" | "F64" | "Float" => "0".into(),
+            "Json" => "{}".into(),
+            _ => "undefined as any".into(),
+        },
+        TypeExpr::List(_) => "[]".into(),
+        TypeExpr::Map(_, _) => "{}".into(),
+        TypeExpr::Optional(_) => "null".into(),
+        _ => "undefined as any".into(),
+    }
 }

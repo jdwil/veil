@@ -78,9 +78,7 @@ pkg svelte5 v1
       output_path: "src/routes/{{route}}/+page.svelte"
       typescript: """
 <script lang="ts">
-  {{for field in props}}let { {{field.name}} }: { {{field.name}}: {{field.type}} } = $props();
-  {{end}}{{for field in state}}let {{field.name}}: {{field.type}} = $state({{field.default}});
-  {{end}}{{script}}
+  {{props_decl}}{{state_decl}}{{script}}
 </script>
 {{template}}
 {{#if style}}<style>{{style}}</style>{{/if}}
@@ -149,9 +147,7 @@ pkg svelte5 v1
       output_path: "src/lib/components/{{name}}.svelte"
       typescript: """
 <script lang="ts">
-  {{for field in props}}let { {{field.name}} }: { {{field.name}}: {{field.type}} } = $props();
-  {{end}}{{for field in state}}let {{field.name}}: {{field.type}} = $state({{field.default}});
-  {{end}}{{script}}
+  {{props_decl}}{{state_decl}}{{script}}
 </script>
 {{template}}
 {{#if style}}<style>{{style}}</style>{{/if}}

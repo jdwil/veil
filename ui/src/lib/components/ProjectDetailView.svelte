@@ -604,7 +604,7 @@
           disabled={deploy_streaming || loading}
           onclick={() => { deploy_stream_type = 'frontend'; deploy_streaming = true; }}
         >
-          {deploy_streaming && deploy_stream_type === 'frontend' ? 'Deploying…' : 'Deploy frontend'}
+          {deploy_streaming && deploy_stream_type === 'frontend' ? 'Deploying…' : 'Deploy'}
         </button>
       {/if}
     {/if}
