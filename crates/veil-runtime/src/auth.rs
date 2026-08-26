@@ -332,7 +332,7 @@ where
         let path = req.uri().path().to_string();
 
         // Skip auth for non-API paths: health, static assets, SPA routes.
-        let requires_auth = path.starts_with("/api/") || path.starts_with("/bus/");
+        let requires_auth = path.starts_with("/api/");
 
         if !requires_auth {
             let mut inner = self.inner.clone();

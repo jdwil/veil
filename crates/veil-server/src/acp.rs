@@ -18,7 +18,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
@@ -913,12 +913,6 @@ pub fn cancel_acp() {
             *g = None; // Drop triggers child.kill() + child.wait()
         }
     }
-}
-
-// Silence unused Arc import warning path if any
-#[allow(dead_code)]
-fn _arc_marker() -> Arc<()> {
-    Arc::new(())
 }
 
 #[cfg(test)]

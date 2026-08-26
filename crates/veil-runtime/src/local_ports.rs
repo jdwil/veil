@@ -543,66 +543,6 @@ pub fn storage_deps() -> storage::application::Deps {
 }
 
 
-// ─── Extensions Deps (VEIL-generated File* adapters — no residual registry) ─
-// Product logic: runtime.veil → extensions::application
-// IO: FileExtension* → ExtStore (veil_ext_store stub). Backend:
-// VEIL_EXTENSIONS_BACKEND=file|ddb (default file). Never raw DdbClient in VEIL.
-
-use extensions::adapters::{
-    FileExtensionArtifactStore, FileExtensionExecutor, FileExtensionRegistry,
-    FileExtensionSourceStore,
-};
-use extensions::domain::types::ExtensionRecord;
-
-/// Resolve extensions data dir: `VEIL_EXTENSIONS_DIR` or `{projects_dir}/.veil-extensions`.
-pub fn extensions_dir() -> PathBuf {
-    if let Ok(d) = std::env::var("VEIL_EXTENSIONS_DIR") {
-        return PathBuf::from(d);
-    }
-    crate::platform::projects_dir().join(".veil-extensions")
-}
-
-/// Well-known stock IDs for dual-loop pins (fixtures only).
-pub fn stock_activate_members_id() -> uuid::Uuid {
-    uuid::Uuid::parse_str("aaaaaaaa-0001-4000-8000-000000000001").unwrap()
-}
-pub fn stock_guard_end_id() -> uuid::Uuid {
-    uuid::Uuid::parse_str("aaaaaaaa-0002-4000-8000-000000000002").unwrap()
-}
-
-/// Wire VEIL-generated File* adapters (ExtStore facade — file backend by default).
-pub fn extensions_deps() -> extensions::application::Deps {
-    let dir = extensions_dir().to_string_lossy().to_string();
-    let _ = std::fs::create_dir_all(&dir);
-    // Default dual-loop: file backend (no AWS). Deploy sets VEIL_EXTENSIONS_BACKEND=ddb.
-    if std::env::var("VEIL_EXTENSIONS_BACKEND").is_err() {
-        // SAFETY: single-threaded startup; no concurrent reads of this env var.
-        unsafe { std::env::set_var("VEIL_EXTENSIONS_BACKEND", "file") };
-    }
-    extensions::application::Deps {
-        extension_artifact_store: std::sync::Arc::new(FileExtensionArtifactStore {
-            dir: dir.clone(),
-        }),
-        extension_executor: std::sync::Arc::new(FileExtensionExecutor { dir: dir.clone() }),
-        extension_registry: std::sync::Arc::new(FileExtensionRegistry { dir: dir.clone() }),
-        extension_source_store: std::sync::Arc::new(FileExtensionSourceStore { dir }),
-    }
-}
-
-/// Call VEIL EnsureStockCatalog with fixture IDs.
-pub async fn ensure_stock_catalog_veil(
-    deps: &extensions::application::Deps,
-) -> Result<Vec<ExtensionRecord>, DomainError> {
-    extensions::application::ensure_stock_catalog(
-        deps,
-        stock_activate_members_id(),
-        stock_guard_end_id(),
-        Some("wear_test".into()),
-    )
-    .await
-}
-
-
 // ─── Change Management Deps (DDB + S3 adapters) ─────────────────────────────
 // SDLC domain: runtime.veil → change_management::application
 // IO: DDB adapters (single table), S3 flat-file git adapter

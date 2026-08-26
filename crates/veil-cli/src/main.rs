@@ -1767,12 +1767,6 @@ fn function_item_has_self(item: &serde_json::Value) -> bool {
     })
 }
 
-/// Extract a method signature from a rustdoc JSON item.
-#[allow(dead_code)]
-fn extract_method_sig(item: &serde_json::Value) -> Option<String> {
-    extract_method_sig_with_info(item).map(|info| info.sig)
-}
-
 /// Metadata extracted from a rustdoc method item for template generation.
 struct MethodSigInfo {
     /// The VEIL signature string (e.g. "fn send() -> BoxFuture<Res!<Response>>")

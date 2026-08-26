@@ -2,7 +2,7 @@
 //!
 //! Wires generated `storage` / `change_management` / `deploy` application
 //! services so the dashboard SPA needs no separate `veil_bin` on :3000.
-//! See `runtime/docs/ADR_SINGLE_PRODUCT_HOST.md`.
+//! See `docs/ADR_SINGLE_PRODUCT_HOST.md`.
 
 use std::sync::Arc;
 

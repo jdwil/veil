@@ -461,25 +461,6 @@ pub fn expr_handles_option_wrap(expr: &Expr) -> bool {
     )
 }
 
-/// `null` / `()` → `None`; already-Option locals stay as-is; else `Some(val)`.
-pub fn wrap_as_option_value(expr: &Expr, rust: String, ctx: &GenCtx) -> String {
-    let t = rust.trim();
-    if t == "None" || t == "()" {
-        return "None".to_string();
-    }
-    if t.starts_with("Some(") || t.starts_with("return ") {
-        return rust;
-    }
-    if let Expr::Ident(n) = expr
-        && ctx
-            .local_type(n)
-            .is_some_and(|ty| is_option_type(ty))
-        {
-            return rust;
-        }
-    format!("Some({rust})")
-}
-
 /// True when `Type.new` is a module free-fn (`sqlx::query`), not `Type::new`.
 /// Stub metadata only — never a type-name special case (`Query` is also a
 /// DynamoDB rustdoc type with `fn new()`).

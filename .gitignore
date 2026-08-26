@@ -20,4 +20,5 @@ vendor/
 
 .grok/
 .kiro/
+.playwright-mcp/
 layers/.designkit.layer.backup

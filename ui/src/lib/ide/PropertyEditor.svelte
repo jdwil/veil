@@ -3,8 +3,7 @@
   import { irGraph, saveEdits, saving, saveError, paletteConfig, selectedNodeId, type EditOp } from '$lib/ide/store';
   import { get } from 'svelte/store';
   import { formatType } from '$lib/ide/typeDisplay';
-  // UX-027: body review uses BlockEditor only. MethodEditor / FieldsEditor /
-  // AnnotationEditor / EnumEditor / ConstructEditor are quarantined — see
+  // UX-027: body review uses BodySourceBlock / BlockEditor.
   // docs/ADR-viewer-editors.md. Do not re-expand click-to-build of all expr kinds
   // until review surfaces (UX-020–023) stay primary.
   import { BodySourceBlock } from '$lib/ide/editors';

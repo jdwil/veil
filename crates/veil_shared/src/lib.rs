@@ -3,9 +3,6 @@
 
 #![allow(unused_imports)]
 
-pub mod register_handlers;
-pub use register_handlers::{HANDLER_NAMES, handler_count, register_all};
-
 use async_trait::async_trait;
 use uuid::Uuid;
 

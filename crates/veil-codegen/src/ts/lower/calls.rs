@@ -15,10 +15,9 @@ use super::{lower_to_ts, to_camel_case};
 /// Resolution priority:
 /// 1. Hardcoded builtins (Id.new, Json.parse, etc.)
 /// 2. Trait dependency (port) calls → `await deps.field.method(args)`
-/// 3. Routing/bus calls → `await deps.bus.invoke(...)`
-/// 4. Struct constructors → object literal
-/// 5. Local/receiver method calls → `recv.method(args)` with Rust idiom stripping
-/// 6. Fallback → Raw
+/// 3. Struct constructors → object literal
+/// 4. Local/receiver method calls → `recv.method(args)` with Rust idiom stripping
+/// 5. Fallback → Raw
 pub(super) fn lower_call(call: &CallExpr, ctx: &GenCtx) -> TsExpr {
     // ── 1. Hardcoded builtins ────────────────────────────────────────────
     if let Some(builtin) = lower_builtin_call(call, ctx) {
@@ -89,59 +88,6 @@ fn lower_trait_dep_call(call: &CallExpr, ctx: &GenCtx) -> TsExpr {
     // is_async: true on MethodCall emits `await` — no extra Await wrapper needed
     TsExpr::MethodCall {
         receiver: Box::new(receiver),
-        method: to_camel_case(method_clean),
-        args,
-        ty: None,
-        is_async: true,
-    }
-}
-
-/// Lower a routing/bus call: `invoke Target{fields}` → `await deps.bus.invoke("Target", {fields})`
-#[allow(dead_code)]
-fn lower_routing_call(call: &CallExpr, ctx: &GenCtx) -> TsExpr {
-    let method = if call.method.is_empty() { "invoke" } else { &call.method };
-    let method_clean = method.trim_end_matches(['!', '?']);
-
-    let bus_receiver = TsExpr::FieldAccess {
-        base: Box::new(TsExpr::Ident { name: "deps".to_string(), ty: None }),
-        field: "bus".to_string(),
-        ty: None,
-    };
-
-    let mut args: Vec<TsExpr> = Vec::new();
-
-    // Message name from sugar or target
-    let message_name = if !call.target.is_empty() && call.method.is_empty() {
-        call.target.clone()
-    } else if let Some(Expr::StructLit(name, _)) = call.args.first() {
-        name.clone()
-    } else {
-        call.target.clone()
-    };
-    args.push(TsExpr::StringLit(message_name));
-
-    // Payload: if first arg is a struct lit, convert to object; else lower args
-    match call.args.first() {
-        Some(Expr::StructLit(_, fields)) => {
-            let ts_fields: Vec<(String, TsExpr)> = fields
-                .iter()
-                .map(|(k, v)| (to_camel_case(k), lower_to_ts(v, ctx)))
-                .collect();
-            args.push(TsExpr::ObjectLit { fields: ts_fields, ty: None });
-        }
-        _ => {
-            let lowered: Vec<TsExpr> = call.args.iter().map(|a| lower_to_ts(a, ctx)).collect();
-            if lowered.len() == 1 {
-                args.push(lowered.into_iter().next().unwrap());
-            } else if !lowered.is_empty() {
-                args.push(TsExpr::ArrayLit { items: lowered, ty: None });
-            }
-        }
-    }
-
-    // is_async: true on MethodCall emits `await` — no extra Await wrapper needed
-    TsExpr::MethodCall {
-        receiver: Box::new(bus_receiver),
         method: to_camel_case(method_clean),
         args,
         ty: None,

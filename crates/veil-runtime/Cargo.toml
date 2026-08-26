@@ -15,7 +15,6 @@ veil-server = { path = "../veil-server" }
 veil-ir = { path = "../veil-ir" }
 veil-parser = { path = "../veil-parser" }
 storage = { path = "../storage" }
-extensions = { path = "../extensions" }
 change_management = { path = "../change_management" }
 deploy = { path = "../deploy" }
 veil_shared = { path = "../veil_shared" }

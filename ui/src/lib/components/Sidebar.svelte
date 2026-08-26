@@ -41,7 +41,6 @@
 		{ href: '/pulls', label: 'Changes', icon: '⇄', badge: 'prs' as const },
 		{ href: '/deploy', label: 'Deploy', icon: '☁' },
 		{ href: '/registry', label: 'Registry', icon: '⧉' },
-		{ href: '/bus', label: 'Bus', icon: '⚡' },
 		{ href: '/agents', label: 'Agents', icon: '◆' },
 		{ href: '/config', label: 'Config', icon: '⚙' },
 	] as const;
@@ -51,7 +50,7 @@
 		if (href === '/dashboard') return path === '/' || path.startsWith('/dashboard');
 		if (href === '/projects') return path.startsWith('/projects');
 		if (href === '/review') return path.startsWith('/review');
-		if (href === '/pulls') return path.startsWith('/pulls') || path.startsWith('/changecreate') || path.startsWith('/changedetail');
+		if (href === '/pulls') return path.startsWith('/pulls');
 		return path === href || path.startsWith(href + '/');
 	}
 </script>

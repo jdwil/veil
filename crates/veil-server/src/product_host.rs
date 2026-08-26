@@ -120,10 +120,8 @@ impl ProductHost {
             viewer_url: self.viewer_url.clone(),
         };
 
-        // SPA shell routes (generated nav). Full page loads must return index.html.
-        // IDE UI (`/viewer`) is nested once by `build_multi_router` — do not double-nest.
-        // `/projects/{name}/ide` is the **in-shell IDE embed** (SPA + iframe to /viewer);
-        // do not redirect away from the shell (keeps AgentDock + chat history).
+        // SPA shell routes. Full page loads must return index.html.
+        // `/projects/{name}/ide` is the native in-shell IDE (keeps AgentDock + chat).
         let shell = Router::new()
             .route("/", get(shell_index))
             .route("/projects", get(shell_index))
@@ -132,11 +130,8 @@ impl ProductHost {
             .route("/projects/{name}", get(shell_index))
             .route("/pulls", get(shell_index))
             .route("/pulls/{*rest}", get(shell_index))
-            .route("/pullcreate", get(shell_index))
-            .route("/pulldetail", get(shell_index))
             .route("/deploy", get(shell_index))
             .route("/registry", get(shell_index))
-            .route("/bus", get(shell_index))
             .route("/agents", get(shell_index))
             .route("/config", get(shell_index))
             .route("/dashboard", get(shell_index))
@@ -155,7 +150,7 @@ impl ProductHost {
         if let Some(bus) = self.bus_router {
             app = app.merge(bus);
         }
-        // Unmatched GET paths that look like shell pages → SPA (not /api|/bus|/health).
+        // Unmatched GET paths that look like shell pages → SPA (not /api|/health).
         let spa_fb = Router::new()
             .fallback(get(spa_fallback))
             .with_state(shell_state);
@@ -240,9 +235,8 @@ async fn spa_fallback(
     uri: axum::http::Uri,
 ) -> impl IntoResponse {
     let path = uri.path();
-    // Leave SPA paths (including GET /bus page) free; only block API-like prefixes.
+    // Leave SPA paths free; only block API-like prefixes.
     if path.starts_with("/api")
-        || path.starts_with("/bus/")
         || path.starts_with("/health")
         || path.starts_with("/static")
         || path.starts_with("/assets")

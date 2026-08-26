@@ -7,7 +7,7 @@
 
 use veil_ir::ast::*;
 use veil_ir::layer::LayerRegistry;
-use veil_ir::{is_deploy_hook, DeployedConstructDump};
+use veil_ir::is_deploy_hook;
 
 use crate::rust::{
     adapter_deps_field_name, adapter_dyn_type, apply_adapter_env_field_inits,
@@ -405,20 +405,4 @@ fn emit_crate_deps_wiring(
     out
 }
 
-/// Plan / host helper: hook names in this solution.
-#[allow(dead_code)]
-pub fn hook_names(solution: &Solution, registry: &LayerRegistry) -> Vec<String> {
-    veil_ir::collect_deploy_hooks(solution, registry)
-        .into_iter()
-        .map(|c| c.name.clone())
-        .collect()
-}
 
-#[allow(dead_code)]
-pub fn inventory_preview(
-    solution: &Solution,
-    registry: &LayerRegistry,
-    package: &str,
-) -> Vec<DeployedConstructDump> {
-    veil_ir::collect_construct_inventory(solution, registry, package)
-}

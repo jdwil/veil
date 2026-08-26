@@ -6174,7 +6174,6 @@ dependencies = [
  "change_management",
  "chrono",
  "deploy",
- "extensions",
  "futures",
  "http-body-util",
  "hyper 1.10.1",
