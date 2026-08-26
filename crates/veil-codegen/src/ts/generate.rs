@@ -656,9 +656,28 @@ fn interpolate_construct_template(template: &str, c: &Construct) -> String {
         result = result.replace("{{state_decl}}", &state_script);
     }
 
+    // {{store_state}} — Svelte 5 legal shared state object.
+    if result.contains("{{store_state}}") {
+        let fields: Vec<(String, TypeExpr)> = c
+            .blocks
+            .iter()
+            .filter(|b| b.keyword == "state")
+            .flat_map(|b| {
+                b.fields
+                    .iter()
+                    .map(|f| (f.name.clone(), f.type_expr.clone()))
+            })
+            .collect();
+        result = result.replace(
+            "{{store_state}}",
+            &super::expr_emit::emit_store_state(&c.name, &fields),
+        );
+    }
+
     // {{fn_declarations}} — exported functions from construct.fns
     if result.contains("{{fn_declarations}}") {
         let mut s = String::new();
+        let fn_opts = store_fn_opts(c);
         for f in &c.fns {
             if f.name == "template" || f.name == "style" || f.name == "script" {
                 continue;
@@ -671,9 +690,7 @@ fn interpolate_construct_template(template: &str, c: &Construct) -> String {
                 None => String::new(),
             };
             s.push_str(&format!("export function {}({}){} {{\n", f.name, params, ret_type));
-            for expr in &f.body {
-                s.push_str(&format!("  {};\n", veil_ir::builder::expr_to_display(expr)));
-            }
+            s.push_str(&super::expr_emit::emit_typescript_stmts_with(&f.body, 1, &fn_opts));
             s.push_str("}\n\n");
         }
         result = result.replace("{{fn_declarations}}", &s);
@@ -1044,6 +1061,18 @@ fn to_kebab(s: &str) -> String {
 }
 
 /// Convert a VEIL TypeExpr to a TypeScript type string.
+fn store_fn_opts(c: &Construct) -> super::expr_emit::TsExprEmitOpts {
+    let is_store = c.keyword.eq_ignore_ascii_case("store")
+        || c.subkind.eq_ignore_ascii_case("Store");
+    if !is_store {
+        return super::expr_emit::TsExprEmitOpts::default();
+    }
+    let fields = c.blocks.iter().filter(|b| b.keyword == "state").flat_map(|b| {
+        b.fields.iter().map(|f| f.name.clone())
+    });
+    super::expr_emit::TsExprEmitOpts::for_store(&c.name, fields)
+}
+
 fn ts_type_for_field(ty: &veil_ir::TypeExpr) -> String {
     use veil_ir::TypeExpr;
     match ty {

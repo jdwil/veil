@@ -2090,3 +2090,54 @@ fn use_version_two_segment() {
     let sol = crate::parse(&tokens).unwrap();
     assert_eq!(sol.uses[0].version.as_deref(), Some("0.12"));
 }
+
+/// `let name: Type = expr` must parse as a single typed Assign, not Ident("let")
+/// followed by the assignment (which produced `let;` in TypeScript codegen).
+#[test]
+fn let_binding_is_single_typed_assign() {
+    let src = r#"
+pkg T
+  struct S
+    fn load()
+      loading = true
+      let result: Json = fetch("/api")
+      items = result.data
+      mut allMenu: Json = []
+"#;
+    let tokens = crate::lexer::lex(src);
+    let sol = crate::parse(&tokens).expect("parse");
+    let s = sol
+        .items
+        .iter()
+        .find_map(|i| match i {
+            veil_ir::ast::TopLevelItem::Construct(c) if c.name == "S" => Some(c),
+            _ => None,
+        })
+        .expect("struct S");
+    let f = s
+        .fns
+        .iter()
+        .find(|f| f.name == "load")
+        .expect("fn load");
+    assert!(
+        !f.body
+            .iter()
+            .any(|e| matches!(e, veil_ir::ast::Expr::Ident(n) if n == "let")),
+        "decorative let leaked as Ident: {:?}",
+        f.body
+    );
+    assert!(
+        f.body
+            .iter()
+            .any(|e| matches!(e, veil_ir::ast::Expr::Assign(n, _, Some(_)) if n == "result")),
+        "typed let should be Assign with type: {:?}",
+        f.body
+    );
+    assert!(
+        f.body
+            .iter()
+            .any(|e| matches!(e, veil_ir::ast::Expr::MutAssign(n, _, Some(_)) if n == "allMenu")),
+        "mut assign missing: {:?}",
+        f.body
+    );
+}

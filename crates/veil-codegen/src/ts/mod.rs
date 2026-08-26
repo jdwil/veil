@@ -24,6 +24,7 @@
 pub mod api_client;
 pub mod emit;
 pub mod expr;
+pub mod expr_emit;
 pub mod generate;
 pub mod lower;
 pub mod transforms;
@@ -34,6 +35,10 @@ mod tests;
 pub use api_client::{TsFile, TsProject};
 pub use emit::emit_ts;
 pub use expr::{TsBinOp, TsExpr, TsPattern, TsTemplatePart, TsType, TsUnaryOp};
+pub use expr_emit::{
+    emit_store_state, emit_typescript_stmts, emit_typescript_stmts_with, expr_to_typescript,
+    type_to_typescript, TsExprEmitOpts,
+};
 pub use generate::generate_ts_ir;
 pub use lower::{lower_to_ts, lower_block, to_camel, to_camel_case, type_to_ts, infer_field_type_ts, field_type_ts, veil_type_to_ts};
 pub use transforms::{track_imports, detect_async, import_statement};

@@ -299,6 +299,7 @@ fn expand_file_path(pattern: &str, construct: &Construct, registry: &LayerRegist
         &pattern
             .replace("{{name}}", name)
             .replace("{{name_lower}}", &name_lower)
+            .replace("{{name_snake}}", &to_snake_case(name))
             .replace("{{route}}", &route)
             .replace("{{subkind}}", &construct.subkind),
     )
@@ -457,6 +458,24 @@ fn render_template_for_construct(
         output = output.replace("{{state_decl}}", &state_script);
     }
 
+    // {{store_state}} — Svelte 5 legal shared state: `export const Name = $state({ ... })`.
+    if output.contains("{{store_state}}") {
+        let fields: Vec<(String, veil_ir::TypeExpr)> = construct
+            .blocks
+            .iter()
+            .filter(|b| b.keyword == "state")
+            .flat_map(|b| {
+                b.fields
+                    .iter()
+                    .map(|f| (f.name.clone(), f.type_expr.clone()))
+            })
+            .collect();
+        output = output.replace(
+            "{{store_state}}",
+            &crate::ts::expr_emit::emit_store_state(&construct.name, &fields),
+        );
+    }
+
     // {{fn_declarations}} — exported functions from construct.fns (target-aware).
     if output.contains("{{fn_declarations}}") {
         let fn_script = if !construct.fns.is_empty() {
@@ -486,9 +505,11 @@ fn render_template_for_construct(
                             "export {}function {}({}){} {{\n",
                             async_kw, f.name, params, ret_type
                         ));
-                        for expr in &f.body {
-                            s.push_str(&format!("  {};\n", expr_to_display(expr)));
-                        }
+                        s.push_str(&crate::ts::expr_emit::emit_typescript_stmts_with(
+                            &f.body,
+                            1,
+                            &store_fn_opts(construct),
+                        ));
                         s.push_str("}\n\n");
                     }
                     "rust" => {
@@ -1604,6 +1625,18 @@ fn ts_type_display(ty: &veil_ir::TypeExpr) -> String {
         TypeExpr::Map(_, v) => format!("Record<string, {}>", ts_type_display(v)),
         _ => "any".into(),
     }
+}
+
+fn store_fn_opts(construct: &Construct) -> crate::ts::expr_emit::TsExprEmitOpts {
+    let is_store = construct.keyword.eq_ignore_ascii_case("store")
+        || construct.subkind.eq_ignore_ascii_case("Store");
+    if !is_store {
+        return crate::ts::expr_emit::TsExprEmitOpts::default();
+    }
+    let fields = construct.blocks.iter().filter(|b| b.keyword == "state").flat_map(|b| {
+        b.fields.iter().map(|f| f.name.clone())
+    });
+    crate::ts::expr_emit::TsExprEmitOpts::for_store(&construct.name, fields)
 }
 
 fn ts_default_value(ty: &veil_ir::TypeExpr) -> String {

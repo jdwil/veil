@@ -3178,3 +3178,109 @@ pkg DlxAuth
         "Cargo.toml should specify cdylib crate-type"
     );
 }
+
+/// Store `fn` bodies must emit valid TypeScript (`let`/`for`/`if`), not
+/// `expr_to_display` diagnostics (`let;`, `mut x =`, `for x in y`).
+#[test]
+fn typescript_store_fn_bodies_emit_valid_ts() {
+    let src = r#"
+pkg Test
+  use sveltekit5
+
+  app Test
+    group stores
+      store MyStore
+        state
+          count: Int
+          items: Json
+          loading: Bool
+        fn increment()
+          count = count + 1
+        fn loadItems()
+          loading = true
+          let result: Json = fetch("/api/items")
+          items = result.data
+          loading = false
+        fn addItem(item: Json)
+          items = items.concat(item)
+        fn filterItems(category: Str)
+          mut filtered: Json = []
+          for item in items
+            if item.category == category
+              filtered = filtered.concat(item)
+          items = filtered
+"#;
+    let mut reg = LayerRegistry::builtin();
+    let layers = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../layers");
+    for name in ["svelte5", "sveltekit5"] {
+        let p = layers.join(format!("{name}.layer"));
+        if p.is_file() {
+            reg.load_layer(name, &layers)
+                .unwrap_or_else(|e| panic!("load {name}: {e}"));
+        } else {
+            return;
+        }
+    }
+    let tokens = veil_parser::lex(src);
+    let sol = veil_parser::parse_with_registry(&tokens, reg.clone()).expect("parse");
+    let project = veil_codegen::generate_ts_ir(&sol, &reg);
+    let store = project
+        .files
+        .iter()
+        .find(|f| f.path.contains("stores") && f.path.ends_with(".svelte.ts"))
+        .unwrap_or_else(|| {
+            panic!(
+                "store file missing, got: {:?}",
+                project.files.iter().map(|f| &f.path).collect::<Vec<_>>()
+            )
+        });
+    let c = &store.content;
+    assert!(
+        !c.contains("export let "),
+        "exported $state binding (Svelte 5 state_invalid_export):\n{c}"
+    );
+    assert!(
+        c.contains("export const MyStore = $state("),
+        "store object missing:\n{c}"
+    );
+    assert!(
+        c.contains("MyStore.count = MyStore.count + 1"),
+        "state writes must qualify through the store object:\n{c}"
+    );
+    assert!(
+        !c.contains("let;"),
+        "decorative let leaked:\n{c}"
+    );
+    assert!(
+        !c.contains("mut filtered"),
+        "VEIL mut leaked into TS:\n{c}"
+    );
+    assert!(
+        !c.contains("for item in items"),
+        "VEIL for-in leaked into TS:\n{c}"
+    );
+    assert!(
+        c.contains("let result: any = fetch(\"/api/items\")"),
+        "typed let missing:\n{c}"
+    );
+    assert!(
+        c.contains("let filtered: any[] = []"),
+        "mut Json=[] should be let any[]:\n{c}"
+    );
+    assert!(
+        c.contains("for (const item of MyStore.items)"),
+        "for-of missing:\n{c}"
+    );
+    assert!(
+        c.contains("if (item.category == category)"),
+        "if condition missing:\n{c}"
+    );
+    assert!(
+        c.contains("filtered = filtered.concat(item)"),
+        "nested concat missing:\n{c}"
+    );
+    assert!(
+        c.contains("MyStore.items = filtered"),
+        "state write of filtered missing:\n{c}"
+    );
+}

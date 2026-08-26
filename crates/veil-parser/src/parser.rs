@@ -3449,6 +3449,11 @@ impl<'a> Parser<'a> {
                 let rhs = self.parse_expr()?;
                 return Ok(Expr::MutAssign(name, Box::new(rhs), type_ann));
             }
+            TokenKind::Let => {
+                // Decorative `let` prefix on bindings (`let x: T = expr`).
+                // Consumed here so it is not parsed as Ident("let").
+                self.advance();
+            }
             TokenKind::Await => {
                 self.advance(); // consume 'await'
                 let inner = self.parse_expr()?;
