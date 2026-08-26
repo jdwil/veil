@@ -159,10 +159,16 @@ pub async fn run_turn<P: SourceProvider>(
                 .to_string()
             }
         };
-        let ok = serde_json::from_str::<serde_json::Value>(&detail)
-            .ok()
+        let parsed = serde_json::from_str::<serde_json::Value>(&detail).ok();
+        let ok = parsed
+            .as_ref()
             .and_then(|v| v.get("ok").and_then(|o| o.as_bool()))
-            .unwrap_or(true);
+            .unwrap_or_else(|| {
+                parsed
+                    .as_ref()
+                    .map(|v| v.get("error").is_none())
+                    .unwrap_or(true)
+            });
         let summary = serde_json::from_str::<serde_json::Value>(&detail)
             .ok()
             .and_then(|v| {
@@ -1403,8 +1409,9 @@ pub fn parse_platform_ux_intent(prompt: &str) -> Option<PlatformUxIntent> {
                 "Opening config",
             ),
         ];
+        let nav_phrase = lower.trim().trim_end_matches(['.', '!', '?']);
         for (needles, tool, path, summary) in pairs {
-            if needles.iter().any(|n| lower.contains(n)) {
+            if needles.iter().any(|n| nav_phrase == *n) {
                 return Some(PlatformUxIntent {
                     tool: (*tool).into(),
                     path: (*path).into(),
@@ -2215,6 +2222,10 @@ mod platform_ux_tests {
         assert_eq!(ux.tool, "create_pr");
         let ux2 = parse_platform_ux_intent("create_pr").unwrap();
         assert_eq!(ux2.tool, "create_pr");
+        assert!(
+            parse_platform_ux_intent("mention create_pr in a short aside").is_none(),
+            "substring create_pr must not hijack the turn"
+        );
     }
 
     /// Regression: Diagnostics "Fix" / formatIssuePrompt embeds `create_pr`

@@ -134,7 +134,7 @@ function emitNavigation(nav: NavigationAction) {
 	}
 }
 
-/** Well-known MCP / agent tool names → SPA navigation (agent owns UX, not Svelte chips). */
+/** Fallback nav when a tool result has no Intent+Present. Prefer present over this map. */
 const TOOL_NAV: Record<string, NavigationAction> = {
 	list_prs: { action: 'goto', path: '/pulls' },
 	open_prs: { action: 'goto', path: '/pulls' },

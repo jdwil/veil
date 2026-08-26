@@ -519,6 +519,7 @@ fn mcp_tools() -> Vec<Value> {
     // Platform UX (create_project, SDLC, deploy, nav) — full product surface
     tools.extend(crate::platform_tools::tool_definitions());
     // Mind Palace wiki tools (when MIND_PALACE=1 + AWS configured)
+    if crate::mind_palace_tools::enabled() {
     tools.extend([
         json!({
             "name": "wiki_search",
@@ -633,6 +634,7 @@ fn mcp_tools() -> Vec<Value> {
             }
         }),
     ]);
+    }
     tools
 }
 

@@ -2641,10 +2641,12 @@ pub fn tool_definitions() -> Vec<Value> {
                     "title": { "type": "string" },
                     "description": { "type": "string" },
                     "repo_id": { "type": "string" },
+                    "project": { "type": "string" },
                     "slug": { "type": "string", "description": "Project slug / source branch hint" },
                     "jira_ticket": { "type": "string" },
                     "author": { "type": "string" },
-                    "source_branch": { "type": "string" }
+                    "source_branch": { "type": "string" },
+                    "force_new": { "type": "boolean" }
                 },
                 "required": []
             }
@@ -2663,8 +2665,12 @@ pub fn tool_definitions() -> Vec<Value> {
             "description": "Submit a pull request for human review (PR Wizard). Call after create_pr when agent work is ready for the operator — not after auto-merge. Response includes host_check; if severity=errors the agent must not claim a clean working set.",
             "inputSchema": {
                 "type": "object",
-                "properties": { "id": { "type": "string" } },
-                "required": ["id"]
+                "properties": {
+                    "id": { "type": "string" },
+                    "pr_id": { "type": "string" },
+                    "project": { "type": "string" }
+                },
+                "required": []
             }
         }),
         json!({
@@ -2886,47 +2892,6 @@ pub fn tool_definitions() -> Vec<Value> {
                     "skip": { "type": "boolean", "description": "With action=next: skip current agent step (e.g. branch already exists)" }
                 },
                 "required": ["plan"]
-            }
-        }),
-        json!({
-            "name": "create_pr",
-            "description": "Alias for create_pr — open a pull request for human review (not a ticket).",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "title": { "type": "string" },
-                    "description": { "type": "string" },
-                    "project": { "type": "string" },
-                    "slug": { "type": "string" },
-                    "source_branch": { "type": "string" },
-                    "force_new": { "type": "boolean" }
-                },
-                "required": []
-            }
-        }),
-        json!({
-            "name": "submit_pr",
-            "description": "Alias for submit_pr — submit pull request to PR Wizard. Respects VEIL_STRICT_SUBMIT=1 (hard-block on host Errors).",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "id": { "type": "string" },
-                    "pr_id": { "type": "string" },
-                    "project": { "type": "string" }
-                },
-                "required": []
-            }
-        }),
-        json!({
-            "name": "list_prs",
-            "description": "Alias for list_prs — list pull requests.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "status": { "type": "string" },
-                    "navigate": { "type": "boolean" }
-                },
-                "required": []
             }
         }),
         json!({
@@ -3543,6 +3508,13 @@ mod tests {
         assert!(names.contains(&"update_project"));
         assert!(names.contains(&"list_projects"));
         assert!(names.contains(&"list_prs"));
+        assert_eq!(
+            names.iter().filter(|n| **n == "create_pr").count(),
+            1,
+            "create_pr must appear once in tool_definitions"
+        );
+        assert_eq!(names.iter().filter(|n| **n == "submit_pr").count(), 1);
+        assert_eq!(names.iter().filter(|n| **n == "list_prs").count(), 1);
         assert!(names.contains(&"approve_pr"));
         assert!(names.contains(&"merge_pr"));
         assert!(names.contains(&"provision_project"));
