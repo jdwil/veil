@@ -117,6 +117,121 @@ pub async fn run_terraform_ws(
     info!(slug, job_id, "terraform deploy complete via websocket");
 }
 
+/// Run a full frontend deploy: generate → build → S3 sync → CloudFront invalidate.
+/// Streams progress over the websocket.
+pub async fn run_frontend_deploy_ws(
+    ws: &mut WebSocket,
+    slug: &str,
+    build_config: &FrontendBuildConfig,
+) {
+    let job_id = uuid::Uuid::new_v4().to_string();
+    let work_dir = config::generated_dir(slug);
+
+    let steps: Vec<&str> = vec!["generate", "build", "deploy"];
+    let _ = send(ws, json!({
+        "type": "started",
+        "job_id": &job_id,
+        "steps": steps,
+    })).await;
+
+    // ─── GENERATE (veil gen) ─────────────────────────────────────────────────
+    let _ = send(ws, json!({"type": "step_start", "step": "generate"})).await;
+    match run_streaming(ws, "generate", std::path::Path::new("/tmp"), "veil", &[
+        "gen", &build_config.main_veil_path, "-t", "typescript", "-o", work_dir.to_str().unwrap_or("/tmp/gen"),
+    ]).await {
+        Ok(_) => {
+            let _ = send(ws, json!({"type": "step_done", "step": "generate", "ok": true})).await;
+        }
+        Err(e) => {
+            let _ = send(ws, json!({"type": "step_done", "step": "generate", "ok": false, "error": &e})).await;
+            let _ = send(ws, json!({"type": "error", "message": format!("veil gen failed: {e}")})).await;
+            return;
+        }
+    }
+
+    // ─── BUILD (npm install + npm run build) ─────────────────────────────────
+    let _ = send(ws, json!({"type": "step_start", "step": "build"})).await;
+    for cmd_str in &build_config.commands {
+        let parts: Vec<&str> = cmd_str.split_whitespace().collect();
+        if parts.is_empty() { continue; }
+        let (cmd, args) = (parts[0], &parts[1..]);
+        match run_streaming(ws, "build", &work_dir, cmd, args).await {
+            Ok(_) => {}
+            Err(e) => {
+                let _ = send(ws, json!({"type": "step_done", "step": "build", "ok": false, "error": &e})).await;
+                let _ = send(ws, json!({"type": "error", "message": format!("{cmd_str} failed: {e}")})).await;
+                return;
+            }
+        }
+    }
+    let _ = send(ws, json!({"type": "step_done", "step": "build", "ok": true})).await;
+
+    // ─── DEPLOY (S3 sync + CloudFront invalidation) ──────────────────────────
+    let _ = send(ws, json!({"type": "step_start", "step": "deploy"})).await;
+
+    let build_output = work_dir.join(&build_config.output_dir);
+    let build_dir_str = build_output.to_str().unwrap_or(".");
+
+    // S3 sync
+    match run_streaming(ws, "deploy", &work_dir, "aws", &[
+        "s3", "sync", build_dir_str, &format!("s3://{}/", build_config.bucket), "--delete", "--no-progress",
+    ]).await {
+        Ok(_) => {
+            let _ = send(ws, json!({
+                "type": "progress", "step": "deploy",
+                "resource": &build_config.bucket, "status": "synced",
+            })).await;
+        }
+        Err(e) => {
+            let _ = send(ws, json!({"type": "step_done", "step": "deploy", "ok": false, "error": &e})).await;
+            let _ = send(ws, json!({"type": "error", "message": format!("S3 sync failed: {e}")})).await;
+            return;
+        }
+    }
+
+    // CloudFront invalidation
+    if let Some(ref dist_id) = build_config.cloudfront_distribution_id {
+        match run_streaming(ws, "deploy", &work_dir, "aws", &[
+            "cloudfront", "create-invalidation", "--distribution-id", dist_id, "--paths", "/*",
+        ]).await {
+            Ok(_) => {
+                let _ = send(ws, json!({
+                    "type": "progress", "step": "deploy",
+                    "resource": "CloudFront", "status": "invalidated",
+                })).await;
+            }
+            Err(e) => {
+                // Non-fatal
+                warn!(slug, "CloudFront invalidation failed: {e}");
+                let _ = send(ws, json!({"type": "log", "step": "deploy", "line": format!("CloudFront invalidation failed (non-fatal): {e}")})).await;
+            }
+        }
+    }
+
+    let _ = send(ws, json!({"type": "step_done", "step": "deploy", "ok": true})).await;
+    let _ = send(ws, json!({
+        "type": "done",
+        "ok": true,
+        "job_id": &job_id,
+        "outputs": {
+            "url": format!("https://{}", build_config.domain.as_deref().unwrap_or("(unknown)")),
+            "bucket": &build_config.bucket,
+        },
+    })).await;
+
+    info!(slug, job_id, bucket = %build_config.bucket, "frontend deploy complete via websocket");
+}
+
+/// Configuration for a frontend build+deploy.
+pub struct FrontendBuildConfig {
+    pub main_veil_path: String,
+    pub commands: Vec<String>,
+    pub output_dir: String,
+    pub bucket: String,
+    pub cloudfront_distribution_id: Option<String>,
+    pub domain: Option<String>,
+}
+
 /// Write tf files to the working directory.
 async fn write_tf_files(tf_dir: &Path, tf_files: &[(String, Vec<u8>)]) -> Result<(), String> {
     tokio::fs::create_dir_all(tf_dir)
@@ -351,7 +466,7 @@ fn parse_terraform_line(step: &str, line: &str) -> serde_json::Value {
 }
 
 /// Capture terraform outputs as key-value pairs.
-async fn capture_outputs(tf_dir: &Path) -> Result<serde_json::Value, String> {
+pub async fn capture_outputs(tf_dir: &Path) -> Result<serde_json::Value, String> {
     let output = Command::new("terraform")
         .args(["output", "-json"])
         .current_dir(tf_dir)

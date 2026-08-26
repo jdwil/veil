@@ -2518,41 +2518,135 @@ async fn deploy_ws_session(
     };
 
     let _environment = start_msg.get("environment").and_then(|v| v.as_str()).unwrap_or("dev");
+    let deploy_type = start_msg.get("deploy_type").and_then(|v| v.as_str()).unwrap_or("infrastructure");
 
     // Resolve repo_id from slug
     let repo_id = match storage::application::resolve_repo(&st.deps, &slug).await {
         Ok(repo) => repo.id.value,
         Err(_) => {
             let _ = socket.send(Message::Text(
-                json!({"type": "error", "message": format!("Project '{}' not found", slug)}).to_string().into()
+                json!({"type": "error", "message": format!("Project \'{}\' not found", slug)}).to_string().into()
             )).await;
             return;
         }
     };
 
-    // Fetch terraform files from S3
-    let tf_files = match fetch_terraform_files_s3(&st.deps, &repo_id).await {
-        Ok(files) => files,
-        Err(e) => {
-            let _ = socket.send(Message::Text(
-                json!({"type": "error", "message": e}).to_string().into()
-            )).await;
-            return;
+    match deploy_type {
+        "frontend" => {
+            // Read veil.toml to get build+deploy config
+            let build_config = match read_frontend_build_config(&st.deps, &repo_id, &slug).await {
+                Ok(config) => config,
+                Err(e) => {
+                    let _ = socket.send(Message::Text(
+                        json!({"type": "error", "message": e}).to_string().into()
+                    )).await;
+                    return;
+                }
+            };
+            crate::deploy::ws::run_frontend_deploy_ws(&mut socket, &slug, &build_config).await;
         }
-    };
+        _ => {
+            // Infrastructure (terraform) deploy
+            let tf_files = match fetch_terraform_files_s3(&st.deps, &repo_id).await {
+                Ok(files) => files,
+                Err(e) => {
+                    let _ = socket.send(Message::Text(
+                        json!({"type": "error", "message": e}).to_string().into()
+                    )).await;
+                    return;
+                }
+            };
 
-    if tf_files.is_empty() {
-        let _ = socket.send(Message::Text(
-            json!({"type": "error", "message": "No .tf files found in project"}).to_string().into()
-        )).await;
-        return;
+            if tf_files.is_empty() {
+                let _ = socket.send(Message::Text(
+                    json!({"type": "error", "message": "No .tf files found in project"}).to_string().into()
+                )).await;
+                return;
+            }
+
+            let infra_config = read_infra_config_s3(&st.deps, &repo_id, &slug).await;
+            crate::deploy::ws::run_terraform_ws(&mut socket, &slug, &tf_files, &infra_config).await;
+        }
+    }
+}
+
+/// Read frontend build config from veil.toml, resolving terraform output references.
+async fn read_frontend_build_config(
+    deps: &storage::application::Deps,
+    repo_id: &str,
+    slug: &str,
+) -> Result<crate::deploy::ws::FrontendBuildConfig, String> {
+    let rid = storage::domain::types::RepoId { value: repo_id.to_string() };
+    let bytes = storage::application::read_file(
+        deps, rid, "main".to_string(), "veil.toml".to_string(),
+    ).await.map_err(|e| format!("Failed to read veil.toml: {e:?}"))?;
+
+    let content = String::from_utf8_lossy(&bytes).into_owned();
+    let parsed: toml::Value = content.parse()
+        .map_err(|e| format!("Failed to parse veil.toml: {e}"))?;
+
+    let deploy = parsed.get("deploy").ok_or("No [deploy] section in veil.toml")?;
+    let build = deploy.get("build").ok_or("No [deploy.build] section")?;
+    let frontend = deploy.get("frontend").ok_or("No [deploy.frontend] section")?;
+
+    let commands: Vec<String> = build.get("commands")
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+        .unwrap_or_else(|| vec!["npm install".into(), "npm run build".into()]);
+
+    let output_dir = build.get("output_dir")
+        .and_then(|v| v.as_str())
+        .unwrap_or("build")
+        .to_string();
+
+    // Resolve bucket and cloudfront_distribution_id
+    let raw_bucket = frontend.get("bucket").and_then(|v| v.as_str()).unwrap_or("");
+    let raw_cf = frontend.get("cloudfront_distribution_id").and_then(|v| v.as_str()).unwrap_or("");
+    let (bucket, cf_id) = resolve_terraform_refs(slug, raw_bucket, raw_cf).await;
+
+    if bucket.is_empty() {
+        return Err("Could not resolve deploy bucket. Check [deploy.frontend] and terraform outputs.".into());
     }
 
-    // Read InfraConfig from veil.toml
-    let infra_config = read_infra_config_s3(&st.deps, &repo_id, &slug).await;
+    // Write main.veil to temp location for veil gen
+    let main_veil_path = format!("/tmp/deploy/{}/main.veil", slug);
+    if let Ok(veil_bytes) = storage::application::read_file(
+        deps,
+        storage::domain::types::RepoId { value: repo_id.to_string() },
+        "main".to_string(),
+        "main.veil".to_string(),
+    ).await {
+        let dir = format!("/tmp/deploy/{}", slug);
+        tokio::fs::create_dir_all(&dir).await.ok();
+        tokio::fs::write(&main_veil_path, &veil_bytes).await.ok();
+    }
 
-    // Run terraform with streaming output
-    crate::deploy::ws::run_terraform_ws(&mut socket, &slug, &tf_files, &infra_config).await;
+    Ok(crate::deploy::ws::FrontendBuildConfig {
+        main_veil_path,
+        commands,
+        output_dir,
+        bucket,
+        cloudfront_distribution_id: if cf_id.is_empty() { None } else { Some(cf_id) },
+        domain: Some("ai.dev.dashlx.com".to_string()),
+    })
+}
+
+/// Resolve ${terraform.*} references by reading terraform outputs.
+async fn resolve_terraform_refs(slug: &str, raw_bucket: &str, raw_cf: &str) -> (String, String) {
+    let tf_dir = crate::deploy::config::terraform_dir(slug);
+    let needs_resolve = raw_bucket.contains("${terraform.") || raw_cf.contains("${terraform.");
+    if !needs_resolve {
+        return (raw_bucket.to_string(), raw_cf.to_string());
+    }
+    let outputs = crate::deploy::ws::capture_outputs(&tf_dir).await.unwrap_or_default();
+    let resolve = |raw: &str| -> String {
+        if let Some(key) = raw.strip_prefix("${terraform.").and_then(|s| s.strip_suffix('}')) {
+            outputs.get(key).and_then(|v| v.as_str()).unwrap_or("").to_string()
+        } else {
+            raw.to_string()
+        }
+    };
+    (resolve(raw_bucket), resolve(raw_cf))
 }
 
 /// Fetch terraform/*.tf files from S3 for a project.
