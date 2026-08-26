@@ -236,6 +236,171 @@ pub struct FrontendBuildConfig {
     pub domain: Option<String>,
 }
 
+/// Configuration for a Lambda build+deploy.
+pub struct LambdaBuildConfig {
+    pub main_veil_path: String,
+    pub rust_target: String,
+    pub api_function_name: String,
+    pub consumer_function_name: String,
+    pub artifact_bucket: String,
+    pub artifact_prefix: String,
+}
+
+/// Run a full Lambda deploy: generate → cargo build → zip → upload → update function code.
+/// Streams progress over the websocket.
+pub async fn run_lambda_deploy_ws(
+    ws: &mut WebSocket,
+    slug: &str,
+    config: &LambdaBuildConfig,
+) {
+    let job_id = uuid::Uuid::new_v4().to_string();
+    let work_dir = super::config::generated_dir(slug);
+
+    let _ = send(ws, json!({
+        "type": "started",
+        "job_id": &job_id,
+        "steps": ["generate", "build", "package", "deploy"],
+    })).await;
+
+    // ─── GENERATE (veil gen → Rust) ──────────────────────────────────────────
+    let _ = send(ws, json!({"type": "step_start", "step": "generate"})).await;
+    let veil_bin = which_veil();
+    match run_streaming(ws, "generate", std::path::Path::new("/tmp"), &veil_bin, &[
+        "gen", &config.main_veil_path, "-t", "rust", "-o", work_dir.to_str().unwrap_or("/tmp/gen"),
+    ]).await {
+        Ok(_) => {
+            let _ = send(ws, json!({"type": "step_done", "step": "generate", "ok": true})).await;
+        }
+        Err(e) => {
+            let _ = send(ws, json!({"type": "step_done", "step": "generate", "ok": false, "error": &e})).await;
+            let _ = send(ws, json!({"type": "error", "message": format!("veil gen failed: {e}")})).await;
+            return;
+        }
+    }
+
+    // ─── BUILD (cargo build --release --target) ──────────────────────────────
+    let _ = send(ws, json!({"type": "step_start", "step": "build"})).await;
+    match run_streaming(ws, "build", &work_dir, "cargo", &[
+        "build", "--release", "--target", &config.rust_target,
+    ]).await {
+        Ok(_) => {
+            let _ = send(ws, json!({"type": "step_done", "step": "build", "ok": true})).await;
+        }
+        Err(e) => {
+            let _ = send(ws, json!({"type": "step_done", "step": "build", "ok": false, "error": &e})).await;
+            let _ = send(ws, json!({"type": "error", "message": format!("cargo build failed: {e}")})).await;
+            return;
+        }
+    }
+
+    // ─── PACKAGE (zip the bootstrap binary) ──────────────────────────────────
+    let _ = send(ws, json!({"type": "step_start", "step": "package"})).await;
+    let binary_path = work_dir.join(format!("target/{}/release/bootstrap", config.rust_target));
+    let zip_dir = std::path::Path::new("/tmp/deploy").join(slug).join("artifacts");
+    if let Err(e) = tokio::fs::create_dir_all(&zip_dir).await {
+        let _ = send(ws, json!({"type": "error", "message": format!("Failed to create artifact dir: {e}")})).await;
+        return;
+    }
+
+    // Copy binary as 'bootstrap' and zip it
+    let bootstrap_path = zip_dir.join("bootstrap");
+    if let Err(e) = tokio::fs::copy(&binary_path, &bootstrap_path).await {
+        let _ = send(ws, json!({"type": "step_done", "step": "package", "ok": false, "error": format!("Binary not found at {:?}: {e}", binary_path)})).await;
+        let _ = send(ws, json!({"type": "error", "message": format!("Binary not found. Did cargo build produce target/{}/release/bootstrap?", config.rust_target)})).await;
+        return;
+    }
+
+    let zip_path = zip_dir.join("bootstrap.zip");
+    match run_streaming(ws, "package", &zip_dir, "zip", &[
+        "-j", zip_path.to_str().unwrap_or("bootstrap.zip"), "bootstrap",
+    ]).await {
+        Ok(_) => {
+            let _ = send(ws, json!({"type": "step_done", "step": "package", "ok": true})).await;
+        }
+        Err(e) => {
+            let _ = send(ws, json!({"type": "step_done", "step": "package", "ok": false, "error": &e})).await;
+            let _ = send(ws, json!({"type": "error", "message": format!("zip failed: {e}")})).await;
+            return;
+        }
+    }
+
+    // ─── DEPLOY (upload to S3 + update Lambda function code) ─────────────────
+    let _ = send(ws, json!({"type": "step_start", "step": "deploy"})).await;
+
+    // Upload zip to S3
+    let s3_key_api = format!("{}/api/bootstrap.zip", config.artifact_prefix);
+    let s3_key_consumer = format!("{}/consumer/bootstrap.zip", config.artifact_prefix);
+    let zip_str = zip_path.to_str().unwrap_or("");
+
+    match run_streaming(ws, "deploy", &zip_dir, "aws", &[
+        "s3", "cp", zip_str, &format!("s3://{}/{}", config.artifact_bucket, s3_key_api),
+    ]).await {
+        Ok(_) => {
+            let _ = send(ws, json!({"type": "progress", "step": "deploy", "resource": "S3 upload (api)", "status": "uploaded"})).await;
+        }
+        Err(e) => {
+            let _ = send(ws, json!({"type": "error", "message": format!("S3 upload failed: {e}")})).await;
+            return;
+        }
+    }
+
+    match run_streaming(ws, "deploy", &zip_dir, "aws", &[
+        "s3", "cp", zip_str, &format!("s3://{}/{}", config.artifact_bucket, s3_key_consumer),
+    ]).await {
+        Ok(_) => {
+            let _ = send(ws, json!({"type": "progress", "step": "deploy", "resource": "S3 upload (consumer)", "status": "uploaded"})).await;
+        }
+        Err(e) => {
+            let _ = send(ws, json!({"type": "error", "message": format!("S3 upload failed: {e}")})).await;
+            return;
+        }
+    }
+
+    // Update Lambda function code
+    match run_streaming(ws, "deploy", &zip_dir, "aws", &[
+        "lambda", "update-function-code",
+        "--function-name", &config.api_function_name,
+        "--s3-bucket", &config.artifact_bucket,
+        "--s3-key", &s3_key_api,
+    ]).await {
+        Ok(_) => {
+            let _ = send(ws, json!({"type": "progress", "step": "deploy", "resource": &config.api_function_name, "status": "updated"})).await;
+        }
+        Err(e) => {
+            let _ = send(ws, json!({"type": "error", "message": format!("Lambda update failed (api): {e}")})).await;
+            return;
+        }
+    }
+
+    match run_streaming(ws, "deploy", &zip_dir, "aws", &[
+        "lambda", "update-function-code",
+        "--function-name", &config.consumer_function_name,
+        "--s3-bucket", &config.artifact_bucket,
+        "--s3-key", &s3_key_consumer,
+    ]).await {
+        Ok(_) => {
+            let _ = send(ws, json!({"type": "progress", "step": "deploy", "resource": &config.consumer_function_name, "status": "updated"})).await;
+        }
+        Err(e) => {
+            let _ = send(ws, json!({"type": "error", "message": format!("Lambda update failed (consumer): {e}")})).await;
+            return;
+        }
+    }
+
+    let _ = send(ws, json!({"type": "step_done", "step": "deploy", "ok": true})).await;
+    let _ = send(ws, json!({
+        "type": "done",
+        "ok": true,
+        "job_id": &job_id,
+        "outputs": {
+            "api_function": &config.api_function_name,
+            "consumer_function": &config.consumer_function_name,
+        },
+    })).await;
+
+    info!(slug, job_id, "lambda deploy complete via websocket");
+}
+
 /// Write tf files to the working directory.
 async fn write_tf_files(tf_dir: &Path, tf_files: &[(String, Vec<u8>)]) -> Result<(), String> {
     tokio::fs::create_dir_all(tf_dir)

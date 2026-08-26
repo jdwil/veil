@@ -2556,11 +2556,17 @@ async fn deploy_ws_session(
             crate::deploy::ws::run_frontend_deploy_ws(&mut socket, &slug, &build_config).await;
         }
         "lambda" | "ecs" => {
-            // Lambda/ECS code deploy — build + upload + update
-            let _ = socket.send(Message::Text(
-                json!({"type": "error", "message": "Lambda/ECS code deploy is not yet implemented. Use 'Preview plan' + 'Apply infrastructure' for terraform, or deploy code manually."}).to_string().into()
-            )).await;
-            return;
+            // Lambda/ECS code deploy: veil gen → cargo build → zip → update Lambda
+            let build_config = match read_lambda_build_config(&st.deps, &repo_id, &slug).await {
+                Ok(config) => config,
+                Err(e) => {
+                    let _ = socket.send(Message::Text(
+                        json!({"type": "error", "message": e}).to_string().into()
+                    )).await;
+                    return;
+                }
+            };
+            crate::deploy::ws::run_lambda_deploy_ws(&mut socket, &slug, &build_config).await;
         }
         "infrastructure" => {
             // Infrastructure (terraform) deploy
@@ -2672,6 +2678,78 @@ async fn resolve_terraform_refs(slug: &str, raw_bucket: &str, raw_cf: &str) -> (
 }
 
 /// Fetch terraform/*.tf files from S3 for a project.
+
+/// Read Lambda build config from veil.toml.
+async fn read_lambda_build_config(
+    deps: &storage::application::Deps,
+    repo_id: &str,
+    slug: &str,
+) -> Result<crate::deploy::ws::LambdaBuildConfig, String> {
+    let rid = storage::domain::types::RepoId { value: repo_id.to_string() };
+    let bytes = storage::application::read_file(
+        deps, rid, "main".to_string(), "veil.toml".to_string(),
+    ).await.map_err(|e| format!("Failed to read veil.toml: {e:?}"))?;
+
+    let content = String::from_utf8_lossy(&bytes).into_owned();
+    let parsed: toml::Value = content.parse()
+        .map_err(|e| format!("Failed to parse veil.toml: {e}"))?;
+
+    let deploy = parsed.get("deploy").ok_or("No [deploy] section in veil.toml")?;
+    let build = deploy.get("build");
+
+    let rust_target = build
+        .and_then(|b| b.get("rust_target"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("x86_64-unknown-linux-gnu")
+        .to_string();
+
+    let infra = deploy.get("infrastructure");
+    let tf_dir = crate::deploy::config::terraform_dir(slug);
+
+    // Resolve Lambda function names from terraform outputs
+    let outputs = crate::deploy::ws::capture_outputs(&tf_dir).await.unwrap_or_default();
+    let api_function_name = outputs.get("api_handler_arn")
+        .and_then(|v| v.as_str())
+        .and_then(|arn| arn.split(':').last())
+        .unwrap_or(&format!("{slug}-api-default"))
+        .to_string();
+    let consumer_function_name = outputs.get("consumer_arn")
+        .and_then(|v| v.as_str())
+        .and_then(|arn| arn.split(':').last())
+        .unwrap_or(&format!("{slug}-consumer-default"))
+        .to_string();
+
+    // S3 artifact location
+    let backend_bucket = infra
+        .and_then(|i| i.get("backend_bucket"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("dashlx-terraform-state")
+        .to_string();
+    let artifact_prefix = format!("veil-projects/{slug}/artifacts");
+
+    // Write main.veil to temp location for veil gen
+    let main_veil_path = format!("/tmp/deploy/{slug}/main.veil");
+    let dir = format!("/tmp/deploy/{slug}");
+    tokio::fs::create_dir_all(&dir).await.ok();
+    if let Ok(veil_bytes) = storage::application::read_file(
+        deps,
+        storage::domain::types::RepoId { value: repo_id.to_string() },
+        "main".to_string(),
+        "main.veil".to_string(),
+    ).await {
+        tokio::fs::write(&main_veil_path, &veil_bytes).await.ok();
+    }
+
+    Ok(crate::deploy::ws::LambdaBuildConfig {
+        main_veil_path,
+        rust_target,
+        api_function_name,
+        consumer_function_name,
+        artifact_bucket: backend_bucket,
+        artifact_prefix,
+    })
+}
+
 async fn fetch_terraform_files_s3(
     deps: &storage::application::Deps,
     repo_id: &str,
