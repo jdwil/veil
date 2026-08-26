@@ -2356,7 +2356,20 @@ impl StubCrate {
         // Per-type module path (e.g. `path objs::tree` on EntryKind → objs::tree::EntryKind).
         if let Some(s) = self.structs.iter().find(|s| s.name == type_name) {
             if let Some(ref mp) = s.module_path {
-                return format!("{mp}::{rust_name}");
+                // Rustdoc paths point at the private definition module
+                // (`_`-prefixed leaf, e.g. `types::_message`), but SDKs re-export
+                // the type publicly one level up (`types::Message`). Drop trailing
+                // private segments so we name the public path. General across any
+                // stub — no crate-family knowledge.
+                let public_mod: String = mp
+                    .split("::")
+                    .filter(|seg| !seg.starts_with('_'))
+                    .collect::<Vec<_>>()
+                    .join("::");
+                if public_mod.is_empty() {
+                    return rust_name;
+                }
+                return format!("{public_mod}::{rust_name}");
             }
         }
         if let Some(module) = &self.types_module {

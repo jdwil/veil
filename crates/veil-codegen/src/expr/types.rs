@@ -100,6 +100,18 @@ pub fn stub_type_parts<'a>(ctx: &'a GenCtx, type_name: &str) -> Option<(&'a str,
                 return Some((c.as_str(), p.as_str()));
             }
         }
+        // The source explicitly qualified the type with a crate
+        // (`aws_sdk_bedrockruntime.Message`). A bare-leaf match against a
+        // *different* crate (e.g. `Message` from aws_sdk_sqs) would silently
+        // rewrite the crate, so only accept a bare-leaf hit whose crate agrees
+        // with the written qualifier. Otherwise leave it unresolved so the
+        // qualifier is preserved verbatim (`crate::Type`).
+        if let Some((c, p)) = ctx.stubs.stub_type_crate.get(leaf) {
+            if c.replace('-', "_") == crate_guess {
+                return Some((c.as_str(), p.as_str()));
+            }
+        }
+        return None;
     }
     if leaf != type_name
         && let Some((c, p)) = ctx.stubs.stub_type_crate.get(leaf) {
