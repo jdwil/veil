@@ -9,12 +9,13 @@
   interface Props {
     slug: string;
     environment: string;
+    deploy_type?: string;
     onDone?: (outputs: Record<string, unknown>) => void;
     onError?: (msg: string) => void;
     onCancel?: () => void;
   }
 
-  let { slug, environment, onDone, onError, onCancel }: Props = $props();
+  let { slug, environment, deploy_type = 'infrastructure', onDone, onError, onCancel }: Props = $props();
 
   type StepStatus = 'pending' | 'running' | 'done' | 'error';
   type ResourceStatus = 'pending' | 'creating' | 'created' | 'updating' | 'updated' | 'destroying' | 'destroyed' | 'waiting' | 'error';
@@ -32,11 +33,18 @@
     elapsed?: string;
   }
 
-  let steps: Step[] = $state([
-    { id: 'init', label: 'Terraform init', status: 'pending' },
-    { id: 'plan', label: 'Terraform plan', status: 'pending' },
-    { id: 'apply', label: 'Terraform apply', status: 'pending' },
-  ]);
+  let steps: Step[] = $state(deploy_type === 'frontend'
+    ? [
+        { id: 'generate', label: 'Generate', status: 'pending' },
+        { id: 'build', label: 'Build', status: 'pending' },
+        { id: 'deploy', label: 'Deploy', status: 'pending' },
+      ]
+    : [
+        { id: 'init', label: 'Terraform init', status: 'pending' },
+        { id: 'plan', label: 'Terraform plan', status: 'pending' },
+        { id: 'apply', label: 'Terraform apply', status: 'pending' },
+      ]
+  );
 
   let resources: Resource[] = $state([]);
   let logs: string[] = $state([]);
@@ -63,7 +71,7 @@
 
     socket.onopen = () => {
       status = 'running';
-      socket.send(JSON.stringify({ action: 'start', environment }));
+      socket.send(JSON.stringify({ action: 'start', environment, deploy_type }));
     };
 
     socket.onmessage = (ev) => {

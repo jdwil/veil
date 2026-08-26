@@ -136,7 +136,11 @@ pub async fn run_frontend_deploy_ws(
 
     // ─── GENERATE (veil gen) ─────────────────────────────────────────────────
     let _ = send(ws, json!({"type": "step_start", "step": "generate"})).await;
-    match run_streaming(ws, "generate", std::path::Path::new("/tmp"), "veil", &[
+
+    // Resolve veil binary: check PATH first, then sibling to current exe
+    let veil_bin = which_veil();
+
+    match run_streaming(ws, "generate", std::path::Path::new("/tmp"), &veil_bin, &[
         "gen", &build_config.main_veil_path, "-t", "typescript", "-o", work_dir.to_str().unwrap_or("/tmp/gen"),
     ]).await {
         Ok(_) => {
@@ -500,4 +504,27 @@ async fn send(ws: &mut WebSocket, msg: serde_json::Value) -> Result<(), ()> {
     ws.send(Message::Text(msg.to_string().into()))
         .await
         .map_err(|_| ())
+}
+
+/// Resolve the veil CLI binary path.
+/// Checks: sibling of current exe → PATH → /usr/local/bin/veil
+fn which_veil() -> String {
+    // Check sibling to current executable (target/release/veil next to target/release/veil-runtime)
+    if let Ok(exe) = std::env::current_exe() {
+        let sibling = exe.parent().unwrap_or(exe.as_path()).join("veil");
+        if sibling.exists() {
+            return sibling.to_string_lossy().to_string();
+        }
+    }
+    // Check PATH
+    if let Ok(path_var) = std::env::var("PATH") {
+        for dir in path_var.split(':') {
+            let candidate = std::path::Path::new(dir).join("veil");
+            if candidate.exists() {
+                return candidate.to_string_lossy().to_string();
+            }
+        }
+    }
+    // Fallback
+    "/usr/local/bin/veil".to_string()
 }

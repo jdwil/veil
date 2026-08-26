@@ -62,6 +62,7 @@
   let mission_msg: string = $state('');
   let mission_error: string = $state('');
   let deploy_streaming: boolean = $state(false);
+  let deploy_stream_type: string = $state('infrastructure');
   let is_terraform: boolean = $state(false);
 
     $effect(() => { // init
@@ -417,6 +418,7 @@
   infra = snap;
   has_toml = !!snap.has_toml;
   has_deploy = !!snap.has_deploy;
+  is_terraform = has_deploy && (!Array.isArray(snap.units) || snap.units.length === 0);
   region = field_str(snap, 'region');
   project_prefix = field_str(snap, 'project_prefix');
   toml_path = field_str(snap, 'toml_path');
@@ -595,6 +597,16 @@
       >
         {provision_button_label()}
       </button>
+      {#if is_terraform}
+        <button
+          type="button"
+          class="btn-primary"
+          disabled={deploy_streaming || loading}
+          onclick={() => { deploy_stream_type = 'frontend'; deploy_streaming = true; }}
+        >
+          {deploy_streaming && deploy_stream_type === 'frontend' ? 'Deploying…' : 'Deploy frontend'}
+        </button>
+      {/if}
     {/if}
     <button type="button" class="btn-outline" onclick={() => { delete_open = true; }}>Delete</button>
   {/snippet}
@@ -699,7 +711,7 @@
             {/if}
             <div class="plan-actions">
               <button type="button" class="btn-outline" onclick={() => { plan_open = false; }}>Cancel</button>
-              <button type="button" class="btn-primary" onclick={() => { if (is_terraform) { deploy_streaming = true; plan_open = false; } else { provision_busy = true; } }}>
+              <button type="button" class="btn-primary" onclick={() => { if (is_terraform) { deploy_stream_type = 'infrastructure'; deploy_streaming = true; plan_open = false; } else { provision_busy = true; } }}>
                 {plan_cta}
               </button>
             </div>
@@ -711,7 +723,8 @@
         <DeployStream
           slug={slug}
           environment={environment}
-          onDone={(out) => { deploy_streaming = false; loaded = false; provision_msg = 'Infrastructure deployed successfully.'; }}
+          deploy_type={deploy_stream_type}
+          onDone={(out) => { deploy_streaming = false; loaded = false; provision_msg = deploy_stream_type === 'frontend' ? 'Frontend deployed successfully.' : 'Infrastructure deployed successfully.'; }}
           onError={(msg) => { error = msg; }}
           onCancel={() => { deploy_streaming = false; }}
         />
