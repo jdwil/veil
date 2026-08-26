@@ -9,7 +9,7 @@ use std::sync::Arc;
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
-    routing::{get, post, put},
+    routing::{get, patch, post, put},
     Json, Router,
 };
 use serde::Deserialize;
@@ -3264,6 +3264,7 @@ async fn list_review_policies() -> Result<Json<Value>, StatusCode> {
 #[derive(Clone)]
 struct ArtifactRegistryState {
     store: Arc<crate::artifact_registry::ArtifactRegistryStore>,
+    contribution_store: Arc<crate::artifact_registry::ContributionManifestStore>,
 }
 
 // ─── Function Invoke (Phase 3) ──────────────────────────────────────────────
@@ -3570,11 +3571,31 @@ async fn get_artifact_manifest(
 }
 
 /// GET /api/contributions?kind=menu_item&tenant_id=...
-/// Lists contributions visible to the current tenant, filtered by kind.
+/// GET /api/contributions?app=dlx-ai
+/// Lists contributions. When `app` is provided, uses the ContributionManifestStore
+/// (DLX AI harness model). Otherwise falls through to legacy artifact-registry query.
 async fn list_contributions(
     State(st): State<ArtifactRegistryState>,
     Query(q): Query<ContributionsQuery>,
 ) -> Result<Json<Value>, StatusCode> {
+    // New DLX AI harness path: ?app= queries the ContributionManifestStore.
+    if let Some(ref app_id) = q.app {
+        let manifests = st
+            .contribution_store
+            .list_for_app(app_id)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+        let results: Vec<_> = if q.include_disabled.unwrap_or(false) {
+            manifests
+        } else {
+            manifests.into_iter().filter(|m| m.enabled).collect()
+        };
+
+        return Ok(Json(json!({ "contributions": results })));
+    }
+
+    // Legacy path: kind/tenant-based resolution from the artifact registry.
     let tenant_id = q.tenant_id.as_deref().unwrap_or("default");
     let roles: Vec<String> = q
         .roles
@@ -3645,6 +3666,160 @@ struct ContributionsQuery {
     principal_id: Option<String>,
     #[serde(default)]
     roles: Option<String>,
+    /// DLX AI harness query: when provided, uses ContributionManifestStore.
+    #[serde(default)]
+    app: Option<String>,
+    #[serde(default)]
+    include_disabled: Option<bool>,
+}
+
+// ─── Contribution Registry (DLX AI Harness Model) ───────────────────────────
+
+/// POST /api/contributions
+/// Register a new contribution manifest (called by deploy pipeline after build).
+async fn create_contribution(
+    State(st): State<ArtifactRegistryState>,
+    Json(body): Json<crate::artifact_registry::CreateContributionBody>,
+) -> Result<(StatusCode, Json<Value>), (StatusCode, Json<Value>)> {
+    if body.app_id.is_empty() || body.id.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "app_id and id are required"})),
+        ));
+    }
+    if body.bundle_url.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "bundle_url is required"})),
+        ));
+    }
+
+    let now = chrono::Utc::now();
+
+    // Check if this contribution already exists (update vs create).
+    let existing = st
+        .contribution_store
+        .get(&body.app_id, &body.id)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": e})),
+            )
+        })?;
+
+    let manifest = crate::artifact_registry::ContributionManifest {
+        id: body.id,
+        app_id: body.app_id,
+        name: body.name,
+        version: body.version,
+        bundle_url: body.bundle_url,
+        css_url: body.css_url,
+        enabled: body.enabled,
+        order: body.order,
+        slots: body.slots,
+        registered_at: existing
+            .as_ref()
+            .map(|e| e.registered_at)
+            .unwrap_or(now),
+        updated_at: now,
+    };
+
+    st.contribution_store.put(&manifest).await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": e})),
+        )
+    })?;
+
+    let status = if existing.is_some() {
+        StatusCode::OK
+    } else {
+        StatusCode::CREATED
+    };
+
+    Ok((status, Json(serde_json::to_value(&manifest).unwrap_or(json!({})))))
+}
+
+/// PATCH /api/contributions/{app_id}/{contribution_id}
+/// Partially update a contribution (enable/disable, change version/bundle_url, etc).
+async fn patch_contribution(
+    State(st): State<ArtifactRegistryState>,
+    Path((app_id, contribution_id)): Path<(String, String)>,
+    Json(body): Json<crate::artifact_registry::PatchContributionBody>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let existing = st
+        .contribution_store
+        .get(&app_id, &contribution_id)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": e})),
+            )
+        })?;
+
+    let mut manifest = match existing {
+        Some(m) => m,
+        None => {
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": format!("contribution not found: {app_id}/{contribution_id}")})),
+            ));
+        }
+    };
+
+    // Apply partial updates.
+    if let Some(enabled) = body.enabled {
+        manifest.enabled = enabled;
+    }
+    if let Some(version) = body.version {
+        manifest.version = version;
+    }
+    if let Some(bundle_url) = body.bundle_url {
+        manifest.bundle_url = bundle_url;
+    }
+    if let Some(css_url) = body.css_url {
+        manifest.css_url = css_url;
+    }
+    if let Some(order) = body.order {
+        manifest.order = order;
+    }
+    if let Some(slots) = body.slots {
+        manifest.slots = slots;
+    }
+    if let Some(name) = body.name {
+        manifest.name = name;
+    }
+    manifest.updated_at = chrono::Utc::now();
+
+    st.contribution_store.put(&manifest).await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": e})),
+        )
+    })?;
+
+    Ok(Json(serde_json::to_value(&manifest).unwrap_or(json!({}))))
+}
+
+/// DELETE /api/contributions/{app_id}/{contribution_id}
+/// Remove a contribution registration entirely.
+async fn delete_contribution(
+    State(st): State<ArtifactRegistryState>,
+    Path((app_id, contribution_id)): Path<(String, String)>,
+) -> Result<StatusCode, (StatusCode, Json<Value>)> {
+    st.contribution_store
+        .delete(&app_id, &contribution_id)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": e})),
+            )
+        })?;
+
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// Guess content-type from S3 key file extension.
@@ -3818,10 +3993,15 @@ pub async fn build_platform_router(
         .route("/api/registry/stubs", get(list_registry_stubs));
 
     // Artifact Registry (Phase 1 Platform Primitives)
+    let art_reg_store =
+        Arc::new(crate::artifact_registry::ArtifactRegistryStore::from_env().await);
+    let contribution_store = Arc::new(crate::artifact_registry::ContributionManifestStore::new(
+        art_reg_store.ddb.clone(),
+        art_reg_store.table.clone(),
+    ));
     let art_reg = ArtifactRegistryState {
-        store: Arc::new(
-            crate::artifact_registry::ArtifactRegistryStore::from_env().await,
-        ),
+        store: art_reg_store,
+        contribution_store,
     };
     let artifact_registry_r = Router::new()
         .route(
@@ -3853,9 +4033,14 @@ pub async fn build_platform_router(
             "/api/artifacts/{id}/manifest",
             get(get_artifact_manifest),
         )
+        // Contribution Registry (DLX AI Harness Model)
         .route(
             "/api/contributions",
-            get(list_contributions),
+            get(list_contributions).post(create_contribution),
+        )
+        .route(
+            "/api/contributions/{app_id}/{contribution_id}",
+            patch(patch_contribution).delete(delete_contribution),
         )
         .with_state(art_reg)
         .layer(build_artifact_cors_layer());

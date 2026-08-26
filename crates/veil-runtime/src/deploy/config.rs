@@ -12,6 +12,7 @@ pub fn parse_deploy_config(value: &serde_json::Value) -> ProjectDeployConfig {
         .map(|s| match s {
             "frontend" => DeployType::Frontend,
             "ecs" => DeployType::Ecs,
+            "contribution" => DeployType::Contribution,
             _ => DeployType::Lambda,
         })
         .unwrap_or(DeployType::Lambda);
@@ -57,6 +58,52 @@ pub fn parse_deploy_config(value: &serde_json::Value) -> ProjectDeployConfig {
             .to_string(),
     });
 
+    let contribution = value.get("contribution").map(|v| ContributionConfig {
+        app_id: v
+            .get("app_id")
+            .and_then(|s| s.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        contribution_id: v
+            .get("id")
+            .and_then(|s| s.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        name: v
+            .get("name")
+            .and_then(|s| s.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        bucket: v
+            .get("bucket")
+            .and_then(|s| s.as_str())
+            .unwrap_or("dlx-ai-contributions")
+            .to_string(),
+        cdn_base_url: v
+            .get("cdn_base_url")
+            .and_then(|s| s.as_str())
+            .map(|s| s.to_string()),
+        order: v
+            .get("order")
+            .and_then(|n| n.as_u64())
+            .unwrap_or(100) as u32,
+        slots: v.get("slots").cloned().unwrap_or(serde_json::Value::Object(Default::default())),
+        entry: v
+            .get("entry")
+            .and_then(|s| s.as_str())
+            .unwrap_or("src/index.ts")
+            .to_string(),
+        externals: v
+            .get("externals")
+            .and_then(|a| a.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_else(|| vec!["svelte".to_string(), "svelte/internal".to_string()]),
+    });
+
     let mut gates = HashMap::new();
     if let Some(g) = value.get("gates").and_then(|v| v.as_object()) {
         for (env, policy) in g {
@@ -71,6 +118,7 @@ pub fn parse_deploy_config(value: &serde_json::Value) -> ProjectDeployConfig {
         infrastructure,
         build,
         artifacts,
+        contribution,
         gates,
     }
 }

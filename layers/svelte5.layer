@@ -196,6 +196,7 @@ pkg svelte5 v1
 
 {{for field in state}}export let {{field.name}} = $state<{{field.type}}>({{field.default}});
 {{end}}
+{{fn_declarations}}
 """
     visual
       icon "🗂️"

@@ -9,6 +9,7 @@
 
 #![allow(dead_code)]
 
+pub mod build_contribution;
 pub mod build_frontend;
 pub mod build_rust;
 pub mod config;

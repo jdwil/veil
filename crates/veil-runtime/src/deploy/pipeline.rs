@@ -8,7 +8,8 @@
 //! - Concurrent deploys per-project are rejected (one at a time)
 
 use super::{
-    build_frontend, build_rust, config, deploy_frontend, deploy_lambda, gates, terraform, types::*,
+    build_contribution, build_frontend, build_rust, config, deploy_frontend, deploy_lambda, gates,
+    terraform, types::*,
 };
 use chrono::Utc;
 use std::collections::HashMap;
@@ -604,6 +605,28 @@ impl PipelineState {
         source_dir: &PathBuf,
         veil_file: &str,
     ) -> Result<String, String> {
+        // Contribution builds use their own pipeline (vite library mode)
+        if config.deploy_type == DeployType::Contribution {
+            let contribution = config.contribution.as_ref().ok_or(
+                "deploy type is 'contribution' but [deploy.contribution] section is missing"
+            )?;
+            let result =
+                build_contribution::run(slug, veil_file, source_dir, contribution).await?;
+            // Store artifact hash in the job
+            {
+                let mut jobs = self.jobs.lock().await;
+                if let Some(job) = jobs.values_mut().find(|j| {
+                    j.project_slug == slug && j.status == JobStatus::Running
+                }) {
+                    job.artifact_hash = Some(result.bundle_hash.clone());
+                }
+            }
+            return Ok(format!(
+                "Contribution build complete. Bundle: {} (hash: {}). CSS: {:?}",
+                result.bundle_path, result.bundle_hash, result.css_path
+            ));
+        }
+
         let build_config = match config.build.as_ref() {
             Some(b) => b,
             None => return Ok("No build config — skipping build step".into()),
@@ -661,6 +684,12 @@ impl PipelineState {
             DeployType::Lambda => self.deploy_lambda(slug, artifact_bucket).await,
             DeployType::Frontend => self.deploy_frontend(slug, artifact_bucket).await,
             DeployType::Ecs => self.deploy_ecs(slug, artifact_bucket).await,
+            DeployType::Contribution => {
+                let contribution = config.contribution.as_ref().ok_or(
+                    "deploy type is 'contribution' but [deploy.contribution] section is missing"
+                )?;
+                self.deploy_contribution(slug, contribution).await
+            }
         }
     }
 
@@ -866,6 +895,126 @@ impl PipelineState {
         ))
     }
 
+    /// Deploy a contribution bundle: upload to S3 and register with the runtime API.
+    async fn deploy_contribution(
+        &self,
+        slug: &str,
+        contribution: &ContributionConfig,
+    ) -> Result<String, String> {
+        let gen_dir = config::generated_dir(slug);
+        let dist_dir = gen_dir.join("dist");
+        let bundle_path = dist_dir.join("index.js");
+
+        if !bundle_path.exists() {
+            return Err("dist/index.js not found — did the contribution build step run?".into());
+        }
+
+        let version = chrono::Utc::now().format("%Y%m%d%H%M%S").to_string();
+        let contribution_id = &contribution.contribution_id;
+        let bucket = &contribution.bucket;
+
+        // Step 1: Upload index.js to S3
+        let js_key = format!("{contribution_id}/{version}/index.js");
+        let js_bytes = tokio::fs::read(&bundle_path)
+            .await
+            .map_err(|e| format!("read bundle: {e}"))?;
+
+        self.s3_client
+            .put_object()
+            .bucket(bucket)
+            .key(&js_key)
+            .body(js_bytes.into())
+            .content_type("application/javascript")
+            .cache_control("public, max-age=31536000, immutable")
+            .send()
+            .await
+            .map_err(|e| format!("S3 put index.js failed: {e}"))?;
+
+        info!(slug, key = %js_key, bucket, "contribution bundle uploaded");
+
+        // Step 2: Upload style.css if it exists
+        let css_key = {
+            let css_path = dist_dir.join("style.css");
+            if css_path.exists() {
+                let css_key = format!("{contribution_id}/{version}/style.css");
+                let css_bytes = tokio::fs::read(&css_path)
+                    .await
+                    .map_err(|e| format!("read css: {e}"))?;
+
+                self.s3_client
+                    .put_object()
+                    .bucket(bucket)
+                    .key(&css_key)
+                    .body(css_bytes.into())
+                    .content_type("text/css")
+                    .cache_control("public, max-age=31536000, immutable")
+                    .send()
+                    .await
+                    .map_err(|e| format!("S3 put style.css failed: {e}"))?;
+
+                info!(slug, key = %css_key, bucket, "contribution CSS uploaded");
+                Some(css_key)
+            } else {
+                None
+            }
+        };
+
+        // Step 3: Compute bundle URL (CDN or direct S3)
+        let s3_base = format!("https://{bucket}.s3.amazonaws.com");
+        let base_url = contribution
+            .cdn_base_url
+            .as_deref()
+            .unwrap_or(&s3_base);
+        let bundle_url = format!("{base_url}/{js_key}");
+        let css_url = css_key.as_ref().map(|k| format!("{base_url}/{k}"));
+
+        // Step 4: Register contribution with runtime API (self — POST /api/contributions)
+        let registration_body = serde_json::json!({
+            "app_id": contribution.app_id,
+            "id": contribution.contribution_id,
+            "name": contribution.name,
+            "version": version,
+            "bundle_url": bundle_url,
+            "css_url": css_url,
+            "enabled": true,
+            "order": contribution.order,
+            "slots": contribution.slots,
+        });
+
+        // Use internal HTTP call to self (runtime API)
+        let runtime_url = std::env::var("VEIL_RUNTIME_URL")
+            .unwrap_or_else(|_| "http://127.0.0.1:8080".to_string());
+
+        let client = reqwest::Client::new();
+        let resp = client
+            .post(format!("{runtime_url}/api/contributions"))
+            .json(&registration_body)
+            .send()
+            .await
+            .map_err(|e| format!("contribution registration request failed: {e}"))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(format!(
+                "contribution registration failed (HTTP {status}): {body}"
+            ));
+        }
+
+        info!(
+            slug,
+            contribution_id,
+            version = %version,
+            bundle_url = %bundle_url,
+            "contribution registered"
+        );
+
+        Ok(format!(
+            "Contribution deployed. Bundle: {bundle_url}. Version: {version}. Registered with app '{}'.",
+            contribution.app_id
+        ))
+    }
+
     async fn get_aws_account_id(&self) -> Result<String, String> {
         let output = Command::new("aws")
             .args(["sts", "get-caller-identity", "--query", "Account", "--output", "text"])
@@ -988,6 +1137,9 @@ fn parse_toml_deploy_config(content: &str) -> Result<ProjectDeployConfig, String
     // We look for key = value patterns in [deploy.*] sections.
     let mut config = ProjectDeployConfig::default();
     let mut current_section = String::new();
+    // For contribution slots, accumulate JSON-like values from [deploy.contribution.slots.*]
+    let mut contribution_slots: serde_json::Map<String, serde_json::Value> = Default::default();
+    let mut contribution_externals: Vec<String> = Vec::new();
 
     for line in content.lines() {
         let trimmed = line.trim();
@@ -1012,6 +1164,7 @@ fn parse_toml_deploy_config(content: &str) -> Result<ProjectDeployConfig, String
                         config.deploy_type = match value {
                             "frontend" => DeployType::Frontend,
                             "ecs" => DeployType::Ecs,
+                            "contribution" => DeployType::Contribution,
                             _ => DeployType::Lambda,
                         };
                     }
@@ -1068,14 +1221,76 @@ fn parse_toml_deploy_config(content: &str) -> Result<ProjectDeployConfig, String
                     }
                     _ => {}
                 },
+                "deploy.contribution" => {
+                    let contrib = config.contribution.get_or_insert_with(|| ContributionConfig {
+                        app_id: String::new(),
+                        contribution_id: String::new(),
+                        name: String::new(),
+                        bucket: "dlx-ai-contributions".to_string(),
+                        cdn_base_url: None,
+                        order: 100,
+                        slots: serde_json::Value::Object(Default::default()),
+                        entry: "src/index.ts".to_string(),
+                        externals: vec!["svelte".to_string(), "svelte/internal".to_string()],
+                    });
+                    match key {
+                        "app_id" => contrib.app_id = value.to_string(),
+                        "id" => contrib.contribution_id = value.to_string(),
+                        "name" => contrib.name = value.to_string(),
+                        "bucket" => contrib.bucket = value.to_string(),
+                        "cdn_base_url" => contrib.cdn_base_url = Some(value.to_string()),
+                        "order" => contrib.order = value.parse().unwrap_or(100),
+                        "entry" => contrib.entry = value.to_string(),
+                        "externals" => {
+                            // Parse comma-separated or bracket array
+                            let raw = value.trim_matches('[').trim_matches(']');
+                            contribution_externals = raw
+                                .split(',')
+                                .map(|s| s.trim().trim_matches('"').trim_matches('\'').to_string())
+                                .filter(|s| !s.is_empty())
+                                .collect();
+                        }
+                        "slots" => {
+                            // If slots is specified as inline JSON
+                            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(value) {
+                                contrib.slots = parsed;
+                            }
+                        }
+                        _ => {}
+                    }
+                },
                 "deploy.gates" => {
                     config.gates.insert(
                         key.to_string(),
                         GatePolicy::from_str(value),
                     );
                 }
+                section if section.starts_with("deploy.contribution.slots.") => {
+                    // [deploy.contribution.slots.main-menu] etc.
+                    // Accumulate as JSON entries; the value is inline JSON array
+                    let slot_name = section.strip_prefix("deploy.contribution.slots.").unwrap_or("");
+                    if !slot_name.is_empty() {
+                        // Each line in this section is a JSON value for this slot
+                        let raw_value = trimmed.split_once('=')
+                            .map(|(_, v)| v.trim())
+                            .unwrap_or(value);
+                        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(raw_value) {
+                            contribution_slots.insert(slot_name.to_string(), parsed);
+                        }
+                    }
+                }
                 _ => {}
             }
+        }
+    }
+
+    // Merge accumulated contribution slots and externals
+    if let Some(ref mut contrib) = config.contribution {
+        if !contribution_slots.is_empty() {
+            contrib.slots = serde_json::Value::Object(contribution_slots);
+        }
+        if !contribution_externals.is_empty() {
+            contrib.externals = contribution_externals;
         }
     }
 

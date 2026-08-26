@@ -140,6 +140,7 @@ pub struct ProjectDeployConfig {
     pub infrastructure: Option<InfraConfig>,
     pub build: Option<BuildConfig>,
     pub artifacts: Option<ArtifactConfig>,
+    pub contribution: Option<ContributionConfig>,
     pub gates: HashMap<String, GatePolicy>,
 }
 
@@ -150,6 +151,7 @@ impl Default for ProjectDeployConfig {
             infrastructure: None,
             build: None,
             artifacts: None,
+            contribution: None,
             gates: HashMap::new(),
         }
     }
@@ -161,6 +163,7 @@ pub enum DeployType {
     Lambda,
     Frontend,
     Ecs,
+    Contribution,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -187,6 +190,32 @@ pub enum BuildTarget {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ArtifactConfig {
     pub bucket: String,
+}
+
+/// Configuration for contribution-type deploys — Vite library mode bundles
+/// that register as slots in a harness application.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContributionConfig {
+    /// The harness app this contributes to (e.g. "dlx-ai").
+    pub app_id: String,
+    /// Unique contribution identifier (e.g. "agent-core").
+    pub contribution_id: String,
+    /// Human-readable name (e.g. "Agent Core").
+    pub name: String,
+    /// S3 bucket for contribution bundles.
+    pub bucket: String,
+    /// CDN base URL for bundle URLs stored in the registry
+    /// (e.g. "https://assets.dev.dashlx.com/contributions").
+    pub cdn_base_url: Option<String>,
+    /// Display order in merged menus.
+    pub order: u32,
+    /// Slot manifest — maps slot names to their entries (serialized as JSON in TOML).
+    /// Parsed from [deploy.contribution.slots.*] sections.
+    pub slots: serde_json::Value,
+    /// Vite library entry point relative to generated source (default: "src/index.ts").
+    pub entry: String,
+    /// External dependencies to exclude from the bundle (e.g. ["svelte"]).
+    pub externals: Vec<String>,
 }
 
 /// Approval gate policy for an environment.

@@ -9,9 +9,13 @@
 pub mod storage;
 #[allow(dead_code)]
 pub mod types;
+pub mod contribution_store;
 
 #[cfg(test)]
 mod tests;
 
 pub use storage::ArtifactRegistryStore;
 pub use types::*;
+pub use contribution_store::{
+    ContributionManifest, ContributionManifestStore, CreateContributionBody, PatchContributionBody,
+};

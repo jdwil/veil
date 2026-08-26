@@ -656,6 +656,45 @@ fn interpolate_construct_template(template: &str, c: &Construct) -> String {
         result = result.replace("{{state_decl}}", &state_script);
     }
 
+    // {{fn_declarations}} — exported functions from construct.fns
+    if result.contains("{{fn_declarations}}") {
+        let mut s = String::new();
+        for f in &c.fns {
+            if f.name == "template" || f.name == "style" || f.name == "script" {
+                continue;
+            }
+            let params = f.params.iter()
+                .map(|p| format!("{}: {}", p.name, ts_type_for_field(&p.type_expr)))
+                .collect::<Vec<_>>().join(", ");
+            let ret_type = match &f.return_type {
+                Some(ty) => format!(": {}", ts_type_for_field(ty)),
+                None => String::new(),
+            };
+            s.push_str(&format!("export function {}({}){} {{\n", f.name, params, ret_type));
+            for expr in &f.body {
+                s.push_str(&format!("  {};\n", veil_ir::builder::expr_to_display(expr)));
+            }
+            s.push_str("}\n\n");
+        }
+        result = result.replace("{{fn_declarations}}", &s);
+    }
+
+    // {{state_exports}} — re-export state fields (for stores that need explicit exports)
+    if result.contains("{{state_exports}}") {
+        let state_block = c.blocks.iter().find(|b| b.keyword == "state");
+        let exports = if let Some(state) = state_block {
+            if state.fields.is_empty() {
+                String::new()
+            } else {
+                let names: Vec<&str> = state.fields.iter().map(|f| f.name.as_str()).collect();
+                format!("export {{ {} }};\n", names.join(", "))
+            }
+        } else {
+            String::new()
+        };
+        result = result.replace("{{state_exports}}", &exports);
+    }
+
     // Conditional blocks: {{#if style}}...{{/if}}
     result = process_conditionals(&result, "style", !style_content.is_empty());
     result = process_conditionals(&result, "script", !script_content.is_empty());
