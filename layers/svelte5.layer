@@ -104,6 +104,7 @@ pkg svelte5 v1
     mt struct
     desc "A layout component (+layout.svelte) wrapping child routes"
     has
+      script: raw
       template: raw
       style: raw
       fn[]
