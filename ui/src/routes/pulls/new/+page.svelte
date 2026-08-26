@@ -24,11 +24,10 @@
         body: JSON.stringify({
           title: title.trim(),
           description: description.trim(),
-          jira_ticket: jira_ticket.trim(),
+          jira_ticket: jira_ticket.trim() || undefined,
           source_branch:
             source_branch.trim() ||
             `feature/${title.trim().toLowerCase().replace(/\s+/g, '-')}`,
-          author: 'jd',
         }),
       });
       if (!resp.ok) {
@@ -50,13 +49,16 @@
   }
 </script>
 
-<DetailShell title="Create Change Request" back_href="/pulls">
+<DetailShell title="Create Pull Request" back_href="/pulls">
   <!-- Present fill targets: formId=create-change, fields title/description/… -->
   <form
     id="create-change"
     data-veil-role="create-form"
     data-veil-form="create-change"
-    on:submit|preventDefault={handleSubmit}
+    onsubmit={(e) => {
+      e.preventDefault();
+      void handleSubmit();
+    }}
     class="form-body"
   >
     {#if error}
@@ -102,7 +104,7 @@
         {#if loading}
           Creating…
         {:else}
-          Create Change Request
+          Create Pull Request
         {/if}
       </button>
     </div>

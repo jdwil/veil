@@ -487,15 +487,7 @@ async fn create_pull_request_flat(
     } else {
         body.author
     };
-    // Domain requires non-empty jira_ticket — default for agent/local flows.
-    let jira = if body.jira_ticket.trim().is_empty() {
-        format!(
-            "VEIL-{}",
-            chrono::Utc::now().format("%Y%m%d%H%M")
-        )
-    } else {
-        body.jira_ticket.trim().to_string()
-    };
+    let jira = body.jira_ticket.trim().to_string();
     // Ensure git refs exist so create_branch doesn't 500 on fresh repos.
     let _ = st.deps.git.init_repo(slug.clone()).await;
     // Prefer an explicit *feature* work branch from the coding session.
@@ -553,9 +545,10 @@ async fn create_pull_request_flat(
             let now = chrono::Utc::now();
             let pr_id = Uuid::new_v4();
             let source = preferred_branch.unwrap_or_else(|| {
+                let seg = if jira.is_empty() { "pr" } else { jira.as_str() };
                 format!(
                     "pr/{}/{}",
-                    jira,
+                    seg,
                     body.title.to_lowercase().replace(' ', "-")
                 )
             });

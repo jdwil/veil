@@ -34,17 +34,16 @@ pub async fn create_pull_request(
     author: String,
 ) -> Result<PullRequest, DomainError> {
     // step: validate
-    if !((jira_ticket.len() as i64) > 0) {
-        return Err(DomainError::Validation("Jira ticket required".to_string()));
-    };
     if !((title.len() as i64) > 0) {
         return Err(DomainError::Validation("Title required".to_string()));
     };
+    let ticket = jira_ticket.trim();
+    let ticket_seg = if ticket.is_empty() { "pr" } else { ticket };
 
     // step: create_branch
     let branch_name = format!(
-        "cr/{}/{}",
-        jira_ticket,
+        "pr/{}/{}",
+        ticket_seg,
         title.to_lowercase().replace(" ", "-")
     );
     deps.git
@@ -89,17 +88,16 @@ pub async fn create_pull_request_flat(
     author: String,
 ) -> Result<PullRequest, DomainError> {
     // step: validate
-    if !((jira_ticket.len() as i64) > 0) {
-        return Err(DomainError::Validation("Jira ticket required".to_string()));
-    };
     if !((title.len() as i64) > 0) {
         return Err(DomainError::Validation("Title required".to_string()));
     };
+    let ticket = jira_ticket.trim();
+    let ticket_seg = if ticket.is_empty() { "pr" } else { ticket };
 
     // step: create_branch
     let branch_name = format!(
-        "cr/{}/{}",
-        jira_ticket,
+        "pr/{}/{}",
+        ticket_seg,
         title.to_lowercase().replace(" ", "-")
     );
     deps.git

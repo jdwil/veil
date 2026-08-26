@@ -1,5 +1,6 @@
 <script lang="ts">
 
+  import { goto } from '$app/navigation';
   import PageHeader from './PageHeader.svelte';
   import ViewModeToggle from './ViewModeToggle.svelte';
   import EmptyState from './EmptyState.svelte';
@@ -128,8 +129,13 @@
   const href = itemHref(item);
   if (!href) return;
   const t = e?.target;
-  if (t?.closest?.('a, button, input, select, textarea, [role="menu"], [role="menuitem"], .dk-tile__actions, .dk-table__actions, .dk-ctx')) return;
-  window.location.href = href;
+  if (
+    t?.closest?.(
+      'a, button, input, select, textarea, [role="menu"], [role="menuitem"], [popover], .dk-tile__actions, .dk-table__actions, .dk-ctx, .dk-ctx__menu'
+    )
+  )
+    return;
+  void goto(href);
 }}
 <div
   class="dk-collection"
