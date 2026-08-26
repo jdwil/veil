@@ -2105,10 +2105,92 @@ async fn plan_provision(
     Json(body): Json<PlanBody>,
 ) -> Result<Json<Value>, StatusCode> {
     let branch = body.branch.unwrap_or_else(|| "main".into());
+    let slug = body.project_slug.clone();
+    let environment = body.environment.clone();
+
+    // Check if this is a terraform/frontend project by looking for terraform/ files in S3
+    let has_terraform = {
+        let bucket = std::env::var("BUCKET").unwrap_or_else(|_| "veil-runtime-dev".into());
+        let config = aws_config::load_defaults(aws_config::BehaviorVersion::latest()).await;
+        let s3_client = aws_sdk_s3::Client::new(&config);
+        // Look up repo_id from DDB by scanning for slug
+        let table = std::env::var("VEIL_DDB_TABLE").unwrap_or_else(|_| "veil-runtime-dev".into());
+        let ddb = aws_sdk_dynamodb::Client::new(&config);
+        let repo_id = match ddb
+            .scan()
+            .table_name(&table)
+            .filter_expression("contains(#d, :slug)")
+            .expression_attribute_names("#d", "data")
+            .expression_attribute_values(":slug", aws_sdk_dynamodb::types::AttributeValue::S(slug.clone()))
+            .limit(5)
+            .send()
+            .await
+        {
+            Ok(out) => {
+                out.items()
+                    .iter()
+                    .filter_map(|item| {
+                        let pk = item.get("PK")?.as_s().ok()?;
+                        if pk.starts_with("REPO#") {
+                            let data_str = item.get("data")?.as_s().ok()?;
+                            let data: serde_json::Value = serde_json::from_str(data_str).ok()?;
+                            let s = data.get("slug")?.as_str()?;
+                            if s == slug {
+                                return data.get("id")?.get("value")?.as_str().map(|v| v.to_string());
+                            }
+                        }
+                        None
+                    })
+                    .next()
+                    .unwrap_or_default()
+            }
+            Err(_) => String::new(),
+        };
+        if !repo_id.is_empty() {
+            let prefix = format!("repos/{}/main/terraform/", repo_id);
+            let resp = s3_client
+                .list_objects_v2()
+                .bucket(&bucket)
+                .prefix(&prefix)
+                .max_keys(5)
+                .send()
+                .await;
+            match resp {
+                Ok(out) => out
+                    .contents()
+                    .iter()
+                    .any(|o| o.key().map_or(false, |k| k.ends_with(".tf"))),
+                Err(_) => false,
+            }
+        } else {
+            false
+        }
+    };
+
+    if has_terraform {
+        // Return a plan that the UI can render for terraform-based deployments
+        return Ok(Json(json!({
+            "ok": true,
+            "summary": format!("Terraform infrastructure deploy to {environment}"),
+            "mock_mode": false,
+            "diff": { "create": 1, "update": 0, "noop": 0, "destroy": 0 },
+            "resources": [
+                { "kind": "Terraform", "name": "terraform/main.tf", "action": "create", "detail": "Run terraform init + plan + apply" }
+            ],
+            "steps": [
+                { "id": "terraform_init", "label": "Terraform init", "phase": "infrastructure" },
+                { "id": "terraform_plan", "label": "Terraform plan", "phase": "infrastructure", "action": "create" },
+                { "id": "terraform_apply", "label": "Terraform apply", "phase": "infrastructure", "action": "create" },
+            ],
+            "notes": ["Infrastructure will be created via Terraform in the deploy pipeline."],
+            "terraform": true,
+        })));
+    }
+
     match deploy::application::plan_provision(
         &st.deps,
-        body.project_slug,
-        body.environment,
+        slug,
+        environment,
         body.repo_id,
         branch,
     )
@@ -2138,10 +2220,112 @@ async fn provision_project(
         })));
     }
     let branch = body.branch.unwrap_or_else(|| "main".into());
+    let slug = body.project_slug.clone();
+    let environment = body.environment.clone();
+
+    // Check if this is a terraform project — delegate to the new deploy pipeline
+    let has_terraform = {
+        let bucket = std::env::var("BUCKET").unwrap_or_else(|_| "veil-runtime-dev".into());
+        let config = aws_config::load_defaults(aws_config::BehaviorVersion::latest()).await;
+        let s3_client = aws_sdk_s3::Client::new(&config);
+        let table = std::env::var("VEIL_DDB_TABLE").unwrap_or_else(|_| "veil-runtime-dev".into());
+        let ddb = aws_sdk_dynamodb::Client::new(&config);
+        let repo_id = match ddb
+            .scan()
+            .table_name(&table)
+            .filter_expression("contains(#d, :slug)")
+            .expression_attribute_names("#d", "data")
+            .expression_attribute_values(":slug", aws_sdk_dynamodb::types::AttributeValue::S(slug.clone()))
+            .limit(5)
+            .send()
+            .await
+        {
+            Ok(out) => {
+                out.items()
+                    .iter()
+                    .filter_map(|item| {
+                        let pk = item.get("PK")?.as_s().ok()?;
+                        if pk.starts_with("REPO#") {
+                            let data_str = item.get("data")?.as_s().ok()?;
+                            let data: serde_json::Value = serde_json::from_str(data_str).ok()?;
+                            let s = data.get("slug")?.as_str()?;
+                            if s == slug {
+                                return data.get("id")?.get("value")?.as_str().map(|v| v.to_string());
+                            }
+                        }
+                        None
+                    })
+                    .next()
+                    .unwrap_or_default()
+            }
+            Err(_) => String::new(),
+        };
+        if !repo_id.is_empty() {
+            let prefix = format!("repos/{}/main/terraform/", repo_id);
+            let resp = s3_client
+                .list_objects_v2()
+                .bucket(&bucket)
+                .prefix(&prefix)
+                .max_keys(5)
+                .send()
+                .await;
+            match resp {
+                Ok(out) => out
+                    .contents()
+                    .iter()
+                    .any(|o| o.key().map_or(false, |k| k.ends_with(".tf"))),
+                Err(_) => false,
+            }
+        } else {
+            false
+        }
+    };
+
+    if has_terraform {
+        // Delegate to the new deploy pipeline via internal HTTP call
+        let port = std::env::var("VEIL_PORT").unwrap_or_else(|_| "8080".into());
+        let url = format!("http://127.0.0.1:{port}/api/projects/{slug}/deploy");
+        let client = reqwest::Client::new();
+        match client
+            .post(&url)
+            .json(&serde_json::json!({
+                "environment": environment,
+                "steps": ["infrastructure"],
+                "dry_run": false,
+            }))
+            .send()
+            .await
+        {
+            Ok(resp) => {
+                let body: serde_json::Value = resp.json().await.unwrap_or(json!({}));
+                let job_id = body.get("job_id").and_then(|v| v.as_str()).unwrap_or("");
+                return Ok(Json(json!({
+                    "ok": true,
+                    "job_id": job_id,
+                    "status": "running",
+                    "summary": format!("Terraform deploy started for {slug} in {environment}"),
+                    "percent": 10,
+                    "steps": [{
+                        "id": "terraform",
+                        "label": "Running Terraform apply",
+                        "status": "running",
+                    }],
+                })));
+            }
+            Err(e) => {
+                return Ok(Json(json!({
+                    "ok": false,
+                    "error": "deploy_failed",
+                    "message": format!("Failed to trigger pipeline: {e}"),
+                })));
+            }
+        }
+    }
+
     match deploy::application::provision_project(
         &st.deps,
-        body.project_slug,
-        body.environment,
+        slug,
+        environment,
         body.repo_id,
         branch,
     )

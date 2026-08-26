@@ -340,7 +340,12 @@ pub async fn list_files(
     // step: query
     let key_prefix = format!("repos/{}/{}/{}", repo_id.value, branch, prefix);
     let files = deps.object_storage.list(key_prefix.clone()).await?;
-    return Ok(files);
+    // Strip the S3 key prefix to return repo-relative paths (e.g. "terraform/main.tf")
+    let base = format!("repos/{}/{}/", repo_id.value, branch);
+    return Ok(files
+        .into_iter()
+        .filter_map(|k| k.strip_prefix(&base).map(|s| s.to_string()))
+        .collect());
 }
 
 /// DomainService: CreateBranch
