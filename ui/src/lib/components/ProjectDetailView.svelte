@@ -6,6 +6,7 @@
   import FormSection from './FormSection.svelte';
   import DetailField from './DetailField.svelte';
   import ConfirmDialog from './ConfirmDialog.svelte';
+  import DeployStream from './DeployStream.svelte';
   import { reviewProjects, refreshReview, reviewForSlug, reviewItems } from '$lib/review/store';
 
   let id: string = $state('');
@@ -60,6 +61,8 @@
   let mission_saving: boolean = $state(false);
   let mission_msg: string = $state('');
   let mission_error: string = $state('');
+  let deploy_streaming: boolean = $state(false);
+  let is_terraform: boolean = $state(false);
 
     $effect(() => { // init
       void refreshReview();
@@ -485,11 +488,12 @@
   plan_steps = Array.isArray(plan?.steps) ? plan.steps : [];
   plan_notes = Array.isArray(plan?.notes) ? plan.notes.map((n: any) => String(n)) : [];
   plan_diff = plan?.diff && typeof plan.diff === 'object' ? plan.diff : {};
+  is_terraform = !!plan?.terraform;
   const c = Number(plan_diff?.create || 0);
   const u = Number(plan_diff?.update || 0);
   if (c === 0 && u === 0) plan_cta = 'All synced ✓';
-  else if (c > 0) plan_cta = 'Confirm & provision';
-  else if (u > 0) plan_cta = 'Confirm & reconcile';
+  else if (c > 0) plan_cta = is_terraform ? 'Apply infrastructure' : 'Confirm & provision';
+  else if (u > 0) plan_cta = is_terraform ? 'Apply changes' : 'Confirm & reconcile';
   else plan_cta = any_provisioned ? 'Confirm redeploy code' : 'Confirm & provision';
   }
   async function poll_provision_job(jobId: string) {
@@ -695,7 +699,7 @@
             {/if}
             <div class="plan-actions">
               <button type="button" class="btn-outline" onclick={() => { plan_open = false; }}>Cancel</button>
-              <button type="button" class="btn-primary" onclick={() => { provision_busy = true; }}>
+              <button type="button" class="btn-primary" onclick={() => { if (is_terraform) { deploy_streaming = true; plan_open = false; } else { provision_busy = true; } }}>
                 {plan_cta}
               </button>
             </div>
@@ -703,8 +707,19 @@
         </div>
       {/if}
 
+      {#if deploy_streaming}
+        <DeployStream
+          slug={slug}
+          environment={environment}
+          onDone={(out) => { deploy_streaming = false; loaded = false; provision_msg = 'Infrastructure deployed successfully.'; }}
+          onError={(msg) => { error = msg; }}
+          onCancel={() => { deploy_streaming = false; }}
+        />
+      {/if}
+
       {#if provision_busy || provision_steps.length > 0}
         <div class="prov-progress card-inner">
+
           <div class="prov-progress__head">
             <span class="prov-progress__title">
               {provision_status === 'succeeded' ? 'Provision complete' : provision_status === 'failed' ? 'Provision failed' : 'Provisioning…'}

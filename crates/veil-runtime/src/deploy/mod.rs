@@ -19,6 +19,7 @@ pub mod gates;
 pub mod pipeline;
 pub mod terraform;
 pub mod types;
+pub mod ws;
 
 pub use pipeline::PipelineState;
 pub use types::*;

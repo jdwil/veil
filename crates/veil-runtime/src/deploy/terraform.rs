@@ -188,6 +188,28 @@ async fn terraform_plan(tf_dir: &Path) -> Result<PlanOutput, String> {
     }
 }
 
+/// Get structured JSON plan output via `terraform show -json plan.tfplan`.
+/// Returns parsed resource changes with types, names, and key attributes.
+pub async fn show_plan_json(tf_dir: &std::path::Path) -> Result<serde_json::Value, String> {
+    let output = Command::new("terraform")
+        .args(["show", "-json", "plan.tfplan"])
+        .current_dir(tf_dir)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .await
+        .map_err(|e| format!("terraform show -json failed: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("terraform show -json failed: {stderr}"));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse terraform show JSON: {e}"))
+}
+
 async fn terraform_apply(tf_dir: &Path) -> Result<String, String> {
     let output = Command::new("terraform")
         .args(["apply", "-no-color", "-auto-approve", "plan.tfplan"])

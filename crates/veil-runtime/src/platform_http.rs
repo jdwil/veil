@@ -2100,6 +2100,31 @@ struct PlanBody {
     branch: Option<String>,
 }
 
+/// Check if a project has terraform files in S3 (i.e. it's an infra-as-code project).
+async fn project_has_terraform(repo_id: &str) -> bool {
+    if repo_id.is_empty() {
+        return false;
+    }
+    let bucket = std::env::var("BUCKET").unwrap_or_else(|_| "veil-runtime-dev".into());
+    let config = aws_config::load_defaults(aws_config::BehaviorVersion::latest()).await;
+    let s3_client = aws_sdk_s3::Client::new(&config);
+    let prefix = format!("repos/{}/main/terraform/", repo_id);
+    match s3_client
+        .list_objects_v2()
+        .bucket(&bucket)
+        .prefix(&prefix)
+        .max_keys(5)
+        .send()
+        .await
+    {
+        Ok(out) => out
+            .contents()
+            .iter()
+            .any(|o| o.key().map_or(false, |k| k.ends_with(".tf"))),
+        Err(_) => false,
+    }
+}
+
 async fn plan_provision(
     State(st): State<DeployState>,
     Json(body): Json<PlanBody>,
@@ -2109,82 +2134,243 @@ async fn plan_provision(
     let environment = body.environment.clone();
 
     // Check if this is a terraform/frontend project by looking for terraform/ files in S3
-    let has_terraform = {
+    let has_terraform = project_has_terraform(&body.repo_id).await;
+
+    if has_terraform {
+        // Actually run terraform init + plan (dry_run=true) and return real output
         let bucket = std::env::var("BUCKET").unwrap_or_else(|_| "veil-runtime-dev".into());
         let config = aws_config::load_defaults(aws_config::BehaviorVersion::latest()).await;
         let s3_client = aws_sdk_s3::Client::new(&config);
-        // Look up repo_id from DDB by scanning for slug
-        let table = std::env::var("VEIL_DDB_TABLE").unwrap_or_else(|_| "veil-runtime-dev".into());
-        let ddb = aws_sdk_dynamodb::Client::new(&config);
-        let repo_id = match ddb
-            .scan()
-            .table_name(&table)
-            .filter_expression("contains(#d, :slug)")
-            .expression_attribute_names("#d", "data")
-            .expression_attribute_values(":slug", aws_sdk_dynamodb::types::AttributeValue::S(slug.clone()))
-            .limit(5)
+
+        // Fetch terraform files from S3
+        let prefix = format!("repos/{}/main/terraform/", body.repo_id);
+        let listed = s3_client
+            .list_objects_v2()
+            .bucket(&bucket)
+            .prefix(&prefix)
             .send()
             .await
-        {
-            Ok(out) => {
-                out.items()
-                    .iter()
-                    .filter_map(|item| {
-                        let pk = item.get("PK")?.as_s().ok()?;
-                        if pk.starts_with("REPO#") {
-                            let data_str = item.get("data")?.as_s().ok()?;
-                            let data: serde_json::Value = serde_json::from_str(data_str).ok()?;
-                            let s = data.get("slug")?.as_str()?;
-                            if s == slug {
-                                return data.get("id")?.get("value")?.as_str().map(|v| v.to_string());
-                            }
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+        let mut tf_files: Vec<(String, Vec<u8>)> = Vec::new();
+        for obj in listed.contents() {
+            if let Some(key) = obj.key() {
+                if key.ends_with(".tf") || key.ends_with(".tf.json") {
+                    if let Ok(resp) = s3_client.get_object().bucket(&bucket).key(key).send().await {
+                        if let Ok(bytes) = resp.body.collect().await {
+                            let filename = key
+                                .strip_prefix(&prefix)
+                                .unwrap_or(key)
+                                .to_string();
+                            tf_files.push((filename, bytes.into_bytes().to_vec()));
                         }
-                        None
-                    })
-                    .next()
-                    .unwrap_or_default()
+                    }
+                }
             }
-            Err(_) => String::new(),
-        };
-        if !repo_id.is_empty() {
-            let prefix = format!("repos/{}/main/terraform/", repo_id);
-            let resp = s3_client
-                .list_objects_v2()
-                .bucket(&bucket)
-                .prefix(&prefix)
-                .max_keys(5)
-                .send()
-                .await;
-            match resp {
-                Ok(out) => out
-                    .contents()
-                    .iter()
-                    .any(|o| o.key().map_or(false, |k| k.ends_with(".tf"))),
-                Err(_) => false,
+        }
+
+        if tf_files.is_empty() {
+            return Ok(Json(json!({
+                "ok": false,
+                "error": "no_terraform_files",
+                "message": "Terraform directory exists but contains no .tf files.",
+            })));
+        }
+
+        // Read InfraConfig from veil.toml
+        let toml_key = format!("repos/{}/main/veil.toml", body.repo_id);
+        let infra_config = if let Ok(resp) = s3_client.get_object().bucket(&bucket).key(&toml_key).send().await {
+            if let Ok(bytes) = resp.body.collect().await {
+                let content = String::from_utf8_lossy(&bytes.into_bytes()).into_owned();
+                let parsed: toml::Value = content.parse().unwrap_or(toml::Value::Table(Default::default()));
+                let infra = parsed.get("deploy").and_then(|d| d.get("infrastructure"));
+                crate::deploy::types::InfraConfig {
+                    backend_bucket: infra.and_then(|i| i.get("backend_bucket")).and_then(|v| v.as_str()).unwrap_or("dashlx-terraform-state").to_string(),
+                    backend_key: infra.and_then(|i| i.get("backend_key")).and_then(|v| v.as_str()).unwrap_or(&format!("veil-projects/{slug}")).to_string(),
+                    backend_region: infra.and_then(|i| i.get("backend_region")).and_then(|v| v.as_str()).unwrap_or("us-west-2").to_string(),
+                }
+            } else {
+                crate::deploy::types::InfraConfig {
+                    backend_bucket: "dashlx-terraform-state".into(),
+                    backend_key: format!("veil-projects/{slug}"),
+                    backend_region: "us-west-2".into(),
+                }
             }
         } else {
-            false
-        }
-    };
+            crate::deploy::types::InfraConfig {
+                backend_bucket: "dashlx-terraform-state".into(),
+                backend_key: format!("veil-projects/{slug}"),
+                backend_region: "us-west-2".into(),
+            }
+        };
 
-    if has_terraform {
-        // Return a plan that the UI can render for terraform-based deployments
-        return Ok(Json(json!({
-            "ok": true,
-            "summary": format!("Terraform infrastructure deploy to {environment}"),
-            "mock_mode": false,
-            "diff": { "create": 1, "update": 0, "noop": 0, "destroy": 0 },
-            "resources": [
-                { "kind": "Terraform", "name": "terraform/main.tf", "action": "create", "detail": "Run terraform init + plan + apply" }
-            ],
-            "steps": [
-                { "id": "terraform_init", "label": "Terraform init", "phase": "infrastructure" },
-                { "id": "terraform_plan", "label": "Terraform plan", "phase": "infrastructure", "action": "create" },
-                { "id": "terraform_apply", "label": "Terraform apply", "phase": "infrastructure", "action": "create" },
-            ],
-            "notes": ["Infrastructure will be created via Terraform in the deploy pipeline."],
-            "terraform": true,
-        })));
+        // Run terraform init + plan (dry_run = true means plan only, no apply)
+        match crate::deploy::terraform::run(&slug, &infra_config, &tf_files, true).await {
+            Ok(result) => {
+                // Get structured plan JSON for rich resource details
+                let tf_dir = crate::deploy::config::terraform_dir(&slug);
+                let plan_json = crate::deploy::terraform::show_plan_json(&tf_dir).await.ok();
+
+                let mut resources: Vec<serde_json::Value> = Vec::new();
+                let mut creates = 0u32;
+                let mut updates = 0u32;
+                let mut destroys = 0u32;
+
+                if let Some(ref pj) = plan_json {
+                    if let Some(changes) = pj.get("resource_changes").and_then(|v| v.as_array()) {
+                        for change in changes {
+                            let actions = change.get("change")
+                                .and_then(|c| c.get("actions"))
+                                .and_then(|a| a.as_array())
+                                .map(|a| a.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>())
+                                .unwrap_or_default();
+
+                            // Skip no-ops and data sources
+                            if actions == ["no-op"] || actions.is_empty() {
+                                continue;
+                            }
+
+                            let action = if actions.contains(&"create") {
+                                creates += 1;
+                                "create"
+                            } else if actions.contains(&"update") {
+                                updates += 1;
+                                "update"
+                            } else if actions.contains(&"delete") {
+                                if actions.contains(&"create") {
+                                    creates += 1;
+                                    "replace"
+                                } else {
+                                    destroys += 1;
+                                    "destroy"
+                                }
+                            } else {
+                                continue;
+                            };
+
+                            let resource_type = change.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                            let name = change.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                            let addr = change.get("address").and_then(|v| v.as_str()).unwrap_or("");
+
+                            // Extract meaningful values from the planned attributes
+                            let empty_obj = json!({});
+                            let after = change.get("change")
+                                .and_then(|c| c.get("after"))
+                                .unwrap_or(&empty_obj);
+
+                            // Map resource types to friendly service names + extract key details
+                            let (service, detail) = match resource_type {
+                                "aws_s3_bucket" => {
+                                    let bucket = after.get("bucket").and_then(|v| v.as_str()).unwrap_or(name);
+                                    ("S3 Bucket", bucket.to_string())
+                                }
+                                "aws_s3_bucket_policy" => ("S3 Policy", "Bucket access policy".into()),
+                                "aws_s3_bucket_public_access_block" => ("S3 Access", "Block public access".into()),
+                                "aws_cloudfront_distribution" => {
+                                    let aliases = after.get("aliases")
+                                        .and_then(|v| v.as_array())
+                                        .and_then(|a| a.first())
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("CDN");
+                                    ("CloudFront", format!("{aliases} — CDN distribution"))
+                                }
+                                "aws_cloudfront_origin_access_identity" => {
+                                    ("CloudFront OAI", "Origin access identity for S3".into())
+                                }
+                                "aws_acm_certificate" => {
+                                    let domain = after.get("domain_name").and_then(|v| v.as_str()).unwrap_or("");
+                                    ("ACM Certificate", format!("{domain} — TLS certificate (DNS validated)"))
+                                }
+                                "aws_acm_certificate_validation" => {
+                                    ("ACM Validation", "Certificate DNS validation".into())
+                                }
+                                "aws_route53_record" => {
+                                    let rname = after.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                                    let rtype = after.get("type").and_then(|v| v.as_str()).unwrap_or("A");
+                                    ("Route53", format!("{rtype} record — {rname}"))
+                                }
+                                "aws_lambda_function" => {
+                                    let fn_name = after.get("function_name").and_then(|v| v.as_str()).unwrap_or(name);
+                                    let runtime = after.get("runtime").and_then(|v| v.as_str()).unwrap_or("");
+                                    ("Lambda", format!("{fn_name} ({runtime})"))
+                                }
+                                "aws_sqs_queue" => {
+                                    let qname = after.get("name").and_then(|v| v.as_str()).unwrap_or(name);
+                                    ("SQS Queue", qname.to_string())
+                                }
+                                "aws_sns_topic" => {
+                                    let tname = after.get("name").and_then(|v| v.as_str()).unwrap_or(name);
+                                    ("SNS Topic", tname.to_string())
+                                }
+                                "aws_dynamodb_table" => {
+                                    let tname = after.get("name").and_then(|v| v.as_str()).unwrap_or(name);
+                                    ("DynamoDB", tname.to_string())
+                                }
+                                "aws_iam_role" => {
+                                    let rname = after.get("name").and_then(|v| v.as_str()).unwrap_or(name);
+                                    ("IAM Role", rname.to_string())
+                                }
+                                _ => {
+                                    // Generic: use type with underscores converted
+                                    let friendly = resource_type.replace("aws_", "").replace('_', " ");
+                                    (friendly.leak() as &str, name.to_string())
+                                }
+                            };
+
+                            resources.push(json!({
+                                "kind": service,
+                                "name": detail,
+                                "action": action,
+                                "address": addr,
+                            }));
+                        }
+                    }
+                }
+
+                // Fallback to line parsing if JSON plan wasn't available
+                if resources.is_empty() && result.has_changes {
+                    for line in result.plan_output.lines() {
+                        let trimmed = line.trim();
+                        if trimmed.starts_with("# ") && trimmed.contains(" will be ") {
+                            let rname = trimmed.strip_prefix("# ").unwrap_or(trimmed);
+                            let action = if trimmed.contains("created") { creates += 1; "create" }
+                                else if trimmed.contains("updated") { updates += 1; "update" }
+                                else if trimmed.contains("destroyed") { destroys += 1; "destroy" }
+                                else { "ensure" };
+                            resources.push(json!({
+                                "kind": "Terraform",
+                                "name": rname.split(" will be").next().unwrap_or(rname),
+                                "action": action,
+                            }));
+                        }
+                    }
+                }
+
+                let summary = if !result.has_changes {
+                    "No changes. Infrastructure is up-to-date.".to_string()
+                } else {
+                    format!("Plan: {} to create, {} to update, {} to destroy", creates, updates, destroys)
+                };
+
+                return Ok(Json(json!({
+                    "ok": true,
+                    "summary": summary,
+                    "mock_mode": false,
+                    "terraform": true,
+                    "diff": { "create": creates, "update": updates, "noop": 0, "destroy": destroys },
+                    "resources": resources,
+                    "steps": [],
+                    "notes": [],
+                })));
+            }
+            Err(e) => {
+                return Ok(Json(json!({
+                    "ok": false,
+                    "error": "terraform_plan_failed",
+                    "message": e,
+                })));
+            }
+        }
     }
 
     match deploy::application::plan_provision(
@@ -2224,62 +2410,7 @@ async fn provision_project(
     let environment = body.environment.clone();
 
     // Check if this is a terraform project — delegate to the new deploy pipeline
-    let has_terraform = {
-        let bucket = std::env::var("BUCKET").unwrap_or_else(|_| "veil-runtime-dev".into());
-        let config = aws_config::load_defaults(aws_config::BehaviorVersion::latest()).await;
-        let s3_client = aws_sdk_s3::Client::new(&config);
-        let table = std::env::var("VEIL_DDB_TABLE").unwrap_or_else(|_| "veil-runtime-dev".into());
-        let ddb = aws_sdk_dynamodb::Client::new(&config);
-        let repo_id = match ddb
-            .scan()
-            .table_name(&table)
-            .filter_expression("contains(#d, :slug)")
-            .expression_attribute_names("#d", "data")
-            .expression_attribute_values(":slug", aws_sdk_dynamodb::types::AttributeValue::S(slug.clone()))
-            .limit(5)
-            .send()
-            .await
-        {
-            Ok(out) => {
-                out.items()
-                    .iter()
-                    .filter_map(|item| {
-                        let pk = item.get("PK")?.as_s().ok()?;
-                        if pk.starts_with("REPO#") {
-                            let data_str = item.get("data")?.as_s().ok()?;
-                            let data: serde_json::Value = serde_json::from_str(data_str).ok()?;
-                            let s = data.get("slug")?.as_str()?;
-                            if s == slug {
-                                return data.get("id")?.get("value")?.as_str().map(|v| v.to_string());
-                            }
-                        }
-                        None
-                    })
-                    .next()
-                    .unwrap_or_default()
-            }
-            Err(_) => String::new(),
-        };
-        if !repo_id.is_empty() {
-            let prefix = format!("repos/{}/main/terraform/", repo_id);
-            let resp = s3_client
-                .list_objects_v2()
-                .bucket(&bucket)
-                .prefix(&prefix)
-                .max_keys(5)
-                .send()
-                .await;
-            match resp {
-                Ok(out) => out
-                    .contents()
-                    .iter()
-                    .any(|o| o.key().map_or(false, |k| k.ends_with(".tf"))),
-                Err(_) => false,
-            }
-        } else {
-            false
-        }
-    };
+    let has_terraform = project_has_terraform(&body.repo_id).await;
 
     if has_terraform {
         // Delegate to the new deploy pipeline via internal HTTP call
@@ -2353,6 +2484,129 @@ async fn get_provision_job(
     match deploy::application::get_provision_job(&st.deps, q.job_id).await {
         Ok(v) => Ok(Json(v)),
         Err(e) => Err(domain_status(e)),
+    }
+}
+
+/// WebSocket endpoint for streaming terraform deploy.
+/// Client connects, sends {"action":"start","environment":"dev"}, gets live events.
+async fn deploy_ws_handler(
+    State(st): State<StorageState>,
+    axum::extract::Path(slug): axum::extract::Path<String>,
+    ws: axum::extract::WebSocketUpgrade,
+) -> impl axum::response::IntoResponse {
+    ws.on_upgrade(move |socket| deploy_ws_session(socket, st, slug))
+}
+
+async fn deploy_ws_session(
+    mut socket: axum::extract::ws::WebSocket,
+    st: StorageState,
+    slug: String,
+) {
+    use axum::extract::ws::Message;
+
+    // Wait for start message from client
+    let start_msg = match socket.recv().await {
+        Some(Ok(Message::Text(text))) => {
+            serde_json::from_str::<serde_json::Value>(&text).unwrap_or_default()
+        }
+        _ => {
+            let _ = socket.send(Message::Text(
+                json!({"type": "error", "message": "Expected start message"}).to_string().into()
+            )).await;
+            return;
+        }
+    };
+
+    let _environment = start_msg.get("environment").and_then(|v| v.as_str()).unwrap_or("dev");
+
+    // Resolve repo_id from slug
+    let repo_id = match storage::application::resolve_repo(&st.deps, &slug).await {
+        Ok(repo) => repo.id.value,
+        Err(_) => {
+            let _ = socket.send(Message::Text(
+                json!({"type": "error", "message": format!("Project '{}' not found", slug)}).to_string().into()
+            )).await;
+            return;
+        }
+    };
+
+    // Fetch terraform files from S3
+    let tf_files = match fetch_terraform_files_s3(&st.deps, &repo_id).await {
+        Ok(files) => files,
+        Err(e) => {
+            let _ = socket.send(Message::Text(
+                json!({"type": "error", "message": e}).to_string().into()
+            )).await;
+            return;
+        }
+    };
+
+    if tf_files.is_empty() {
+        let _ = socket.send(Message::Text(
+            json!({"type": "error", "message": "No .tf files found in project"}).to_string().into()
+        )).await;
+        return;
+    }
+
+    // Read InfraConfig from veil.toml
+    let infra_config = read_infra_config_s3(&st.deps, &repo_id, &slug).await;
+
+    // Run terraform with streaming output
+    crate::deploy::ws::run_terraform_ws(&mut socket, &slug, &tf_files, &infra_config).await;
+}
+
+/// Fetch terraform/*.tf files from S3 for a project.
+async fn fetch_terraform_files_s3(
+    deps: &storage::application::Deps,
+    repo_id: &str,
+) -> Result<Vec<(String, Vec<u8>)>, String> {
+    let rid = storage::domain::types::RepoId { value: repo_id.to_string() };
+    let files = storage::application::list_files(
+        deps, rid.clone(), "main".to_string(), "terraform/".to_string(),
+    ).await.map_err(|e| format!("Failed to list terraform files: {e:?}"))?;
+
+    let mut tf_files = Vec::new();
+    for file_path in &files {
+        if file_path.ends_with(".tf") || file_path.ends_with(".tf.json") {
+            let read_rid = storage::domain::types::RepoId { value: repo_id.to_string() };
+            if let Ok(bytes) = storage::application::read_file(
+                deps, read_rid, "main".to_string(), file_path.clone(),
+            ).await {
+                let filename = file_path
+                    .strip_prefix("terraform/")
+                    .unwrap_or(file_path)
+                    .to_string();
+                tf_files.push((filename, bytes));
+            }
+        }
+    }
+    Ok(tf_files)
+}
+
+/// Read InfraConfig from the project's veil.toml in S3.
+async fn read_infra_config_s3(
+    deps: &storage::application::Deps,
+    repo_id: &str,
+    slug: &str,
+) -> crate::deploy::types::InfraConfig {
+    let rid = storage::domain::types::RepoId { value: repo_id.to_string() };
+    if let Ok(bytes) = storage::application::read_file(
+        deps, rid, "main".to_string(), "veil.toml".to_string(),
+    ).await {
+        let content = String::from_utf8_lossy(&bytes).into_owned();
+        if let Ok(parsed) = content.parse::<toml::Value>() {
+            let infra = parsed.get("deploy").and_then(|d| d.get("infrastructure"));
+            return crate::deploy::types::InfraConfig {
+                backend_bucket: infra.and_then(|i| i.get("backend_bucket")).and_then(|v| v.as_str()).unwrap_or("dashlx-terraform-state").to_string(),
+                backend_key: infra.and_then(|i| i.get("backend_key")).and_then(|v| v.as_str()).unwrap_or(&format!("veil-projects/{slug}")).to_string(),
+                backend_region: infra.and_then(|i| i.get("backend_region")).and_then(|v| v.as_str()).unwrap_or("us-west-2").to_string(),
+            };
+        }
+    }
+    crate::deploy::types::InfraConfig {
+        backend_bucket: "dashlx-terraform-state".into(),
+        backend_key: format!("veil-projects/{slug}"),
+        backend_region: "us-west-2".into(),
     }
 }
 
@@ -3387,6 +3641,7 @@ pub async fn build_platform_router(
         )
         .route("/api/read-file", post(read_file_api))
         .route("/api/write-file", post(write_file_api))
+        .route("/api/projects/{slug}/deploy/ws", get(deploy_ws_handler))
         .route(
             "/api/project_infras/{id}",
             get(get_project_infra),
