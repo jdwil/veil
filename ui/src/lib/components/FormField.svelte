@@ -49,6 +49,10 @@
 		runtime: { id: field_id, label, input_type, required },
 	});
 
+	let empty = $derived(value === undefined || value === null || String(value).trim() === '');
+	let incomplete = $derived(required && empty && !error);
+	let filled = $derived(required && !empty && !error);
+
 	function fire_input(e: Event) {
 		oninput?.(e);
 		onchange?.(e);
@@ -58,10 +62,6 @@
 		oninput?.(e);
 	}
 </script>
-
-{@const empty = value === undefined || value === null || String(value).trim() === ''}
-{@const incomplete = required && empty && !error}
-{@const filled = required && !empty && !error}
 <div
 	class="dk-field"
 	data-veil-role="form-field"

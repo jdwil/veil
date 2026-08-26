@@ -484,6 +484,19 @@
   if (job?.error) error = String(job.error);
   }
   function apply_plan(plan: any) {
+  // Handle API error responses (ok: false)
+  if (plan && plan.ok === false) {
+    plan_summary = plan.message || plan.error || 'Plan failed.';
+    plan_mock = false;
+    plan_resources = [];
+    plan_steps = [];
+    plan_notes = plan.message ? [String(plan.message)] : [];
+    plan_diff = {};
+    is_terraform = true;
+    plan_cta = 'Fix errors & retry';
+    error = plan.message || plan.error || 'Plan generation failed';
+    return;
+  }
   plan_summary = plan?.summary != null ? String(plan.summary) : 'Review plan below.';
   plan_mock = !!plan?.mock_mode;
   plan_resources = Array.isArray(plan?.resources) ? plan.resources : [];
@@ -602,9 +615,9 @@
           type="button"
           class="btn-primary"
           disabled={deploy_streaming || loading}
-          onclick={() => { deploy_stream_type = 'frontend'; deploy_streaming = true; }}
+          onclick={() => { deploy_stream_type = 'auto'; deploy_streaming = true; }}
         >
-          {deploy_streaming && deploy_stream_type === 'frontend' ? 'Deploying…' : 'Deploy'}
+          {deploy_streaming && deploy_stream_type === 'auto' ? 'Deploying…' : 'Deploy'}
         </button>
       {/if}
     {/if}

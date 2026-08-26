@@ -371,32 +371,42 @@ impl PipelineState {
         let infra_drifted = drift.as_ref().map(|d| d.detected).unwrap_or(false);
 
         // Check if code has changed since last deploy by comparing commit SHAs
-        let code_changed = {
+        let (code_changed, never_deployed) = {
             let history = self.history.lock().await;
             let last_sha = history
                 .get(project_slug)
                 .and_then(|h| h.last())
                 .and_then(|j| j.commit_sha.as_deref());
+            let is_never_deployed = history.get(project_slug).map(|h| h.is_empty()).unwrap_or(true);
             // If we have a last deploy commit, check if head has moved
             // If no history at all, mark as changed (never deployed)
-            match last_sha {
+            let changed = match last_sha {
                 Some(_sha) => {
                     // For now: if there's a last deploy, assume in-sync until
                     // a new commit is pushed. The trigger_deploy will fetch fresh source.
                     false
                 }
-                None => {
-                    // Never deployed — code is pending
-                    history.get(project_slug).map(|h| h.is_empty()).unwrap_or(true)
-                }
+                None => is_never_deployed,
+            };
+            (changed, is_never_deployed)
+        };
+
+        // If project has never been deployed and has infrastructure config,
+        // infra is pending (not "synced"). Drift only applies to already-provisioned infra.
+        let infra_pending = if never_deployed && !infra_drifted {
+            match self.load_deploy_config(project_slug).await {
+                Ok(config) => config.infrastructure.is_some(),
+                Err(_) => false,
             }
+        } else {
+            infra_drifted
         };
 
         DeployStatusResponse {
             last_deploy: active_job.or(last_deploy),
             drift,
             pending_changes: PendingChanges {
-                infra: infra_drifted,
+                infra: infra_pending,
                 code: code_changed,
             },
         }

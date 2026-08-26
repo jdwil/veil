@@ -2148,7 +2148,7 @@ async fn plan_provision(
         let mut tf_files: Vec<(String, Vec<u8>)> = Vec::new();
         for obj in listed.contents() {
             if let Some(key) = obj.key() {
-                if key.ends_with(".tf") || key.ends_with(".tf.json") {
+                if key.ends_with(".tf") || key.ends_with(".tf.json") || key.ends_with(".tfvars") {
                     if let Ok(resp) = s3_client.get_object().bucket(&bucket).key(key).send().await {
                         if let Ok(bytes) = resp.body.collect().await {
                             let filename = key
@@ -2511,7 +2511,7 @@ async fn deploy_ws_session(
     };
 
     let _environment = start_msg.get("environment").and_then(|v| v.as_str()).unwrap_or("dev");
-    let deploy_type = start_msg.get("deploy_type").and_then(|v| v.as_str()).unwrap_or("infrastructure");
+    let deploy_type_raw = start_msg.get("deploy_type").and_then(|v| v.as_str()).unwrap_or("auto");
 
     // Resolve repo_id from slug
     let repo_id = match storage::application::resolve_repo(&st.deps, &slug).await {
@@ -2524,7 +2524,24 @@ async fn deploy_ws_session(
         }
     };
 
-    match deploy_type {
+    // Resolve deploy type: if "auto", read [deploy].type from veil.toml
+    let deploy_type = if deploy_type_raw == "auto" {
+        let rid = storage::domain::types::RepoId { value: repo_id.clone() };
+        if let Ok(bytes) = storage::application::read_file(
+            &st.deps, rid, "main".to_string(), "veil.toml".to_string(),
+        ).await {
+            let content_str = String::from_utf8_lossy(&bytes).into_owned();
+            if let Ok(parsed) = content_str.parse::<toml::Value>() {
+                parsed.get("deploy")
+                    .and_then(|d| d.get("type"))
+                    .and_then(|t| t.as_str())
+                    .unwrap_or("infrastructure")
+                    .to_string()
+            } else { "infrastructure".to_string() }
+        } else { "infrastructure".to_string() }
+    } else { deploy_type_raw.to_string() };
+
+    match deploy_type.as_str() {
         "frontend" => {
             // Read veil.toml to get build+deploy config
             let build_config = match read_frontend_build_config(&st.deps, &repo_id, &slug).await {
@@ -2538,7 +2555,14 @@ async fn deploy_ws_session(
             };
             crate::deploy::ws::run_frontend_deploy_ws(&mut socket, &slug, &build_config).await;
         }
-        _ => {
+        "lambda" | "ecs" => {
+            // Lambda/ECS code deploy — build + upload + update
+            let _ = socket.send(Message::Text(
+                json!({"type": "error", "message": "Lambda/ECS code deploy is not yet implemented. Use 'Preview plan' + 'Apply infrastructure' for terraform, or deploy code manually."}).to_string().into()
+            )).await;
+            return;
+        }
+        "infrastructure" => {
             // Infrastructure (terraform) deploy
             let tf_files = match fetch_terraform_files_s3(&st.deps, &repo_id).await {
                 Ok(files) => files,
@@ -2559,6 +2583,11 @@ async fn deploy_ws_session(
 
             let infra_config = read_infra_config_s3(&st.deps, &repo_id, &slug).await;
             crate::deploy::ws::run_terraform_ws(&mut socket, &slug, &tf_files, &infra_config).await;
+        }
+        _ => {
+            let _ = socket.send(Message::Text(
+                json!({"type": "error", "message": format!("Unknown deploy type: '{deploy_type}'")}).to_string().into()
+            )).await;
         }
     }
 }
