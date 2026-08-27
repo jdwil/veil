@@ -99,6 +99,122 @@ pkg sveltekit5 v1
         main { max-width:960px; margin:0 auto; padding:2rem; }
       """
 
+    # Frontend runtime shim: defines the browser helpers that svelte5 `declare`
+    # constructs (navigate, Env, LocalStorage, ApiClient, location_*, OAuth PKCE)
+    # are emitted as bare global calls against. SvelteKit auto-loads
+    # src/hooks.client.ts once on the client at startup, so installing these on
+    # globalThis makes the generated stores/pages functional. Generic — no app,
+    # provider, or route specifics.
+    scaffold "src/hooks.client.ts"
+      emit """
+        // VEIL frontend runtime shim (generated). Installs browser helpers that
+        // generated code references as globals. Provider-agnostic.
+        function b64url(buf: ArrayBuffer): string {
+          return btoa(String.fromCharCode(...new Uint8Array(buf)))
+            .replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/, '');
+        }
+        const g = globalThis as any;
+
+        g.location_pathname = () => (typeof window !== 'undefined' ? window.location.pathname : '');
+        g.location_last_segment = () => {
+          if (typeof window === 'undefined') return '';
+          const parts = window.location.pathname.split('/').filter(Boolean);
+          return parts.length ? parts[parts.length - 1] : '';
+        };
+        g.navigate = (url: string) => { window.location.href = url; };
+        g.goto = (url: string) => { window.location.href = url; };
+
+        g.Env = {
+          get_or: (k: string, d: string) => (localStorage.getItem(k) ?? d),
+          get_opt: (k: string) => (localStorage.getItem(k) ?? null),
+        };
+        g.LocalStorage = {
+          get_or: (k: string, d: string) => (localStorage.getItem(k) ?? d),
+          get_opt: (k: string) => localStorage.getItem(k),
+          set: (k: string, v: string) => localStorage.setItem(k, v),
+        };
+
+        function authHeaders(base: Record<string, string> = {}): Record<string, string> {
+          const h = { ...base };
+          const t = localStorage.getItem('veil_auth_token');
+          if (t) h['Authorization'] = 'Bearer ' + t;
+          return h;
+        }
+        g.ApiClient = {
+          fetch: async (endpoint: string, params: any) => {
+            const u = new URL(endpoint, window.location.origin);
+            const p = (params ?? {}) as Record<string, unknown>;
+            for (const [k, v] of Object.entries(p)) if (v != null && v !== '') u.searchParams.set(k, String(v));
+            const r = await fetch(u.toString(), { headers: authHeaders() });
+            if (!r.ok) throw new Error(await r.text());
+            return await r.json();
+          },
+          mutate: async (endpoint: string, body: any) => {
+            const r = await fetch(endpoint, { method: 'POST', headers: authHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify(body) });
+            if (!r.ok) throw new Error(await r.text());
+            const t = await r.text(); return t ? JSON.parse(t) : null;
+          },
+          put: async (endpoint: string, body: any) => {
+            const r = await fetch(endpoint, { method: 'PUT', headers: authHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify(body) });
+            if (!r.ok) throw new Error(await r.text());
+            const t = await r.text(); return t ? JSON.parse(t) : null;
+          },
+          delete: async (endpoint: string) => {
+            const r = await fetch(endpoint, { method: 'DELETE', headers: authHeaders() });
+            if (!r.ok) throw new Error(await r.text());
+            const t = await r.text(); return t ? JSON.parse(t) : null;
+          },
+        };
+
+        // OAuth2 Authorization-Code + PKCE (generic).
+        g.oauth_pkce_login = async (authorizeBase: string, clientId: string, redirectUri: string, scope: string, idp: string) => {
+          const rnd = new Uint8Array(32); crypto.getRandomValues(rnd);
+          const verifier = b64url(rnd.buffer);
+          const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier));
+          const challenge = b64url(digest);
+          localStorage.setItem('pkce_verifier', verifier);
+          const p = new URLSearchParams({ client_id: clientId, response_type: 'code', redirect_uri: redirectUri, scope, code_challenge: challenge, code_challenge_method: 'S256' });
+          if (idp) p.set('identity_provider', idp);
+          window.location.href = authorizeBase + '/oauth2/authorize?' + p.toString();
+        };
+        g.oauth_pkce_exchange = async (tokenEndpoint: string, clientId: string, redirectUri: string, code: string) => {
+          const verifier = localStorage.getItem('pkce_verifier') ?? '';
+          const body = new URLSearchParams({ grant_type: 'authorization_code', client_id: clientId, code, redirect_uri: redirectUri, code_verifier: verifier });
+          const r = await fetch(tokenEndpoint, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: body.toString() });
+          localStorage.removeItem('pkce_verifier');
+          if (!r.ok) throw new Error(await r.text());
+          return await r.json();
+        };
+        g.oauth_callback_code = () => (new URLSearchParams(window.location.search).get('code') ?? '');
+        g.set_auth_token = (t: string) => localStorage.setItem('veil_auth_token', t);
+        g.clear_auth_token = () => localStorage.removeItem('veil_auth_token');
+
+        export {};
+      """
+
+    # Ambient declarations so the generated TypeScript (which calls the above as
+    # bare identifiers) type-checks.
+    scaffold "src/veil-shim.d.ts"
+      emit """
+        declare function location_pathname(): string;
+        declare function location_last_segment(): string;
+        declare function navigate(url: string): void;
+        declare function goto(url: string): void;
+        declare const Env: { get_or(k: string, d: string): string; get_opt(k: string): string | null };
+        declare const LocalStorage: { get_or(k: string, d: string): string; get_opt(k: string): string | null; set(k: string, v: string): void };
+        declare const ApiClient: {
+          fetch(endpoint: string, params: any): Promise<any>;
+          mutate(endpoint: string, body: any): Promise<any>;
+          put(endpoint: string, body: any): Promise<any>;
+          delete(endpoint: string): Promise<any>;
+        };
+        declare function oauth_pkce_login(authorizeBase: string, clientId: string, redirectUri: string, scope: string, idp: string): void;
+        declare function oauth_pkce_exchange(tokenEndpoint: string, clientId: string, redirectUri: string, code: string): any;
+        declare function oauth_callback_code(): string;
+        declare function set_auth_token(t: string): void;
+        declare function clear_auth_token(): void;
+      """
+
     scaffold "src/routes/+layout.svelte"
       emit """
         <script lang="ts">

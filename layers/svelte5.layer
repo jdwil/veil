@@ -260,13 +260,13 @@ pkg svelte5 v1
     trait ApiClient
       fetch(endpoint: Str, params: Json) -> Res!<Json>
         lowers_to
-          typescript: "(async () => { const __u = new URL({arg0}, typeof window !== 'undefined' ? window.location.origin : 'http://localhost'); const __p = {arg1} as Record<string, unknown>; for (const [k, v] of Object.entries(__p)) { if (v != null && v !== '') __u.searchParams.set(k, String(v)); } const __r = await fetch(__u.toString()); if (!__r.ok) throw new Error(await __r.text()); return await __r.json(); })()"
+          typescript: "(async () => { const __u = new URL({arg0}, typeof window !== 'undefined' ? window.location.origin : 'http://localhost'); const __p = {arg1} as Record<string, unknown>; for (const [k, v] of Object.entries(__p)) { if (v != null && v !== '') __u.searchParams.set(k, String(v)); } const __h: Record<string,string> = {}; const __tok = typeof localStorage !== 'undefined' ? localStorage.getItem('veil_auth_token') : null; if (__tok) __h['Authorization'] = 'Bearer ' + __tok; const __r = await fetch(__u.toString(), { headers: __h }); if (!__r.ok) throw new Error(await __r.text()); return await __r.json(); })()"
       mutate(endpoint: Str, body: Json) -> Res!<Json>
         lowers_to
-          typescript: "(async () => { const __r = await fetch({arg0}, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({arg1}) }); if (!__r.ok) throw new Error(await __r.text()); const __t = await __r.text(); return __t ? JSON.parse(__t) : null; })()"
+          typescript: "(async () => { const __h: Record<string,string> = { 'Content-Type': 'application/json' }; const __tok = typeof localStorage !== 'undefined' ? localStorage.getItem('veil_auth_token') : null; if (__tok) __h['Authorization'] = 'Bearer ' + __tok; const __r = await fetch({arg0}, { method: 'POST', headers: __h, body: JSON.stringify({arg1}) }); if (!__r.ok) throw new Error(await __r.text()); const __t = await __r.text(); return __t ? JSON.parse(__t) : null; })()"
       put(endpoint: Str, body: Json) -> Res!<Json>
         lowers_to
-          typescript: "(async () => { const __r = await fetch({arg0}, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({arg1}) }); if (!__r.ok) throw new Error(await __r.text()); const __t = await __r.text(); return __t ? JSON.parse(__t) : null; })()"
+          typescript: "(async () => { const __h: Record<string,string> = { 'Content-Type': 'application/json' }; const __tok = typeof localStorage !== 'undefined' ? localStorage.getItem('veil_auth_token') : null; if (__tok) __h['Authorization'] = 'Bearer ' + __tok; const __r = await fetch({arg0}, { method: 'PUT', headers: __h, body: JSON.stringify({arg1}) }); if (!__r.ok) throw new Error(await __r.text()); const __t = await __r.text(); return __t ? JSON.parse(__t) : null; })()"
       delete(endpoint: Str) -> Res!<Json>
         lowers_to
           typescript: "(async () => { const __r = await fetch({arg0}, { method: 'DELETE' }); if (!__r.ok) throw new Error(await __r.text()); const __t = await __r.text(); return __t ? JSON.parse(__t) : null; })()"
@@ -300,6 +300,42 @@ pkg svelte5 v1
     fn navigate(url: Str) -> Res!
       lowers_to
         typescript: "window.location.href = {arg0}"
+      ret Ok
+
+    # ── OAuth2 Authorization-Code + PKCE (generic, provider-agnostic) ──────────
+    # Begin an Authorization-Code-with-PKCE login: generate a random verifier,
+    # derive the S256 challenge, persist the verifier, and redirect the browser
+    # to the authorization endpoint. `idp` (optional) pre-selects a hosted-UI
+    # identity provider. All arguments are values supplied by the caller — this
+    # helper knows nothing about any specific IdP.
+    fn oauth_pkce_login(authorize_base: Str, client_id: Str, redirect_uri: Str, scope: Str, idp: Str) -> Res!
+      lowers_to
+        typescript: "(async () => { const b64url = (buf: ArrayBuffer) => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\\+/g,'-').replace(/\\//g,'_').replace(/=+$/,''); const rnd = new Uint8Array(32); crypto.getRandomValues(rnd); const verifier = b64url(rnd.buffer); const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier)); const challenge = b64url(digest); localStorage.setItem('pkce_verifier', verifier); const p = new URLSearchParams({ client_id: {arg1}, response_type: 'code', redirect_uri: {arg2}, scope: {arg3}, code_challenge: challenge, code_challenge_method: 'S256' }); if ({arg4}) p.set('identity_provider', {arg4}); window.location.href = {arg0} + '/oauth2/authorize?' + p.toString(); })()"
+      ret Ok
+
+    # Exchange an authorization code for tokens at the token endpoint, using the
+    # stored PKCE verifier. Returns the parsed token JSON (id_token, access_token,
+    # …). Clears the verifier afterwards.
+    fn oauth_pkce_exchange(token_endpoint: Str, client_id: Str, redirect_uri: Str, code: Str) -> Res!<Json>
+      lowers_to
+        typescript: "(async () => { const verifier = localStorage.getItem('pkce_verifier') ?? ''; const body = new URLSearchParams({ grant_type: 'authorization_code', client_id: {arg1}, code: {arg3}, redirect_uri: {arg2}, code_verifier: verifier }); const r = await fetch({arg0}, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: body.toString() }); localStorage.removeItem('pkce_verifier'); if (!r.ok) throw new Error(await r.text()); return await r.json(); })()"
+      ret Ok
+
+    # Read the `code` query parameter from the current URL (OAuth callback).
+    fn oauth_callback_code() -> Str
+      lowers_to
+        typescript: "(new URLSearchParams(window.location.search).get('code') ?? '')"
+      ret ""
+
+    # Persist / clear the bearer token that ApiClient attaches to requests.
+    fn set_auth_token(token: Str) -> Res!
+      lowers_to
+        typescript: "localStorage.setItem('veil_auth_token', {arg0})"
+      ret Ok
+
+    fn clear_auth_token() -> Res!
+      lowers_to
+        typescript: "localStorage.removeItem('veil_auth_token')"
       ret Ok
 
     # Environment — browser uses localStorage (no process.env in SPA)
