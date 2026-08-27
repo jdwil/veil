@@ -1,0 +1,79 @@
+# ===========================================================================
+# VEIL Runtime — Production Docker Image (prebuilt binaries)
+#
+# Same runtime stage as deploy/Dockerfile, but expects veil-runtime + veil
+# binaries to be compiled ahead of time (bookworm-compatible glibc) at
+# ./target-docker/release/. Build them with:
+#   docker run --rm --network=host -v "$PWD":/build -w /build \
+#     -v "$HOME/.cargo/registry":/root/.cargo/registry \
+#     -v "$HOME/.cargo/git":/root/.cargo/git \
+#     rust:1.96-bookworm \
+#     cargo build --release -p veil-runtime -p veil-cli --target-dir /build/target-docker
+# ===========================================================================
+FROM debian:bookworm-slim
+
+# System deps (including zip for Lambda packaging, unzip for terraform)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates curl git build-essential pkg-config libssl-dev \
+    zip unzip jq python3 python3-pip && \
+    rm -rf /var/lib/apt/lists/*
+
+# ─── Rust toolchain ──────────────────────────────────────────────────────────
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
+    sh -s -- -y --profile minimal --default-toolchain stable && \
+    /root/.cargo/bin/rustup component add clippy && \
+    /root/.cargo/bin/rustup target add x86_64-unknown-linux-gnu
+
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+# ─── Node.js via nvm (version switchable per project) ────────────────────────
+ENV NVM_DIR="/root/.nvm"
+RUN curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash && \
+    . "$NVM_DIR/nvm.sh" && \
+    nvm install 20 && \
+    nvm alias default 20 && \
+    npm install -g typescript svelte-check && \
+    ln -sf "$NVM_DIR"/versions/node/*/bin/node /usr/local/bin/node && \
+    ln -sf "$NVM_DIR"/versions/node/*/bin/npm /usr/local/bin/npm && \
+    ln -sf "$NVM_DIR"/versions/node/*/bin/npx /usr/local/bin/npx && \
+    ln -sf "$NVM_DIR"/versions/node/*/bin/tsc /usr/local/bin/tsc && \
+    ln -sf "$NVM_DIR"/versions/node/*/bin/svelte-check /usr/local/bin/svelte-check
+
+# node bins symlinked into /usr/local/bin above so PATH does not depend on the
+# exact nvm patch version (nvm install 20 may resolve to any 20.x).
+
+# ─── Terraform via tfenv (version switchable per project) ────────────────────
+RUN git clone --depth 1 https://github.com/tfutils/tfenv.git /opt/tfenv && \
+    ln -s /opt/tfenv/bin/tfenv /usr/local/bin/tfenv && \
+    ln -s /opt/tfenv/bin/terraform /usr/local/bin/terraform && \
+    tfenv install 1.9.8 && \
+    tfenv use 1.9.8
+
+# ─── AWS CLI v2 ──────────────────────────────────────────────────────────────
+RUN curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "/tmp/awscliv2.zip" && \
+    unzip -q /tmp/awscliv2.zip -d /tmp && \
+    /tmp/aws/install && \
+    rm -rf /tmp/aws /tmp/awscliv2.zip
+
+# ─── VEIL binaries (prebuilt) ─────────────────────────────────────────────────
+COPY target-docker/release/veil-runtime /usr/local/bin/veil-runtime
+COPY target-docker/release/veil /usr/local/bin/veil
+
+# Platform layers
+COPY layers /opt/veil/layers
+
+# UI (pre-built SvelteKit app — static SPA from npm run build)
+COPY ui/build /opt/veil/ui
+
+# Environment
+ENV VEIL_LAYERS_DIR=/opt/veil/layers
+ENV VEIL_UI_DIR=/opt/veil/ui
+ENV VEIL_PORT=8080
+ENV RUST_LOG=info,veil=debug
+
+EXPOSE 8080
+
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
+    CMD curl -f http://localhost:${VEIL_PORT}/health || exit 1
+
+ENTRYPOINT ["veil-runtime"]
