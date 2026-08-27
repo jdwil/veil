@@ -46,6 +46,13 @@ pub struct ContributionManifest {
     /// e.g. { "main-menu": [...], "main-content": [...] }
     #[serde(default)]
     pub slots: serde_json::Value,
+    /// Optional access rule (claim-based access control). `None` or a
+    /// `{ "public": true }` rule means the contribution is visible to every
+    /// authenticated user; any other predicate restricts visibility to users
+    /// whose JWT claims satisfy it. The runtime evaluates this via the pure
+    /// `access` engine module — it is provider-agnostic.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub access: Option<crate::access::AccessRule>,
     /// When this contribution was first registered.
     pub registered_at: DateTime<Utc>,
     /// When this contribution was last updated.
@@ -72,6 +79,8 @@ pub struct CreateContributionBody {
     pub order: u32,
     #[serde(default)]
     pub slots: serde_json::Value,
+    #[serde(default)]
+    pub access: Option<crate::access::AccessRule>,
 }
 
 fn default_enabled() -> bool {
@@ -96,6 +105,10 @@ pub struct PatchContributionBody {
     pub slots: Option<serde_json::Value>,
     #[serde(default)]
     pub name: Option<String>,
+    /// Update the access rule. When present, replaces the current rule. To make
+    /// a contribution public again, provide `{ "public": true }`.
+    #[serde(default)]
+    pub access: Option<Option<crate::access::AccessRule>>,
 }
 
 // ─── Store ───────────────────────────────────────────────────────────────────
@@ -243,5 +256,118 @@ impl ContributionManifestStore {
             .await
             .map_err(|e| format!("DDB delete contribution: {e:?}"))?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::access::AccessRule;
+    use serde_json::json;
+
+    #[test]
+    fn create_body_without_access_defaults_to_none() {
+        let body: CreateContributionBody = serde_json::from_value(json!({
+            "app_id": "dlx-ai",
+            "id": "agent-core",
+            "name": "Agent Core",
+            "version": "1.0.0",
+            "bundle_url": "https://x/index.js"
+        }))
+        .unwrap();
+        assert!(body.access.is_none());
+        assert!(body.enabled); // default_enabled
+        assert_eq!(body.order, 100); // default_order
+    }
+
+    #[test]
+    fn create_body_with_public_access() {
+        let body: CreateContributionBody = serde_json::from_value(json!({
+            "app_id": "dlx-ai",
+            "id": "agent-core",
+            "name": "Agent Core",
+            "version": "1.0.0",
+            "bundle_url": "https://x/index.js",
+            "access": { "public": true }
+        }))
+        .unwrap();
+        assert!(matches!(body.access, Some(AccessRule::Public { public: true })));
+    }
+
+    #[test]
+    fn create_body_with_predicate_access() {
+        let body: CreateContributionBody = serde_json::from_value(json!({
+            "app_id": "dlx-ai",
+            "id": "restricted",
+            "name": "Restricted",
+            "version": "1.0.0",
+            "bundle_url": "https://x/index.js",
+            "access": { "claim": "email", "op": "endswith", "value": "@dashlx.com" }
+        }))
+        .unwrap();
+        assert!(matches!(body.access, Some(AccessRule::Predicate(_))));
+    }
+
+    #[test]
+    fn manifest_round_trips_with_access() {
+        let now = Utc::now();
+        let manifest = ContributionManifest {
+            id: "agent-core".into(),
+            app_id: "dlx-ai".into(),
+            name: "Agent Core".into(),
+            version: "1.0.0".into(),
+            bundle_url: "https://x/index.js".into(),
+            css_url: None,
+            enabled: true,
+            order: 10,
+            slots: json!({}),
+            access: Some(
+                serde_json::from_value(json!({ "claim": "employer", "op": "equals", "value": "dashlx" }))
+                    .unwrap(),
+            ),
+            registered_at: now,
+            updated_at: now,
+        };
+        let s = serde_json::to_string(&manifest).unwrap();
+        let back: ContributionManifest = serde_json::from_str(&s).unwrap();
+        assert_eq!(back.access, manifest.access);
+    }
+
+    #[test]
+    fn manifest_omits_access_when_none() {
+        let now = Utc::now();
+        let manifest = ContributionManifest {
+            id: "public-thing".into(),
+            app_id: "dlx-ai".into(),
+            name: "Public".into(),
+            version: "1.0.0".into(),
+            bundle_url: "https://x/index.js".into(),
+            css_url: None,
+            enabled: true,
+            order: 10,
+            slots: json!({}),
+            access: None,
+            registered_at: now,
+            updated_at: now,
+        };
+        let v = serde_json::to_value(&manifest).unwrap();
+        assert!(v.get("access").is_none(), "access should be omitted when None");
+    }
+
+    #[test]
+    fn patch_body_access_states() {
+        // absent → None (don't touch)
+        let p: PatchContributionBody =
+            serde_json::from_value(json!({ "enabled": false })).unwrap();
+        assert!(p.access.is_none());
+
+        // present rule → Some(Some(rule)). To make a contribution public again,
+        // patch with an explicit public rule rather than null (serde's default
+        // Option handling collapses absent and null to None).
+        let p: PatchContributionBody = serde_json::from_value(json!({
+            "access": { "public": true }
+        }))
+        .unwrap();
+        assert!(matches!(p.access, Some(Some(AccessRule::Public { public: true }))));
     }
 }

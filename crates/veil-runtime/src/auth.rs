@@ -261,6 +261,56 @@ impl AuthState {
 
         Ok(token_data.claims)
     }
+
+    /// Validate a bearer token for the purpose of *claim extraction* and return
+    /// the full set of claims as a flat JSON map (claim name → value).
+    ///
+    /// This is used by claim-based access control (`crate::access`). It performs
+    /// the same cryptographic validation as [`Self::validate_token`] — signature
+    /// against JWKS, issuer, and expiry — but does NOT require a specific
+    /// audience. Cognito **access tokens** omit the `aud` claim (they carry
+    /// `client_id` instead), so requiring `aud` here would reject otherwise
+    /// valid tokens. Signature + issuer + expiry are the security-relevant
+    /// checks; audience is an authorization scope the coarse [`AuthLayer`]
+    /// already enforces where required.
+    ///
+    /// Returns a map suitable for `crate::access::AccessRule::evaluate`.
+    pub fn validate_claims(
+        &self,
+        token: &str,
+    ) -> Result<std::collections::HashMap<String, serde_json::Value>, AuthError> {
+        let jwks = self.jwks.as_ref().ok_or(AuthError::NotConfigured)?;
+
+        let header = decode_header(token).map_err(|e| AuthError::InvalidToken(e.to_string()))?;
+        let kid = header.kid.ok_or(AuthError::InvalidToken("missing kid".into()))?;
+        let key = jwks
+            .find_key(&kid)
+            .ok_or(AuthError::InvalidToken(format!("unknown kid: {kid}")))?;
+
+        let mut validation = Validation::new(Algorithm::RS256);
+        // Validate issuer + expiry, but not audience (see doc comment).
+        validation.validate_aud = false;
+        validation.validate_exp = true;
+        if let AuthProvider::Cognito(cfg) = &self.config.provider {
+            let issuer = format!(
+                "https://cognito-idp.{}.amazonaws.com/{}",
+                cfg.region, cfg.user_pool_id
+            );
+            validation.set_issuer(&[&issuer]);
+        }
+
+        // Decode into a generic JSON object so every claim (standard + custom)
+        // is available to the access evaluator.
+        let token_data = decode::<serde_json::Map<String, serde_json::Value>>(token, key, &validation)
+            .map_err(|e| AuthError::InvalidToken(e.to_string()))?;
+
+        Ok(token_data.claims.into_iter().collect())
+    }
+
+    /// Whether this AuthState has a usable key set (i.e. can validate tokens).
+    pub fn can_validate(&self) -> bool {
+        self.jwks.is_some()
+    }
 }
 
 #[derive(Debug, thiserror::Error)]

@@ -3,6 +3,7 @@
 //! Product HTTP surface lives in `veil_server::ProductHost`.
 //! Platform REST (repos, PRs, deploy) lives in `platform_http`.
 
+mod access;
 mod artifact_registry;
 mod auth;
 mod deploy;

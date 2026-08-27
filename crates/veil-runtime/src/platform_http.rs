@@ -3372,6 +3372,10 @@ async fn list_review_policies() -> Result<Json<Value>, StatusCode> {
 struct ArtifactRegistryState {
     store: Arc<crate::artifact_registry::ArtifactRegistryStore>,
     contribution_store: Arc<crate::artifact_registry::ContributionManifestStore>,
+    /// Auth state for claim-based access control on contribution listing.
+    /// Used to validate a Bearer token and extract claims; `None`-capable
+    /// (when JWKS unavailable) — filtering degrades to public-only.
+    auth: Arc<crate::auth::AuthState>,
 }
 
 // ─── Function Invoke (Phase 3) ──────────────────────────────────────────────
@@ -3677,12 +3681,60 @@ async fn get_artifact_manifest(
     })))
 }
 
+/// Extract and validate the Bearer token from request headers, returning the
+/// caller's claims. Returns `None` if there is no token, the token is invalid,
+/// or the runtime has no key set configured — callers should treat `None` as
+/// "unauthenticated" (public-only visibility).
+fn extract_claims(
+    auth: &crate::auth::AuthState,
+    headers: &axum::http::HeaderMap,
+) -> Option<crate::access::Claims> {
+    if !auth.can_validate() {
+        return None;
+    }
+    let token = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|h| {
+            h.strip_prefix("Bearer ")
+                .or_else(|| h.strip_prefix("bearer "))
+        })?;
+    match auth.validate_claims(token) {
+        Ok(claims) => Some(claims),
+        Err(e) => {
+            tracing::debug!(error = %e, "contribution access: token validation failed");
+            None
+        }
+    }
+}
+
+/// Decide whether a contribution with the given access rule is visible to a
+/// caller with the given claims.
+///
+/// - No rule (`None`) or an explicitly public rule → always visible.
+/// - A restricted rule → visible only if `claims` are present AND satisfy it.
+///   An unauthenticated caller (`claims == None`) never sees restricted content.
+fn access_permitted(
+    rule: Option<&crate::access::AccessRule>,
+    claims: Option<&crate::access::Claims>,
+) -> bool {
+    match rule {
+        None => true,
+        Some(r) if r.is_public() => true,
+        Some(r) => match claims {
+            Some(c) => r.evaluate(c),
+            None => false,
+        },
+    }
+}
+
 /// GET /api/contributions?kind=menu_item&tenant_id=...
 /// GET /api/contributions?app=dlx-ai
 /// Lists contributions. When `app` is provided, uses the ContributionManifestStore
 /// (DLX AI harness model). Otherwise falls through to legacy artifact-registry query.
 async fn list_contributions(
     State(st): State<ArtifactRegistryState>,
+    headers: axum::http::HeaderMap,
     Query(q): Query<ContributionsQuery>,
 ) -> Result<Json<Value>, StatusCode> {
     // New DLX AI harness path: ?app= queries the ContributionManifestStore.
@@ -3693,13 +3745,21 @@ async fn list_contributions(
             .await
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-        let results: Vec<_> = if q.include_disabled.unwrap_or(false) {
+        let mut manifests: Vec<_> = if q.include_disabled.unwrap_or(false) {
             manifests
         } else {
             manifests.into_iter().filter(|m| m.enabled).collect()
         };
 
-        return Ok(Json(json!({ "contributions": results })));
+        // ── Claim-based access control ──────────────────────────────────────
+        // Extract + validate the Bearer token (if any) and derive the caller's
+        // claims. Then filter contributions: public ones are always visible;
+        // restricted ones only if the caller's claims satisfy their rule.
+        let claims: Option<crate::access::Claims> = extract_claims(&st.auth, &headers);
+
+        manifests.retain(|m| access_permitted(m.access.as_ref(), claims.as_ref()));
+
+        return Ok(Json(json!({ "contributions": manifests })));
     }
 
     // Legacy path: kind/tenant-based resolution from the artifact registry.
@@ -3825,6 +3885,7 @@ async fn create_contribution(
         enabled: body.enabled,
         order: body.order,
         slots: body.slots,
+        access: body.access,
         registered_at: existing
             .as_ref()
             .map(|e| e.registered_at)
@@ -3897,6 +3958,9 @@ async fn patch_contribution(
     }
     if let Some(name) = body.name {
         manifest.name = name;
+    }
+    if let Some(access) = body.access {
+        manifest.access = access;
     }
     manifest.updated_at = chrono::Utc::now();
 
@@ -4109,6 +4173,9 @@ pub async fn build_platform_router(
     let art_reg = ArtifactRegistryState {
         store: art_reg_store,
         contribution_store,
+        auth: Arc::new(
+            crate::auth::AuthState::new(crate::auth::AuthConfig::from_env()).await,
+        ),
     };
     let artifact_registry_r = Router::new()
         .route(
@@ -4204,4 +4271,57 @@ pub async fn build_platform_router(
         .merge(artifact_registry_r)
         .merge(function_invoke_r)
         .merge(pipeline_r)
+}
+
+#[cfg(test)]
+mod access_control_tests {
+    use super::access_permitted;
+    use crate::access::{AccessRule, Claims};
+    use serde_json::{json, Value};
+
+    fn claims(pairs: &[(&str, Value)]) -> Claims {
+        pairs.iter().map(|(k, v)| (k.to_string(), v.clone())).collect()
+    }
+
+    fn rule(j: Value) -> AccessRule {
+        serde_json::from_value(j).unwrap()
+    }
+
+    #[test]
+    fn no_rule_visible_to_everyone_including_anonymous() {
+        assert!(access_permitted(None, None));
+        assert!(access_permitted(None, Some(&claims(&[]))));
+    }
+
+    #[test]
+    fn public_rule_visible_to_everyone_including_anonymous() {
+        let r = rule(json!({ "public": true }));
+        assert!(access_permitted(Some(&r), None));
+        assert!(access_permitted(Some(&r), Some(&claims(&[]))));
+    }
+
+    #[test]
+    fn restricted_rule_hidden_from_anonymous() {
+        let r = rule(json!({ "claim": "email", "op": "endswith", "value": "@dashlx.com" }));
+        // No claims (unauthenticated) → never see restricted content.
+        assert!(!access_permitted(Some(&r), None));
+    }
+
+    #[test]
+    fn restricted_rule_visible_when_claims_satisfy() {
+        let r = rule(json!({ "claim": "email", "op": "endswith", "value": "@dashlx.com" }));
+        assert!(access_permitted(
+            Some(&r),
+            Some(&claims(&[("email", json!("jd@dashlx.com"))]))
+        ));
+    }
+
+    #[test]
+    fn restricted_rule_hidden_when_claims_do_not_satisfy() {
+        let r = rule(json!({ "claim": "email", "op": "endswith", "value": "@nobody.example" }));
+        assert!(!access_permitted(
+            Some(&r),
+            Some(&claims(&[("email", json!("jd@dashlx.com"))]))
+        ));
+    }
 }
