@@ -4174,7 +4174,8 @@ pub async fn build_platform_router(
         store: art_reg_store,
         contribution_store,
         auth: Arc::new(
-            crate::auth::AuthState::new(crate::auth::AuthConfig::from_env()).await,
+            crate::auth::AuthState::new_for_claims(crate::auth::AuthConfig::cognito_from_env())
+                .await,
         ),
     };
     let artifact_registry_r = Router::new()

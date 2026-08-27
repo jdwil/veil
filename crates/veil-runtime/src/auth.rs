@@ -89,6 +89,35 @@ impl AuthConfig {
         self.enabled && !matches!(self.provider, AuthProvider::None)
     }
 
+    /// Build a config carrying a Cognito provider whenever the Cognito env vars
+    /// are present, **independent of `VEIL_AUTH_ENABLED`**. Used for claim-based
+    /// access control (contribution filtering), which needs to validate tokens
+    /// and read their claims even when the coarse `/api/*` gate is off. Returns
+    /// a `None` provider if pool/client are not configured.
+    pub fn cognito_from_env() -> Self {
+        let region = std::env::var("VEIL_AUTH_COGNITO_REGION")
+            .unwrap_or_else(|_| "us-west-2".into());
+        let user_pool_id = std::env::var("VEIL_AUTH_COGNITO_USER_POOL_ID").unwrap_or_default();
+        let client_id = std::env::var("VEIL_AUTH_COGNITO_CLIENT_ID").unwrap_or_default();
+
+        let provider = if user_pool_id.is_empty() {
+            AuthProvider::None
+        } else {
+            AuthProvider::Cognito(CognitoConfig {
+                region,
+                user_pool_id,
+                client_id,
+            })
+        };
+
+        Self {
+            // `enabled` is irrelevant for the claims-extraction path; the flag
+            // only governs the coarse AuthLayer.
+            enabled: false,
+            provider,
+        }
+    }
+
     /// Human-readable provider name for logging.
     pub fn provider_name(&self) -> &str {
         match &self.provider {
@@ -205,30 +234,47 @@ impl AuthState {
     /// Create a new AuthState. If auth is active, fetches JWKS eagerly.
     pub async fn new(config: AuthConfig) -> Self {
         let jwks = if config.is_active() {
-            match &config.provider {
-                AuthProvider::Cognito(cfg) => {
-                    match JwksKeySet::fetch_cognito(&cfg.region, &cfg.user_pool_id).await {
-                        Ok(ks) => {
-                            tracing::info!(
-                                keys = ks.keys.len(),
-                                pool = %cfg.user_pool_id,
-                                "JWKS loaded for Cognito auth"
-                            );
-                            Some(Arc::new(ks))
-                        }
-                        Err(e) => {
-                            tracing::error!("Failed to load JWKS: {e}; auth will reject all requests");
-                            None
-                        }
-                    }
-                }
-                AuthProvider::None => None,
-            }
+            Self::fetch_jwks(&config.provider).await
         } else {
             None
         };
 
         Self { config, jwks }
+    }
+
+    /// Create an AuthState for **claim extraction only** (claim-based access
+    /// control on contribution listing). Unlike [`Self::new`], this fetches the
+    /// JWKS whenever a Cognito provider is configured, regardless of the coarse
+    /// `VEIL_AUTH_ENABLED` gate. This decouples "can I validate a token to read
+    /// its claims for filtering" from "do I reject unauthenticated /api/*
+    /// requests" (the latter is the [`AuthLayer`]'s job). Config comes from the
+    /// same `VEIL_AUTH_COGNITO_*` env vars — no hardcoding.
+    pub async fn new_for_claims(config: AuthConfig) -> Self {
+        let jwks = Self::fetch_jwks(&config.provider).await;
+        Self { config, jwks }
+    }
+
+    /// Fetch the JWKS key set for a provider, if any.
+    async fn fetch_jwks(provider: &AuthProvider) -> Option<Arc<JwksKeySet>> {
+        match provider {
+            AuthProvider::Cognito(cfg) => {
+                match JwksKeySet::fetch_cognito(&cfg.region, &cfg.user_pool_id).await {
+                    Ok(ks) => {
+                        tracing::info!(
+                            keys = ks.keys.len(),
+                            pool = %cfg.user_pool_id,
+                            "JWKS loaded for Cognito auth"
+                        );
+                        Some(Arc::new(ks))
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to load JWKS: {e}; token validation disabled");
+                        None
+                    }
+                }
+            }
+            AuthProvider::None => None,
+        }
     }
 
     /// Validate a bearer token. Returns claims on success.
