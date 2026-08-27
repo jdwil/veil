@@ -1,0 +1,112 @@
+pkg auth_provider v1
+  desc "Pluggable auth contract (Model C) — provider-agnostic AuthProvider port + AuthResult"
+  author "VEIL"
+  use base
+
+  # ─── Pluggable Auth Layer (Model C) ─────────────────────────────────
+  # A single transport-agnostic contract that every auth provider conforms
+  # to. The engine/runtime knows nothing about Cognito, Google, JWKS, or
+  # tenancy — it only sees the `role auth_provider` binding and the
+  # AuthProvider port surface. Concrete providers are authored as VEIL
+  # constructs that carry `role auth_provider` and implement `authenticate`.
+  #
+  #   authenticate(token: Str) -> AuthResult
+  #
+  # `token` is an opaque credential string (bearer JWT, session id, api key —
+  # the transport layer extracts it and hands it here). No transport,
+  # cookie, or header vocabulary leaks into this contract.
+
+  # ─── Auth binding construct ─────────────────────────────────────────
+  # @auth_provider marks the construct the runtime binds as THE active auth
+  # provider. The engine matches role:auth_provider (INV-001), never the
+  # keyword spelling. A product declares exactly one bound provider; the
+  # host swaps implementations without touching engine or layer code.
+  construct AuthProviderBinding
+    kw auth_provider
+    mt impl
+    role auth_provider
+    in any
+    desc "Auth provider binding — the construct the runtime binds to satisfy AuthProvider"
+    ann
+      # role:auth_provider — active provider selection (INV-001)
+      auth_provider: "Binds this construct as the active auth provider" flag role:auth_provider
+    visual
+      icon "🔐"
+      color "#0ea5e9"
+      label "Auth Provider"
+
+  # ─── Contract (injected into every solution using this layer) ────────
+  # Declared with core keywords (trait / struct) so inject_declarations can
+  # parse the surface without layer vocabulary. No provider specifics.
+  declare
+    # AuthProvider — the port every provider conforms to. Transport-agnostic:
+    # takes an opaque token, returns a structured AuthResult (never throws for
+    # an invalid token — populate `error` instead).
+    trait AuthProvider
+      authenticate(token: Str) -> AuthResult
+
+    # AuthResult — the uniform outcome of an authentication attempt.
+    #   authenticated — did the token verify?
+    #   subject       — verified principal / subject id when authenticated
+    #   claims        — provider claims as an opaque JSON map (roles, scopes,
+    #                   tenant, custom — no field is mandated by the contract)
+    #   error         — human-readable failure reason when not authenticated
+    struct AuthResult
+      authenticated: Bool
+      subject: Opt<Str>
+      claims: Json
+      error: Opt<Str>
+
+  # ─── LLM Prompt (RAG context for code-generating agents) ─────────────
+  prompt
+    You are writing VEIL code using the auth_provider layer (pluggable auth, Model C).
+
+    ## Overview
+    This layer defines a single provider-agnostic authentication contract that
+    ALL auth providers conform to. It contains NO Cognito, Google, OIDC, JWKS,
+    tenant, or transport vocabulary — those are provider/product concerns that
+    live in VEIL product code, not the engine or this layer.
+
+    ## Contract
+    - `AuthProvider` (port/trait) — the interface every provider implements:
+        `authenticate(token: Str) -> AuthResult`
+      `token` is an opaque credential string. The transport layer (HTTP header,
+      cookie, gRPC metadata, …) extracts it and passes it in. Verification MUST
+      NOT depend on transport details.
+    - `AuthResult` (struct) — the uniform outcome:
+        - `authenticated: Bool` — did the token verify?
+        - `subject: Opt<Str>` — the verified subject/principal id when authenticated
+        - `claims: Json` — provider claims as an opaque JSON map (roles, scopes,
+          tenant, custom); the contract mandates no specific keys
+        - `error: Opt<Str>` — failure reason when `authenticated` is false
+
+    ## Binding
+    - Mark the concrete provider construct with `@auth_provider` so the runtime
+      binds it as the active provider. The engine keys off `role:auth_provider`
+      (INV-001), never the keyword spelling. Declare exactly one bound provider
+      per product; the host swaps implementations without engine changes.
+
+    ## Constraints
+    - You MUST return an `AuthResult` for every call — a failed/invalid token
+      sets `authenticated = false` and populates `error`, rather than raising,
+      because callers branch on the structured result.
+    - You MUST keep providers transport-agnostic — do NOT accept headers,
+      cookies, or request objects; accept the opaque `token: Str` only.
+    - You MUST NOT hardcode a specific IdP (Cognito, Google, Auth0), JWKS URL,
+      or tenant concept in this layer or the engine, because the whole point of
+      Model C is that providers are pluggable product code.
+    - You SHOULD place identity/role data in `claims` (Json) rather than adding
+      fields to `AuthResult`, keeping the struct stable across providers.
+
+    ## Pattern
+    ```
+    use auth_provider
+
+    @auth_provider
+    impl StaticTokenProvider for AuthProvider
+      impl authenticate(token)
+        # verify the opaque token however this provider chooses
+        ok = true
+        claims = {}
+        ret AuthResult{authenticated: ok, subject: null, claims: claims, error: null}
+    ```

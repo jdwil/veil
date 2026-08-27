@@ -6,6 +6,7 @@
 mod access;
 mod artifact_registry;
 mod auth;
+mod auth_provider;
 mod deploy;
 mod function_invoke;
 mod local_ports;
@@ -120,7 +121,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // a `Bus`. Live deploy HTTP uses `exec`/`store`, not bus invoke.
     let platform_bus: Arc<dyn veil_shared::Bus + Send + Sync> =
         Arc::new(veil_shared::InProcessBus::new());
-    let extra = extra.merge(platform_http::build_platform_router(platform_bus).await);
+    // build_platform_router returns the platform routes plus the pluggable auth
+    // binding (Model C) and whether the coarse /api/* gate is enabled, so the
+    // AuthLayer here uses the SAME provider the contribution filter uses.
+    let (platform_router, auth_binding, auth_enabled) =
+        platform_http::build_platform_router(platform_bus).await;
+    let extra = extra.merge(platform_router);
 
     let ui_dir = resolve_ui_dir(Some(std::path::Path::new(env!("CARGO_MANIFEST_DIR"))));
 
@@ -135,12 +141,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let app = host.build_router();
 
-    let auth_config = auth::AuthConfig::from_env();
-    let auth_state = auth::AuthState::new(auth_config.clone()).await;
-    let app = app.layer(auth::AuthLayer::new(auth_state));
+    let app = app.layer(auth::AuthLayer::new(auth_binding.clone(), auth_enabled));
 
-    if auth_config.is_active() {
-        tracing::info!("auth enabled (provider: {:?})", auth_config.provider_name());
+    if auth_enabled {
+        tracing::info!(
+            provider = auth_binding.kind(),
+            "auth enabled (/api/* gated via AuthProvider binding)"
+        );
     } else {
         tracing::info!("auth disabled (local dev mode)");
     }

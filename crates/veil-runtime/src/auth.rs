@@ -372,18 +372,25 @@ pub enum AuthError {
 
 // ─── Middleware Layer ────────────────────────────────────────────────────────
 
-/// Tower layer that enforces JWT auth on requests to `/api/*` paths.
+/// Tower layer that enforces auth on requests to `/api/*` paths, delegating
+/// validation to a pluggable [`crate::auth_provider::AuthProviderBinding`].
 /// Skips auth for `/health`, static files, and all non-API paths.
+///
+/// The `enabled` flag corresponds to the operator's coarse `VEIL_AUTH_ENABLED`
+/// switch: when off, everything passes through (local dev). When on, `/api/*`
+/// requires a token that the bound provider accepts.
 #[derive(Clone)]
 pub struct AuthLayer {
-    state: Arc<AuthState>,
+    binding: Arc<dyn crate::auth_provider::AuthProviderBinding>,
+    enabled: bool,
 }
 
 impl AuthLayer {
-    pub fn new(state: AuthState) -> Self {
-        Self {
-            state: Arc::new(state),
-        }
+    pub fn new(
+        binding: Arc<dyn crate::auth_provider::AuthProviderBinding>,
+        enabled: bool,
+    ) -> Self {
+        Self { binding, enabled }
     }
 }
 
@@ -393,7 +400,8 @@ impl<S> Layer<S> for AuthLayer {
     fn layer(&self, inner: S) -> Self::Service {
         AuthMiddleware {
             inner,
-            state: self.state.clone(),
+            binding: self.binding.clone(),
+            enabled: self.enabled,
         }
     }
 }
@@ -402,7 +410,8 @@ impl<S> Layer<S> for AuthLayer {
 #[derive(Clone)]
 pub struct AuthMiddleware<S> {
     inner: S,
-    state: Arc<AuthState>,
+    binding: Arc<dyn crate::auth_provider::AuthProviderBinding>,
+    enabled: bool,
 }
 
 impl<S> Service<Request<Body>> for AuthMiddleware<S>
@@ -419,8 +428,8 @@ where
     }
 
     fn call(&mut self, req: Request<Body>) -> Self::Future {
-        // If auth is not active, pass through everything.
-        if !self.state.config.is_active() {
+        // If auth is not enabled, pass through everything.
+        if !self.enabled {
             let mut inner = self.inner.clone();
             return Box::pin(async move { inner.call(req).await });
         }
@@ -442,34 +451,35 @@ where
             .and_then(|v| v.to_str().ok())
             .map(|s| s.to_string());
 
-        let token = auth_header
-            .as_deref()
-            .and_then(|h| h.strip_prefix("Bearer ").or_else(|| h.strip_prefix("bearer ")));
+        let token = auth_header.as_deref().and_then(|h| {
+            h.strip_prefix("Bearer ").or_else(|| h.strip_prefix("bearer "))
+        }).map(|s| s.to_string());
 
         match token {
-            Some(t) => match self.state.validate_token(t) {
-                Ok(_claims) => {
-                    // Token is valid — proceed.
-                    let mut inner = self.inner.clone();
-                    Box::pin(async move { inner.call(req).await })
-                }
-                Err(e) => {
-                    tracing::debug!(error = %e, path = %path, "auth rejected");
-                    Box::pin(async move {
+            Some(t) => {
+                let mut inner = self.inner.clone();
+                let binding = self.binding.clone();
+                Box::pin(async move {
+                    let result = binding.authenticate(&t).await;
+                    if result.authenticated {
+                        inner.call(req).await
+                    } else {
+                        let msg = result.error.unwrap_or_else(|| "invalid token".into());
+                        tracing::debug!(error = %msg, path = %path, provider = binding.kind(), "auth rejected");
                         Ok(Response::builder()
                             .status(StatusCode::UNAUTHORIZED)
                             .header("content-type", "application/json")
                             .body(Body::from(
                                 serde_json::json!({
                                     "error": "unauthorized",
-                                    "message": e.to_string(),
+                                    "message": msg,
                                 })
                                 .to_string(),
                             ))
                             .unwrap())
-                    })
-                }
-            },
+                    }
+                })
+            }
             None => {
                 tracing::debug!(path = %path, "auth missing bearer token");
                 Box::pin(async move {

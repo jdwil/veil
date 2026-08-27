@@ -3372,10 +3372,10 @@ async fn list_review_policies() -> Result<Json<Value>, StatusCode> {
 struct ArtifactRegistryState {
     store: Arc<crate::artifact_registry::ArtifactRegistryStore>,
     contribution_store: Arc<crate::artifact_registry::ContributionManifestStore>,
-    /// Auth state for claim-based access control on contribution listing.
-    /// Used to validate a Bearer token and extract claims; `None`-capable
-    /// (when JWKS unavailable) — filtering degrades to public-only.
-    auth: Arc<crate::auth::AuthState>,
+    /// Auth binding for claim-based access control on contribution listing.
+    /// Validates a Bearer token and extracts its claims via the pluggable
+    /// AuthProvider (local JWKS by default, or a delegated auth VEIL app).
+    auth: Arc<dyn crate::auth_provider::AuthProviderBinding>,
 }
 
 // ─── Function Invoke (Phase 3) ──────────────────────────────────────────────
@@ -3681,17 +3681,14 @@ async fn get_artifact_manifest(
     })))
 }
 
-/// Extract and validate the Bearer token from request headers, returning the
-/// caller's claims. Returns `None` if there is no token, the token is invalid,
-/// or the runtime has no key set configured — callers should treat `None` as
-/// "unauthenticated" (public-only visibility).
-fn extract_claims(
-    auth: &crate::auth::AuthState,
+/// Extract and validate the Bearer token from request headers via the auth
+/// binding, returning the caller's claims. Returns `None` if there is no token
+/// or the provider rejects it — callers treat `None` as "unauthenticated"
+/// (public-only visibility).
+async fn extract_claims(
+    auth: &dyn crate::auth_provider::AuthProviderBinding,
     headers: &axum::http::HeaderMap,
 ) -> Option<crate::access::Claims> {
-    if !auth.can_validate() {
-        return None;
-    }
     let token = headers
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
@@ -3699,12 +3696,14 @@ fn extract_claims(
             h.strip_prefix("Bearer ")
                 .or_else(|| h.strip_prefix("bearer "))
         })?;
-    match auth.validate_claims(token) {
-        Ok(claims) => Some(claims),
-        Err(e) => {
-            tracing::debug!(error = %e, "contribution access: token validation failed");
-            None
+    let result = auth.authenticate(token).await;
+    if result.authenticated {
+        Some(result.claims)
+    } else {
+        if let Some(e) = &result.error {
+            tracing::debug!(error = %e, provider = auth.kind(), "contribution access: token rejected");
         }
+        None
     }
 }
 
@@ -3755,7 +3754,7 @@ async fn list_contributions(
         // Extract + validate the Bearer token (if any) and derive the caller's
         // claims. Then filter contributions: public ones are always visible;
         // restricted ones only if the caller's claims satisfy their rule.
-        let claims: Option<crate::access::Claims> = extract_claims(&st.auth, &headers);
+        let claims: Option<crate::access::Claims> = extract_claims(st.auth.as_ref(), &headers).await;
 
         manifests.retain(|m| access_permitted(m.access.as_ref(), claims.as_ref()));
 
@@ -4049,7 +4048,11 @@ pub(crate) fn build_artifact_cors_layer() -> tower_http::cors::CorsLayer {
 /// Build platform domain router and merge onto ProductHost.
 pub async fn build_platform_router(
     bus: Arc<dyn veil_shared::Bus + Send + Sync>,
-) -> Router {
+) -> (
+    Router,
+    Arc<dyn crate::auth_provider::AuthProviderBinding>,
+    bool,
+) {
     let storage_deps = Arc::new(resolve_storage_deps().await);
     let storage = StorageState {
         deps: storage_deps.clone(),
@@ -4170,13 +4173,30 @@ pub async fn build_platform_router(
         art_reg_store.ddb.clone(),
         art_reg_store.table.clone(),
     ));
+
+    // Function registry (app-to-app invoke substrate) — built before the auth
+    // binding so an RPC auth provider can invoke a VEIL auth app through it.
+    let fn_registry = Arc::new(crate::function_invoke::FunctionRegistry::new(
+        Arc::new(crate::artifact_registry::ArtifactRegistryStore::from_env().await),
+    ));
+
+    // Auth binding (Model C): local JWKS by default, or RPC/FFI delegation to a
+    // VEIL auth app, selected by VEIL_AUTH_BINDING. The same binding gates
+    // /api/* (via AuthLayer, applied in main) and filters contributions here.
+    let auth_local_state = Arc::new(
+        crate::auth::AuthState::new_for_claims(crate::auth::AuthConfig::cognito_from_env()).await,
+    );
+    let auth_binding = crate::auth_provider::build_binding(
+        crate::auth_provider::BindingSpec::from_env(),
+        auth_local_state,
+        fn_registry.clone(),
+    );
+    tracing::info!(provider = auth_binding.kind(), "auth provider binding selected");
+
     let art_reg = ArtifactRegistryState {
         store: art_reg_store,
         contribution_store,
-        auth: Arc::new(
-            crate::auth::AuthState::new_for_claims(crate::auth::AuthConfig::cognito_from_env())
-                .await,
-        ),
+        auth: auth_binding.clone(),
     };
     let artifact_registry_r = Router::new()
         .route(
@@ -4221,11 +4241,8 @@ pub async fn build_platform_router(
         .layer(build_artifact_cors_layer());
 
     // Function Invoke (Phase 3 Platform Primitives)
-    let fn_registry = Arc::new(crate::function_invoke::FunctionRegistry::new(
-        Arc::new(crate::artifact_registry::ArtifactRegistryStore::from_env().await),
-    ));
     let fn_invoke_state = FunctionInvokeState {
-        registry: fn_registry,
+        registry: fn_registry.clone(),
     };
     let function_invoke_r = Router::new()
         .route(
@@ -4265,13 +4282,17 @@ pub async fn build_platform_router(
         )
         .with_state(pipeline_state);
 
-    storage_r
+    let router = storage_r
         .merge(cm_r)
         .merge(deploy_r)
         .merge(registry_r)
         .merge(artifact_registry_r)
         .merge(function_invoke_r)
-        .merge(pipeline_r)
+        .merge(pipeline_r);
+
+    // The coarse gate flag: whether /api/* requires a valid token at all.
+    let auth_enabled = crate::auth::AuthConfig::from_env().enabled;
+    (router, auth_binding, auth_enabled)
 }
 
 #[cfg(test)]
