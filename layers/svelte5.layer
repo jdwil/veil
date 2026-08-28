@@ -327,6 +327,20 @@ pkg svelte5 v1
         typescript: "(new URLSearchParams(window.location.search).get('code') ?? '')"
       ret ""
 
+    # Implicit-flow login: redirect to the hosted UI with response_type=token.
+    # The id_token/access_token come back in the URL fragment at the redirect_uri.
+    fn oauth_implicit_login(authorize_base: Str, client_id: Str, redirect_uri: Str, scope: Str, idp: Str) -> Res!
+      lowers_to
+        typescript: "(() => { const p = new URLSearchParams({ client_id: {arg1}, response_type: 'token', redirect_uri: {arg2}, scope: {arg3} }); if ({arg4}) p.set('identity_provider', {arg4}); window.location.href = {arg0} + '/oauth2/authorize?' + p.toString(); })()"
+      ret Ok
+
+    # Parse the implicit-flow tokens from the URL fragment (#id_token=...&access_token=...).
+    # Returns { id_token, access_token, ... } or an empty object if absent.
+    fn oauth_implicit_tokens() -> Json
+      lowers_to
+        typescript: "(() => { const h = (typeof window !== 'undefined' ? window.location.hash : '').replace(/^#/, ''); const p = new URLSearchParams(h); const o: Record<string,string> = {}; for (const [k,v] of p.entries()) o[k] = v; return o; })()"
+      ret "{}"
+
     # Persist / clear the bearer token that ApiClient attaches to requests.
     fn set_auth_token(token: Str) -> Res!
       lowers_to
