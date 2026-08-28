@@ -17,6 +17,10 @@ use crate::layer::{LayerRegistry, Shape};
 const BUILTIN_TYPES: &[&str] = &[
     "Str", "String", "Int", "F64", "Bool", "Bytes", "UUID", "Id", "DateTime", "Dt",
     "List", "Map", "Set", "Opt", "Res", "Json", "Any", "Unit", "Self", "Blob",
+    // `Fn` is a target-agnostic callback/function value type (the named
+    // counterpart to the `fn(...)` FnPtr grammar). UI layers use it for prop
+    // callbacks (`onclick: Opt<Fn>`); it lowers to a function type per target.
+    "Fn",
 ];
 
 /// Built-in free functions / intrinsics (no construct definition required).
@@ -46,6 +50,12 @@ struct NameIndex {
     stub_types: HashSet<String>,
     /// Stub type → methods
     stub_methods: HashMap<String, HashSet<String>>,
+    /// Type names contributed by loaded layers: construct names declared by
+    /// `.layer` files (e.g. `construct Snippet` in svelte5) plus any names
+    /// injected via layer `declare` blocks (`trait`/`struct`/`enum`/`port`).
+    /// These are legitimate types the codegen handles but that are not part of
+    /// the project's own constructs, so `is_known_type` must consult them too.
+    layer_types: HashSet<String>,
     /// All known names for suggestions
     all_names: Vec<String>,
 }
@@ -338,6 +348,21 @@ fn build_index(sol: &Solution, registry: &LayerRegistry) -> NameIndex {
                     .extend(methods_snapshot.iter().cloned());
             }
         }
+    }
+
+    // Layer-contributed types: construct names declared by loaded `.layer`
+    // files (e.g. `construct Snippet`, `construct Store` in svelte5) and any
+    // types injected via layer `declare` blocks. These are real, codegen-
+    // handled types — the resolver must accept them without a hardcoded
+    // allowlist. Genuinely unknown / typo'd type names still fall through to
+    // `unresolved_type` because they match none of these sets.
+    for spec in &registry.constructs {
+        index.layer_types.insert(spec.name.clone());
+        index.all_names.push(spec.name.clone());
+    }
+    for name in registry.declared_type_names() {
+        index.layer_types.insert(name.clone());
+        index.all_names.push(name);
     }
 
     index.all_names.sort();
@@ -1252,6 +1277,7 @@ fn is_known_type(name: &str, index: &NameIndex, type_params: &HashSet<String>) -
         || index.constructs.contains_key(name)
         || index.type_aliases.contains(name)
         || index.stub_types.contains(name)
+        || index.layer_types.contains(name)
         || type_params.contains(name)
 }
 
@@ -1742,6 +1768,95 @@ mod tests {
         assert!(
             diags.iter().any(|d| d.code == "unresolved_type"),
             "{:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn layer_declared_construct_type_resolves() {
+        // A layer declares `construct Snippet` (svelte5). A component prop typed
+        // `Opt<Snippet>` must resolve — the checker consults layer-contributed
+        // type names, not only project constructs. Regression: designkit reported
+        // `unresolved_type: unknown type 'Snippet'` on every Snippet-typed prop.
+        let reg = reg_with(vec![
+            spec("comp", "Component", Shape::Struct),
+            spec("snippet", "Snippet", Shape::Fn),
+        ]);
+        let mut comp = Construct::new(
+            "comp",
+            "Component",
+            Shape::Struct,
+            "PageHeader".into(),
+            Span::new(0, 0),
+        );
+        comp.fields.push(Field {
+            annotations: Vec::new(),
+            name: "children".into(),
+            type_expr: TypeExpr::Optional(Box::new(TypeExpr::Named("Snippet".into()))),
+            default_expr: None,
+            span: Span::new(0, 0),
+        });
+        let diags = check_names(&sol(vec![TopLevelItem::Construct(comp)]), &reg);
+        assert!(
+            !diags.iter().any(|d| d.code == "unresolved_type"),
+            "Snippet is a layer-declared type and must resolve: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn fn_callback_type_is_builtin() {
+        // `Fn` is the named callback/function value type used by UI prop
+        // callbacks (`onchange: Opt<Fn>`). It is a target-agnostic builtin.
+        let reg = reg_with(vec![spec("comp", "Component", Shape::Struct)]);
+        let mut comp = Construct::new(
+            "comp",
+            "Component",
+            Shape::Struct,
+            "FormField".into(),
+            Span::new(0, 0),
+        );
+        comp.fields.push(Field {
+            annotations: Vec::new(),
+            name: "onchange".into(),
+            type_expr: TypeExpr::Optional(Box::new(TypeExpr::Named("Fn".into()))),
+            default_expr: None,
+            span: Span::new(0, 0),
+        });
+        let diags = check_names(&sol(vec![TopLevelItem::Construct(comp)]), &reg);
+        assert!(
+            !diags.iter().any(|d| d.code == "unresolved_type"),
+            "Fn must resolve as a builtin callback type: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn unknown_type_still_errors_when_layer_types_present() {
+        // The layer-types path must NOT make the checker permissive: a genuinely
+        // typo'd type name still errors even when layer-declared types exist.
+        let reg = reg_with(vec![
+            spec("comp", "Component", Shape::Struct),
+            spec("snippet", "Snippet", Shape::Fn),
+        ]);
+        let mut comp = Construct::new(
+            "comp",
+            "Component",
+            Shape::Struct,
+            "Broken".into(),
+            Span::new(0, 0),
+        );
+        comp.fields.push(Field {
+            annotations: Vec::new(),
+            name: "children".into(),
+            type_expr: TypeExpr::Optional(Box::new(TypeExpr::Named("Snipppet".into()))),
+            default_expr: None,
+            span: Span::new(0, 0),
+        });
+        let diags = check_names(&sol(vec![TopLevelItem::Construct(comp)]), &reg);
+        assert!(
+            diags.iter().any(|d| d.code == "unresolved_type"),
+            "typo'd 'Snipppet' must still be unresolved: {:?}",
             diags
         );
     }

@@ -2,6 +2,18 @@ pkg svelte5 v1
   desc "Svelte 5 component layer — runes-based reactivity, props, snippets"
   author "VEIL"
 
+  # Frontend error model. The declared `ApiClient` / `goto` / `navigate` shims
+  # return `Res!<...>` (browser fetch can fail). CHK-EM requires that any use of
+  # `Res!` be backed by a layer-provided error_model so codegen never invents an
+  # error type. A frontend package should NOT have to `use ddd` just to call an
+  # API, so svelte5 provides its own lightweight model here. Standard variant
+  # roles (external / not_found / validation) keep both codegen backends happy;
+  # in the TypeScript target these lower to thrown `Error`s at the fetch shim.
+  error_model FrontendError
+    external NetworkError
+    not_found NotFound
+    validation ValidationError
+
   # Review presentation (PR Wizard) — component_sandbox target svelte5, fallback structural.
   review
     strategy component_sandbox
