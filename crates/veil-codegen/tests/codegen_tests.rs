@@ -3501,3 +3501,60 @@ pkg L7Kit
         "template literal not lowered:\n{c}"
     );
 }
+
+/// G1b/G2b: `veil check` must NOT flag (a) direct sibling-`fn` calls or (b)
+/// standard JS globals used as call targets. These were check-time false
+/// positives; codegen already emits them correctly.
+#[test]
+fn checker_allows_sibling_fn_calls_and_js_globals() {
+    let src = r#"
+pkg CheckKit
+  use svelte5
+  app Kit
+    group components
+      comp T
+        state
+          items: List<Json> = []
+        fn path_of(tpl: Str, id: Str) -> Str
+          ret tpl
+        fn go()
+          items = path_of("a", "")
+        fn globals(x: Json)
+          let a = Array.isArray(x)
+          let b = JSON.stringify(x)
+          let c = JSON.parse(x)
+          let d = Number(x)
+          ret a
+        template """
+          <div>x</div>
+        """
+"#;
+    let mut reg = LayerRegistry::builtin();
+    let svelte = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../layers/svelte5.layer");
+    if !svelte.is_file() {
+        return;
+    }
+    reg.load_layer("svelte5", svelte.parent().unwrap()).expect("svelte5");
+    let tokens = veil_parser::lex(src);
+    let sol = veil_parser::parse_with_registry(&tokens, reg.clone()).expect("parse failed");
+
+    let mut diags = veil_ir::names::check_names(&sol, &reg);
+    diags.extend(veil_ir::escape::check_escape_hatches(&sol, &reg));
+
+    let offending: Vec<_> = diags
+        .iter()
+        .filter(|d| {
+            matches!(
+                d.code.as_str(),
+                "unresolved_external" | "unresolved_name" | "escape_external_call"
+            )
+        })
+        .map(|d| format!("{}: {}", d.code, d.message))
+        .collect();
+
+    assert!(
+        offending.is_empty(),
+        "unexpected check-time false positives:\n{}",
+        offending.join("\n")
+    );
+}

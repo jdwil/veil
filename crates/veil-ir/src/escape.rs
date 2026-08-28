@@ -372,6 +372,15 @@ fn check_construct_escape(
                 locals.insert(f.name.clone());
             }
         }
+        // A `fn` may call SIBLING fns/methods of the same construct directly
+        // (`path_of(x)`), so the construct's own fn/method names are valid
+        // call targets, not external calls.
+        for sib in &c.fns {
+            locals.insert(sib.name.trim_end_matches('!').to_string());
+        }
+        for m in &c.methods {
+            locals.insert(m.name.trim_end_matches('!').to_string());
+        }
         for e in &fndef.body {
             check_expr_escape(e, &c.name, stub_names, construct_names, free_fns, &mut locals, diagnostics);
         }

@@ -386,6 +386,52 @@ fn strip_bang(name: &str) -> String {
     name.trim_end_matches('!').to_string()
 }
 
+/// Standard JS/TS global objects/constructors that are valid call targets for
+/// the TypeScript codegen target (provided by the JS runtime). Used to avoid
+/// `unresolved_name` false positives on `Array.isArray`, `JSON.stringify`, etc.
+fn is_js_global(name: &str) -> bool {
+    matches!(
+        name,
+        "Array"
+            | "JSON"
+            | "Object"
+            | "Number"
+            | "Boolean"
+            | "Math"
+            | "Date"
+            | "Promise"
+            | "Map"
+            | "Set"
+            | "RegExp"
+            | "Symbol"
+            | "BigInt"
+            | "Error"
+            | "URL"
+            | "URLSearchParams"
+            | "console"
+            | "window"
+            | "document"
+            | "localStorage"
+            | "sessionStorage"
+            | "Intl"
+            | "Reflect"
+            | "Proxy"
+            | "WeakMap"
+            | "WeakSet"
+            | "ArrayBuffer"
+            | "Uint8Array"
+            | "TextEncoder"
+            | "TextDecoder"
+            | "parseInt"
+            | "parseFloat"
+            | "isNaN"
+            | "isFinite"
+            | "encodeURIComponent"
+            | "decodeURIComponent"
+            | "structuredClone"
+    )
+}
+
 // ─── Scope ───────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Default, Clone)]
@@ -979,6 +1025,26 @@ fn check_call(
                 }
             }
         }
+        return;
+    }
+
+    // Direct sibling-`fn` call: a construct's own `fn` may call another `fn`
+    // of the SAME construct directly (`path_of(x)`), not just as a reference.
+    // The enclosing construct's fns/methods are indexed as its methods.
+    if call.method.is_empty() {
+        if let Some(st) = self_type {
+            if let Some(info) = index.constructs.get(st) {
+                if info.methods.contains(target) {
+                    return;
+                }
+            }
+        }
+    }
+
+    // JS/TS standard globals used as call targets (TypeScript target). These
+    // are provided by the JS runtime, so `Array.isArray(x)`, `JSON.stringify(x)`,
+    // `Number(x)`, etc. are not unresolved names.
+    if is_js_global(target) {
         return;
     }
 
