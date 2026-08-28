@@ -2,6 +2,41 @@ use veil_ir::ast::*;
 use veil_ir::layer::{Shape, LayerRegistry};
 use super::*;
 
+/// Render the inline-table body for a git dependency from a `git:` scheme value.
+///
+/// Accepts `<url>` or `<url>#<key>=<val>` where key is `branch`, `rev`, or
+/// `tag`. Bare URLs pin to the repo default branch. Used for stub crates that
+/// live in a git repo but are not published to crates.io (e.g. `veil-jwks`).
+/// Mirrors the `path:` convention so the engine stays generic.
+pub fn git_dep_fields(spec: &str) -> String {
+    let (url, refspec) = match spec.split_once('#') {
+        Some((u, r)) => (u.trim(), Some(r.trim())),
+        None => (spec.trim(), None),
+    };
+    match refspec.and_then(|r| r.split_once('=')) {
+        Some((k, v)) if matches!(k.trim(), "branch" | "rev" | "tag") => {
+            format!("git = \"{url}\", {} = \"{}\"", k.trim(), v.trim())
+        }
+        // Unqualified ref after `#` is treated as a branch for convenience.
+        _ => match refspec {
+            Some(r) if !r.is_empty() => format!("git = \"{url}\", branch = \"{r}\""),
+            _ => format!("git = \"{url}\""),
+        },
+    }
+}
+
+/// Render a companion `cargo_deps` entry. Supports the same `path:`/`git:`
+/// schemes as a stub's own version line, defaulting to a crates.io version.
+pub fn companion_dep_line(dep_name: &str, dep_ver: &str) -> String {
+    if let Some(rel) = dep_ver.strip_prefix("path:") {
+        format!("{dep_name} = {{ path = \"{rel}\" }}")
+    } else if let Some(git_spec) = dep_ver.strip_prefix("git:") {
+        format!("{dep_name} = {{ {} }}", git_dep_fields(git_spec))
+    } else {
+        format!("{dep_name} = \"{dep_ver}\"")
+    }
+}
+
 /// Default for non-client adapter fields (`table`, `bucket`, `dir`, plain Str).
 pub fn harness_string_field_default(fname: &str, ftype: &str) -> String {
     let f = fname.to_ascii_lowercase();
@@ -190,6 +225,12 @@ pub fn gen_workspace_toml(
         // Keeps filesystem/SDK details out of the engine; the .stub still declares the API.
         let dep_line = if let Some(rel) = stub.version.strip_prefix("path:") {
             format!("{} = {{ path = \"{}\" }}", stub.name, rel)
+        } else if let Some(git_spec) = stub.version.strip_prefix("git:") {
+            // Git stubs: version line `git:<url>` or `git:<url>#<key>=<val>`
+            // where key is one of branch|rev|tag (default branch when omitted).
+            // For crates that live in a git repo but aren't published to crates.io
+            // (e.g. veil-jwks in the engine repo). Mirrors the `path:` convention.
+            format!("{} = {{ {} }}", stub.name, git_dep_fields(git_spec))
         } else if stub.cargo_features.is_empty() {
             format!("{} = \"{}\"", stub.name, stub.version)
         } else {
@@ -216,7 +257,7 @@ pub fn gen_workspace_toml(
                 continue;
             }
             dep_map.entry(dep_name.clone())
-                .or_insert_with(|| format!("{dep_name} = \"{dep_ver}\""));
+                .or_insert_with(|| companion_dep_line(dep_name, dep_ver));
         }
     }
     // CAP-001: path deps from `link` declarations.

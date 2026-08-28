@@ -173,6 +173,7 @@ pub fn stub_is_active_cargo(stub: &veil_ir::StubCrate) -> bool {
         || !stub.cargo_deps.is_empty()
         || !stub.codegen_imports.is_empty()
         || !stub.structs.is_empty()
+        || !stub.free_fns.is_empty()
         || !stub.harness_fields.is_empty()
 }
 

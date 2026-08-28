@@ -7,6 +7,7 @@ members = [
     "crates/veil-cli",
     "crates/veil-local",
     "crates/veil-runtime",
+    "crates/veil-jwks",
     "crates/storage",
     "crates/change_management",
     "crates/deploy",

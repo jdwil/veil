@@ -1495,6 +1495,16 @@ fn lower_unknown_target_call(
                 })
                 .collect();
             let call_n = fn_call(format!("{rust_crate}::{m}"), final_args);
+            // Async free functions (declared via the stub's `async_methods`)
+            // need `.await` before the `?`/map_err. Free fns are otherwise
+            // assumed synchronous.
+            let call_n = if ctx.stubs.stub_async_methods.contains(bare)
+                || ctx.stubs.stub_async_methods.contains(&m)
+            {
+                await_of(call_n)
+            } else {
+                call_n
+            };
             return if fallible {
                 map_err_to_string(call_n, ctx.error_model.external_path())
             } else {
