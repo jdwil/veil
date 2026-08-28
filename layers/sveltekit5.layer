@@ -186,6 +186,19 @@ pkg sveltekit5 v1
           return await r.json();
         };
         g.oauth_callback_code = () => (new URLSearchParams(window.location.search).get('code') ?? '');
+        // OAuth2 Implicit grant (token in URL fragment).
+        g.oauth_implicit_login = (authorizeBase: string, clientId: string, redirectUri: string, scope: string, idp: string) => {
+          const p = new URLSearchParams({ client_id: clientId, response_type: 'token', redirect_uri: redirectUri, scope });
+          if (idp) p.set('identity_provider', idp);
+          window.location.href = authorizeBase + '/oauth2/authorize?' + p.toString();
+        };
+        g.oauth_implicit_tokens = () => {
+          const h = (window.location.hash || '').replace(/^#/, '');
+          const p = new URLSearchParams(h);
+          const o: Record<string,string> = {};
+          for (const [k, v] of p.entries()) o[k] = v;
+          return o;
+        };
         g.set_auth_token = (t: string) => localStorage.setItem('veil_auth_token', t);
         g.clear_auth_token = () => localStorage.removeItem('veil_auth_token');
 
@@ -211,6 +224,8 @@ pkg sveltekit5 v1
         declare function oauth_pkce_login(authorizeBase: string, clientId: string, redirectUri: string, scope: string, idp: string): void;
         declare function oauth_pkce_exchange(tokenEndpoint: string, clientId: string, redirectUri: string, code: string): any;
         declare function oauth_callback_code(): string;
+        declare function oauth_implicit_login(authorizeBase: string, clientId: string, redirectUri: string, scope: string, idp: string): void;
+        declare function oauth_implicit_tokens(): Record<string, string>;
         declare function set_auth_token(t: string): void;
         declare function clear_auth_token(): void;
       """
