@@ -597,10 +597,26 @@ fn emit_template_lit(parts: &[StringPart], indent: usize, opts: &TsExprEmitOpts)
 fn emit_closure(params: &[String], body: &[Expr], indent: usize, opts: &TsExprEmitOpts) -> String {
     let param_str = params.join(", ");
     if body.len() == 1 && is_value_expr(&body[0]) {
-        return format!("({}) => {}", param_str, emit_expr(&body[0], indent, opts));
+        let rendered = emit_expr(&body[0], indent, opts);
+        // An arrow whose body is an object literal must wrap it in parens,
+        // otherwise `=> { ... }` is parsed as a block body (hard TS error).
+        if expr_is_object_literal(&body[0]) {
+            return format!("({}) => ({})", param_str, rendered);
+        }
+        return format!("({}) => {}", param_str, rendered);
     }
     let inner = emit_block_inner(body, indent, opts);
     format!("({}) => {{{inner}}}", param_str)
+}
+
+/// True when an expression renders as a `{ ... }` object literal, so an arrow
+/// body must wrap it in parens: `(x) => ({ ... })`.
+fn expr_is_object_literal(e: &Expr) -> bool {
+    matches!(
+        e,
+        // Anonymous record literal `{ ... }` (StructLit with empty type name)
+        Expr::StructLit(name, _) if name.is_empty()
+    ) || matches!(e, Expr::StructUpdate { .. })
 }
 
 fn emit_match(

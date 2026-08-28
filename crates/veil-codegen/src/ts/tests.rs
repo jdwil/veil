@@ -1618,6 +1618,55 @@ fn lower_js_arrow_single_param() {
     assert!(out.contains("x.name"), "body lost: {}", out);
 }
 
+// ─── L2b: arrow returning an object literal must keep wrapping parens ─────────
+
+#[test]
+fn lower_arrow_object_body_wrapped_in_parens_via_tsexpr() {
+    // (f) => ({ key: f.id }) — the emit.rs TsExpr::ArrowFn path.
+    let expr = Expr::Closure {
+        params: vec!["f".to_string()],
+        body: vec![Expr::StructLit(
+            String::new(),
+            vec![(
+                "key".to_string(),
+                Expr::FieldAccess(Box::new(Expr::Ident("f".to_string())), "id".to_string()),
+            )],
+        )],
+    };
+    let out = emit_ts(&lower_to_ts(&expr, &test_ctx()));
+    assert!(
+        out.contains("=> ({") && out.trim_end().ends_with("})"),
+        "object arrow body must be paren-wrapped: {}",
+        out
+    );
+}
+
+#[test]
+fn direct_emit_arrow_object_body_wrapped_in_parens() {
+    // Component fn bodies use the direct expr_emit path. `(f) => ({...})`.
+    use veil_ir::ast::Expr as E;
+    let arrow = E::Closure {
+        params: vec!["f".to_string()],
+        body: vec![E::StructLit(
+            String::new(),
+            vec![(
+                "label".to_string(),
+                E::FieldAccess(Box::new(E::Ident("f".to_string())), "label".to_string()),
+            )],
+        )],
+    };
+    let out = super::expr_emit::emit_expr_value_with(
+        &arrow,
+        0,
+        &super::expr_emit::TsExprEmitOpts::default(),
+    );
+    assert!(
+        out.contains("=> ({") && out.contains("})"),
+        "direct-path object arrow body must be paren-wrapped: {}",
+        out
+    );
+}
+
 // ─── L1: ternary (value-context if/else) lowers to `a ? b : c` ───────────────
 
 #[test]

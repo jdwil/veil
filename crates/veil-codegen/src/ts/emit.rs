@@ -310,12 +310,13 @@ fn emit_ts_indent(expr: &TsExpr, indent: usize) -> String {
             let param_str = params.join(", ");
             // Single-expression body: `(x) => x + 1`
             if body.len() == 1 && is_expression_node(&body[0]) {
-                return format!(
-                    "{}({}) => {}",
-                    async_prefix,
-                    param_str,
-                    emit_ts(&body[0])
-                );
+                let rendered = emit_ts(&body[0]);
+                // An object-literal body must be wrapped in parens, else the
+                // `=> { ... }` is parsed as a block: `(x) => ({ ... })`.
+                if matches!(&body[0], TsExpr::ObjectLit { .. }) {
+                    return format!("{}({}) => ({})", async_prefix, param_str, rendered);
+                }
+                return format!("{}({}) => {}", async_prefix, param_str, rendered);
             }
             let body_str = emit_body(body, indent + 1);
             format!(

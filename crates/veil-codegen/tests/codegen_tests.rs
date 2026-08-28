@@ -3376,12 +3376,15 @@ pkg CrudKit
         state
           items: List<Json> = []
           collapsed: List<Bool> = []
+          fields: List<Json> = []
         derived
           label: Str = entity != "" ? entity : "record"
         fn add_item()
           items = [...items, {}]
         fn remove_item(index: Int)
           items = items.filter((_, i) => i != index)
+        fn columns()
+          ret fields.map((f) => ({ key: f.id, label: f.label }))
         fn toggle(index: Int)
           collapsed[index] = !collapsed[index]
         fn endpoint()
@@ -3422,6 +3425,11 @@ pkg CrudKit
     assert!(
         c.contains(".filter((_, i) =>") && c.contains("i !== index"),
         "arrow closure filter not emitted:\n{c}"
+    );
+    // L2b — arrow returning an object literal keeps wrapping parens.
+    assert!(
+        c.contains(".map((f) => ({"),
+        "object-returning arrow must be paren-wrapped:\n{c}"
     );
     // L3 — index assignment.
     assert!(
