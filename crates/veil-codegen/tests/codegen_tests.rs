@@ -3382,7 +3382,7 @@ pkg CrudKit
         fn add_item()
           items = [...items, {}]
         fn remove_item(index: Int)
-          items = items.filter((_, i) => i != index)
+          items = items.filter((_, i) => i !== index)
         fn columns()
           ret fields.map((f) => ({ key: f.id, label: f.label }))
         fn toggle(index: Int)

@@ -201,6 +201,12 @@ impl Lexer {
                     self.emit(TokenKind::FatArrow, self.pos, self.pos + 2);
                     self.pos += 2;
                 }
+                '=' if self.peek() == Some('=') && self.chars.get(self.pos + 2) == Some(&'=') => {
+                    // JS strict equality `===` — VEIL treats it as `==` (codegen
+                    // emits strict `===`). Longest-match before `==`.
+                    self.emit(TokenKind::EqEq, self.pos, self.pos + 3);
+                    self.pos += 3;
+                }
                 '=' if self.peek() == Some('=') => {
                     self.emit(TokenKind::EqEq, self.pos, self.pos + 2);
                     self.pos += 2;
@@ -216,6 +222,12 @@ impl Lexer {
                 '&' if self.peek() == Some('&') => {
                     self.emit(TokenKind::And, self.pos, self.pos + 2);
                     self.pos += 2;
+                }
+                '!' if self.peek() == Some('=') && self.chars.get(self.pos + 2) == Some(&'=') => {
+                    // JS strict inequality `!==` — VEIL treats it as `!=` (codegen
+                    // emits strict `!==`). Longest-match before `!=`.
+                    self.emit(TokenKind::NotEq, self.pos, self.pos + 3);
+                    self.pos += 3;
                 }
                 '!' if self.peek() == Some('=') => {
                     self.emit(TokenKind::NotEq, self.pos, self.pos + 2);

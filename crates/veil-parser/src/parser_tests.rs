@@ -2345,6 +2345,31 @@ mod arrow_closure_tests {
     }
 
     #[test]
+    fn arrow_in_filter_arg_strict_eq() {
+        // `items.filter((_, i) => i !== index)` — strict `!==` must not corrupt
+        // the arrow body (lexer regression: `!==` was `!=` + `=`).
+        match parse("items.filter((_, i) => i !== index)") {
+            Expr::Call(call) => {
+                assert_eq!(call.method, "filter");
+                assert_eq!(call.args.len(), 1, "args: {:?}", call.args);
+                match &call.args[0] {
+                    Expr::Closure { params, body } => {
+                        assert_eq!(params.len(), 2, "params: {:?}", params);
+                        assert_eq!(body.len(), 1);
+                        assert!(
+                            matches!(&body[0], Expr::BinaryOp(_)),
+                            "body should be a comparison: {:?}",
+                            body[0]
+                        );
+                    }
+                    other => panic!("arg should be a 2-param closure, got {:?}", other),
+                }
+            }
+            other => panic!("expected Call, got {:?}", other),
+        }
+    }
+
+    #[test]
     fn arrow_in_map_arg_single_param() {
         // `xs.map(x => x.name)`
         match parse("xs.map(x => x.name)") {

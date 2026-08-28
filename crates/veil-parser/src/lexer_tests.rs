@@ -89,6 +89,35 @@ mod tests {
     }
 
     #[test]
+    fn test_strict_equality_lexes_as_eq_neq() {
+        // JS strict `===`/`!==` lex as EqEq/NotEq (longest-match, 3-char before 2-char).
+        assert_eq!(kinds("==="), vec![TokenKind::EqEq]);
+        assert_eq!(kinds("!=="), vec![TokenKind::NotEq]);
+        // Loose forms still lex as the same tokens.
+        assert_eq!(kinds("=="), vec![TokenKind::EqEq]);
+        assert_eq!(kinds("!="), vec![TokenKind::NotEq]);
+        // `i !== index` → Ident NotEq Ident (not NotEq Eq Ident).
+        assert_eq!(
+            kinds("i !== index"),
+            vec![TokenKind::Ident, TokenKind::NotEq, TokenKind::Ident]
+        );
+        assert_eq!(
+            kinds("a === b"),
+            vec![TokenKind::Ident, TokenKind::EqEq, TokenKind::Ident]
+        );
+    }
+
+    #[test]
+    fn test_assignment_not_mistaken_for_strict_eq() {
+        // `x = y` is a single Eq (assignment), and `x == y` is EqEq — the
+        // 3-char lookahead must not over-consume a following non-`=`.
+        assert_eq!(
+            kinds("x = y"),
+            vec![TokenKind::Ident, TokenKind::Eq, TokenKind::Ident]
+        );
+    }
+
+    #[test]
     fn test_core_structure_keywords() {
         // `step`/`par` are NOT core tokens — they are layer flow vocabulary and
         // lex as identifiers so they can be used as variable names.
