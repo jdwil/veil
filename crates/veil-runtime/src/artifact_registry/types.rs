@@ -72,7 +72,26 @@ pub enum Contribution {
         name: String,
         abi: Abi,
         capabilities: Vec<String>,
+        /// How this function is invoked. Defaults to `InProcess` for backward
+        /// compatibility with records written before the Lambda substrate.
+        #[serde(default)]
+        invoke_kind: InvokeKind,
+        /// For `invoke_kind = lambda`: the deployed Lambda function name or ARN
+        /// the runtime invokes. `None` for in-process functions.
+        #[serde(default)]
+        function_name: Option<String>,
     },
+}
+
+/// How a registered backend function is executed when resolved.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum InvokeKind {
+    /// A closure compiled into the runtime process (registered at startup/tests).
+    #[default]
+    InProcess,
+    /// A deployed VEIL app running as an AWS Lambda, invoked by name/ARN.
+    Lambda,
 }
 
 /// Calling convention for backend functions.

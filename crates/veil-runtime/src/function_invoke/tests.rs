@@ -13,40 +13,40 @@ use super::*;
 
 // ─── CallableHandle Unit Tests ──────────────────────────────────────────────
 
-#[test]
-fn callable_handle_invoke_returns_result() {
+#[tokio::test]
+async fn callable_handle_invoke_returns_result() {
     let handle = CallableHandle::InProcess(Arc::new(|args| {
         let x = args.get("x").and_then(|v| v.as_i64()).unwrap_or(0);
         Ok(json!({ "doubled": x * 2 }))
     }));
 
-    let result = handle.invoke(json!({ "x": 21 })).unwrap();
+    let result = handle.invoke(json!({ "x": 21 })).await.unwrap();
     assert_eq!(result, json!({ "doubled": 42 }));
 }
 
-#[test]
-fn callable_handle_invoke_propagates_error() {
+#[tokio::test]
+async fn callable_handle_invoke_propagates_error() {
     let handle = CallableHandle::InProcess(Arc::new(|_args| {
         Err("something went wrong".into())
     }));
 
-    let result = handle.invoke(json!({}));
+    let result = handle.invoke(json!({})).await;
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("something went wrong"));
 }
 
-#[test]
-fn callable_handle_invoke_with_empty_args() {
+#[tokio::test]
+async fn callable_handle_invoke_with_empty_args() {
     let handle = CallableHandle::InProcess(Arc::new(|args| {
         Ok(json!({ "received": args }))
     }));
 
-    let result = handle.invoke(json!(null)).unwrap();
+    let result = handle.invoke(json!(null)).await.unwrap();
     assert_eq!(result, json!({ "received": null }));
 }
 
-#[test]
-fn callable_handle_invoke_with_complex_args() {
+#[tokio::test]
+async fn callable_handle_invoke_with_complex_args() {
     let handle = CallableHandle::InProcess(Arc::new(|args| {
         let items = args
             .get("items")
@@ -56,7 +56,7 @@ fn callable_handle_invoke_with_complex_args() {
         Ok(json!({ "count": items }))
     }));
 
-    let result = handle.invoke(json!({ "items": [1, 2, 3] })).unwrap();
+    let result = handle.invoke(json!({ "items": [1, 2, 3] })).await.unwrap();
     assert_eq!(result, json!({ "count": 3 }));
 }
 
@@ -285,6 +285,8 @@ mod integration {
                 name: function_id.clone(),
                 abi: crate::artifact_registry::Abi::Json,
                 capabilities: vec![],
+                invoke_kind: crate::artifact_registry::InvokeKind::InProcess,
+                function_name: None,
             }],
             signed_off_by: Some("test-operator".into()),
             signed_off_at: Some(now),
@@ -315,7 +317,7 @@ mod integration {
         let handle = registry.resolve(&tenant, &function_id).await.unwrap();
 
         // Invoke.
-        let result = handle.invoke(json!({ "name": "veil" })).unwrap();
+        let result = handle.invoke(json!({ "name": "veil" })).await.unwrap();
         assert_eq!(result, json!({ "greeting": "hello, veil!" }));
 
         // Cleanup.
@@ -352,6 +354,8 @@ mod integration {
                 name: function_id.clone(),
                 abi: crate::artifact_registry::Abi::Json,
                 capabilities: vec![],
+                invoke_kind: crate::artifact_registry::InvokeKind::InProcess,
+                function_name: None,
             }],
             signed_off_by: Some("test-operator".into()),
             signed_off_at: Some(now),
@@ -383,7 +387,7 @@ mod integration {
         // Resolve under correct tenant → success.
         let right_tenant = crate::tenancy::TenantId::new("acme");
         let handle = registry.resolve(&right_tenant, &function_id).await.unwrap();
-        let result = handle.invoke(json!({})).unwrap();
+        let result = handle.invoke(json!({})).await.unwrap();
         assert_eq!(result, json!({ "ok": true }));
 
         // Cleanup.
@@ -418,6 +422,8 @@ mod integration {
                 name: function_id.clone(),
                 abi: crate::artifact_registry::Abi::Json,
                 capabilities: vec![],
+                invoke_kind: crate::artifact_registry::InvokeKind::InProcess,
+                function_name: None,
             }],
             signed_off_by: None, // NOT signed off
             signed_off_at: None,
@@ -499,6 +505,8 @@ mod integration {
                 name: function_id.clone(),
                 abi: crate::artifact_registry::Abi::Json,
                 capabilities: vec![],
+                invoke_kind: crate::artifact_registry::InvokeKind::InProcess,
+                function_name: None,
             }],
             signed_off_by: Some("operator".into()),
             signed_off_at: Some(now),
@@ -518,7 +526,7 @@ mod integration {
 
         let tenant = crate::tenancy::TenantId::new("t1");
         let handle = registry.resolve(&tenant, &function_id).await.unwrap();
-        assert_eq!(handle.invoke(json!({})).unwrap(), json!({ "version": 1 }));
+        assert_eq!(handle.invoke(json!({})).await.unwrap(), json!({ "version": 1 }));
 
         // Invalidate cache and re-register with new impl.
         registry.invalidate_function(&function_id).await;
@@ -528,9 +536,121 @@ mod integration {
             .await;
 
         let handle = registry.resolve(&tenant, &function_id).await.unwrap();
-        assert_eq!(handle.invoke(json!({})).unwrap(), json!({ "version": 2 }));
+        assert_eq!(handle.invoke(json!({})).await.unwrap(), json!({ "version": 2 }));
 
         // Cleanup.
+        store
+            .delete_artifact(&function_id, "1.0.0")
+            .await
+            .unwrap();
+    }
+
+    /// A lambda-backed BackendFunction (invoke_kind = lambda) resolves to a
+    /// CallableHandle::Lambda carrying the registered function name — no
+    /// in-process closure required. Exercises the production substrate path.
+    #[tokio::test]
+    async fn resolve_lambda_backed_function_returns_lambda_handle() {
+        if skip_if_no_ddb() {
+            eprintln!("SKIP: resolve_lambda_backed_function_returns_lambda_handle (no DDB)");
+            return;
+        }
+
+        let store = Arc::new(
+            crate::artifact_registry::ArtifactRegistryStore::from_env().await,
+        );
+        // Registry WITH a lambda client (the production wiring path).
+        let registry = FunctionRegistry::from_env(store.clone()).await;
+
+        let function_id = format!("dlx-auth-test-{}", uuid::Uuid::new_v4());
+        let target_lambda = "veil-dlx-auth-test";
+        let now = chrono::Utc::now();
+
+        let record = crate::artifact_registry::ArtifactRecord {
+            id: function_id.clone(),
+            version: "1.0.0".into(),
+            artifact_type: crate::artifact_registry::ArtifactType::Cdylib,
+            tenant_visibility: crate::artifact_registry::TenantVisibility::All,
+            contributions: vec![crate::artifact_registry::Contribution::BackendFunction {
+                name: function_id.clone(),
+                abi: crate::artifact_registry::Abi::Json,
+                capabilities: vec![],
+                invoke_kind: crate::artifact_registry::InvokeKind::Lambda,
+                function_name: Some(target_lambda.into()),
+            }],
+            signed_off_by: Some("test-operator".into()),
+            signed_off_at: Some(now),
+            blob_key: None,
+            content_hash: None,
+            bundle_path: None,
+            bundle_size: None,
+            manifest: None,
+            created_at: now,
+            updated_at: now,
+        };
+        store.put_artifact(&record).await.unwrap();
+
+        // Resolve under the system tenant (auth pre-tenant path).
+        let tenant = crate::tenancy::TenantId::new("__system__");
+        let handle = registry.resolve(&tenant, &function_id).await.unwrap();
+
+        match handle {
+            CallableHandle::Lambda { function_name, .. } => {
+                assert_eq!(function_name, target_lambda);
+            }
+            other => panic!("expected Lambda handle, got: {other:?}"),
+        }
+
+        // Cleanup.
+        store
+            .delete_artifact(&function_id, "1.0.0")
+            .await
+            .unwrap();
+    }
+
+    /// A lambda-backed function with no function_name is a registration error.
+    #[tokio::test]
+    async fn resolve_lambda_missing_name_is_internal_error() {
+        if skip_if_no_ddb() {
+            eprintln!("SKIP: resolve_lambda_missing_name_is_internal_error (no DDB)");
+            return;
+        }
+
+        let store = Arc::new(
+            crate::artifact_registry::ArtifactRegistryStore::from_env().await,
+        );
+        let registry = FunctionRegistry::from_env(store.clone()).await;
+
+        let function_id = format!("dlx-auth-badreg-{}", uuid::Uuid::new_v4());
+        let now = chrono::Utc::now();
+
+        let record = crate::artifact_registry::ArtifactRecord {
+            id: function_id.clone(),
+            version: "1.0.0".into(),
+            artifact_type: crate::artifact_registry::ArtifactType::Cdylib,
+            tenant_visibility: crate::artifact_registry::TenantVisibility::All,
+            contributions: vec![crate::artifact_registry::Contribution::BackendFunction {
+                name: function_id.clone(),
+                abi: crate::artifact_registry::Abi::Json,
+                capabilities: vec![],
+                invoke_kind: crate::artifact_registry::InvokeKind::Lambda,
+                function_name: None, // missing target
+            }],
+            signed_off_by: Some("test-operator".into()),
+            signed_off_at: Some(now),
+            blob_key: None,
+            content_hash: None,
+            bundle_path: None,
+            bundle_size: None,
+            manifest: None,
+            created_at: now,
+            updated_at: now,
+        };
+        store.put_artifact(&record).await.unwrap();
+
+        let tenant = crate::tenancy::TenantId::new("__system__");
+        let result = registry.resolve(&tenant, &function_id).await;
+        assert!(matches!(result, Err(ResolveError::Internal(_))));
+
         store
             .delete_artifact(&function_id, "1.0.0")
             .await

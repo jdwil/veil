@@ -3414,7 +3414,7 @@ async fn invoke_function(
         })?;
 
     // Invoke the function with the provided args.
-    match handle.invoke(body.args) {
+    match handle.invoke(body.args).await {
         Ok(result) => Ok(Json(json!({ "result": result }))),
         Err(e) => {
             tracing::error!(
@@ -3443,10 +3443,8 @@ struct RegisterArtifactBody {
     #[serde(default)]
     contributions: Vec<crate::artifact_registry::Contribution>,
     #[serde(default)]
-    #[allow(dead_code)]
     signed_off_by: Option<String>,
     #[serde(default)]
-    #[allow(dead_code)]
     signed_off_at: Option<chrono::DateTime<chrono::Utc>>,
     #[serde(default)]
     blob_key: Option<String>,
@@ -3465,14 +3463,22 @@ async fn register_artifact(
     Json(body): Json<RegisterArtifactBody>,
 ) -> Result<Json<Value>, StatusCode> {
     let now = chrono::Utc::now();
+    // Honor caller-supplied sign-off. If signed_off_by is present but no
+    // timestamp was given, stamp it now. Backend functions must be signed off
+    // to be resolvable (the function-invoke gate rejects unsigned records).
+    let signed_off_at = match (&body.signed_off_by, body.signed_off_at) {
+        (Some(_), Some(ts)) => Some(ts),
+        (Some(_), None) => Some(now),
+        (None, _) => None,
+    };
     let record = crate::artifact_registry::ArtifactRecord {
         id: body.id,
         version: body.version,
         artifact_type: body.artifact_type,
         tenant_visibility: body.tenant_visibility,
         contributions: body.contributions,
-        signed_off_by: None,
-        signed_off_at: None,
+        signed_off_by: body.signed_off_by,
+        signed_off_at,
         blob_key: body.blob_key,
         content_hash: body.content_hash,
         bundle_path: body.bundle_path,
@@ -4176,9 +4182,14 @@ pub async fn build_platform_router(
 
     // Function registry (app-to-app invoke substrate) — built before the auth
     // binding so an RPC auth provider can invoke a VEIL auth app through it.
-    let fn_registry = Arc::new(crate::function_invoke::FunctionRegistry::new(
-        Arc::new(crate::artifact_registry::ArtifactRegistryStore::from_env().await),
-    ));
+    // `from_env` attaches a Lambda client so `invoke_kind = lambda` backend
+    // functions (e.g. a deployed dlx-auth) resolve to CallableHandle::Lambda.
+    let fn_registry = Arc::new(
+        crate::function_invoke::FunctionRegistry::from_env(Arc::new(
+            crate::artifact_registry::ArtifactRegistryStore::from_env().await,
+        ))
+        .await,
+    );
 
     // Auth binding (Model C): local JWKS by default, or RPC/FFI delegation to a
     // VEIL auth app, selected by VEIL_AUTH_BINDING. The same binding gates

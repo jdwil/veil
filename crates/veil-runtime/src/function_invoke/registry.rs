@@ -31,16 +31,48 @@ pub struct FunctionRegistry {
 
     /// Artifact registry store for tenant visibility + sign-off checks.
     artifact_store: Arc<ArtifactRegistryStore>,
+
+    /// Lambda client for resolving `invoke_kind = lambda` functions to a
+    /// [`CallableHandle::Lambda`]. `None` in pure unit tests that never resolve
+    /// a Lambda-backed function; production builds it from env.
+    lambda_client: Option<aws_sdk_lambda::Client>,
 }
 
 impl FunctionRegistry {
     /// Create a new FunctionRegistry backed by the given artifact store.
+    ///
+    /// No Lambda client is attached; resolving a `invoke_kind = lambda`
+    /// function returns [`ResolveError::Internal`]. Use [`Self::with_lambda`]
+    /// or [`Self::from_env`] for the production path.
     pub fn new(artifact_store: Arc<ArtifactRegistryStore>) -> Self {
         Self {
             functions: Arc::new(RwLock::new(HashMap::new())),
             cache: Arc::new(RwLock::new(HashMap::new())),
             artifact_store,
+            lambda_client: None,
         }
+    }
+
+    /// Create a FunctionRegistry with a Lambda client attached, enabling
+    /// resolution of Lambda-backed backend functions (the production path).
+    pub fn with_lambda(
+        artifact_store: Arc<ArtifactRegistryStore>,
+        lambda_client: aws_sdk_lambda::Client,
+    ) -> Self {
+        Self {
+            functions: Arc::new(RwLock::new(HashMap::new())),
+            cache: Arc::new(RwLock::new(HashMap::new())),
+            artifact_store,
+            lambda_client: Some(lambda_client),
+        }
+    }
+
+    /// Build a FunctionRegistry from ambient AWS config, wiring a Lambda client
+    /// so Lambda-backed functions resolve. Used at runtime startup.
+    pub async fn from_env(artifact_store: Arc<ArtifactRegistryStore>) -> Self {
+        let config = aws_config::load_defaults(aws_config::BehaviorVersion::latest()).await;
+        let lambda_client = aws_sdk_lambda::Client::new(&config);
+        Self::with_lambda(artifact_store, lambda_client)
     }
 
     // ─── Registration ────────────────────────────────────────────────────
@@ -131,38 +163,65 @@ impl FunctionRegistry {
             }
         }
 
-        // 5. Look up in-process closure.
-        let func = {
-            let fns = self.functions.read().await;
+        // 5. Find the BackendFunction contribution to learn how to invoke it.
+        let backend_fn = record.contributions.iter().find_map(|c| match c {
+            Contribution::BackendFunction {
+                name,
+                invoke_kind,
+                function_name,
+                ..
+            } => Some((name.clone(), invoke_kind.clone(), function_name.clone())),
+            _ => None,
+        });
 
-            // Try exact function_id first, then try contribution name match.
-            if let Some(f) = fns.get(function_id) {
-                Some(f.clone())
-            } else {
-                // Try matching by contribution name within the artifact.
-                let contrib_name = record
-                    .contributions
-                    .iter()
-                    .find_map(|c| match c {
-                        Contribution::BackendFunction { name, .. } => Some(name.as_str()),
-                        _ => None,
-                    });
-
-                if let Some(name) = contrib_name {
-                    fns.get(name).cloned()
-                } else {
-                    None
+        let handle = match backend_fn {
+            // 5a. Lambda-backed function → construct a Lambda handle.
+            Some((_, crate::artifact_registry::InvokeKind::Lambda, Some(fn_name))) => {
+                let client = self.lambda_client.clone().ok_or_else(|| {
+                    ResolveError::Internal(format!(
+                        "function '{function_id}' is lambda-backed but no Lambda client is configured"
+                    ))
+                })?;
+                CallableHandle::Lambda {
+                    function_name: fn_name,
+                    client,
                 }
             }
+            // Lambda kind but missing target is a registration error.
+            Some((_, crate::artifact_registry::InvokeKind::Lambda, None)) => {
+                return Err(ResolveError::Internal(format!(
+                    "function '{function_id}' registered as lambda but has no function_name"
+                )));
+            }
+            // 5b. In-process function → look up the registered closure.
+            Some((contrib_name, crate::artifact_registry::InvokeKind::InProcess, _)) => {
+                let func = {
+                    let fns = self.functions.read().await;
+                    fns.get(function_id)
+                        .or_else(|| fns.get(&contrib_name))
+                        .cloned()
+                };
+                let func = func.ok_or_else(|| {
+                    ResolveError::NotFound(format!(
+                        "no in-process handler registered for {function_id}"
+                    ))
+                })?;
+                CallableHandle::InProcess(func)
+            }
+            // No BackendFunction contribution → fall back to closure by id.
+            None => {
+                let func = {
+                    let fns = self.functions.read().await;
+                    fns.get(function_id).cloned()
+                };
+                let func = func.ok_or_else(|| {
+                    ResolveError::NotFound(format!(
+                        "no in-process handler registered for {function_id}"
+                    ))
+                })?;
+                CallableHandle::InProcess(func)
+            }
         };
-
-        let func = func.ok_or_else(|| {
-            ResolveError::NotFound(format!(
-                "no in-process handler registered for {function_id}"
-            ))
-        })?;
-
-        let handle = CallableHandle::InProcess(func);
 
         // Cache it.
         {
@@ -200,5 +259,12 @@ impl FunctionRegistry {
 fn clone_handle(handle: &CallableHandle) -> CallableHandle {
     match handle {
         CallableHandle::InProcess(f) => CallableHandle::InProcess(f.clone()),
+        CallableHandle::Lambda {
+            function_name,
+            client,
+        } => CallableHandle::Lambda {
+            function_name: function_name.clone(),
+            client: client.clone(),
+        },
     }
 }

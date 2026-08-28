@@ -169,7 +169,7 @@ impl AuthProviderBinding for RpcProvider {
                 ))
             }
         };
-        match handle.invoke(json!({ "token": token })) {
+        match handle.invoke(json!({ "token": token })).await {
             Ok(out) => Self::parse_result(out),
             Err(e) => AuthResult::denied(format!("auth app invocation failed: {e}")),
         }
