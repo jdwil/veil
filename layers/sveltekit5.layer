@@ -124,6 +124,20 @@ pkg sveltekit5 v1
         g.navigate = (url: string) => { window.location.href = url; };
         g.goto = (url: string) => { window.location.href = url; };
 
+        // Client-side (SPA) navigation without a full page reload. Pushes a new
+        // history entry and dispatches a synthetic popstate so listeners (e.g. a
+        // harness that derives the active route from window.location.pathname)
+        // re-resolve. Use for in-app links where the app owns routing.
+        g.spa_navigate = (path: string) => {
+          if (typeof window === 'undefined') return;
+          if (window.location.pathname === path) return;
+          history.pushState(null, '', path);
+          window.dispatchEvent(new PopStateEvent('popstate'));
+        };
+        // Current browser path (SSR-safe). Pairs with spa_navigate for
+        // location-derived routing in single-page harness shells.
+        g.current_path = () => (typeof window !== 'undefined' ? window.location.pathname : '/');
+
         g.Env = {
           get_or: (k: string, d: string) => (localStorage.getItem(k) ?? d),
           get_opt: (k: string) => (localStorage.getItem(k) ?? null),
@@ -215,6 +229,8 @@ pkg sveltekit5 v1
         declare function location_last_segment(): string;
         declare function navigate(url: string): void;
         declare function goto(url: string): void;
+        declare function spa_navigate(path: string): void;
+        declare function current_path(): string;
         declare const Env: { get_or(k: string, d: string): string; get_opt(k: string): string | null };
         declare const LocalStorage: { get_or(k: string, d: string): string; get_opt(k: string): string | null; set(k: string, v: string): void };
         declare const ApiClient: {
