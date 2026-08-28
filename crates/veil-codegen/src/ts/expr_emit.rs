@@ -68,6 +68,13 @@ pub fn emit_typescript_stmts_with(
     out
 }
 
+/// Emit a single expression in VALUE position (e.g. a `derived` RHS or an
+/// argument), so control-flow like `if/else` becomes a ternary rather than a
+/// statement. Prefer this when the result must be an expression.
+pub fn emit_expr_value_with(expr: &Expr, indent: usize, opts: &TsExprEmitOpts) -> String {
+    emit_expr(expr, indent, opts)
+}
+
 /// `export const Name = $state({ field: default, ... });`
 pub fn emit_store_state(store_name: &str, fields: &[(String, TypeExpr)]) -> String {
     let mut out = format!("export const {store_name} = $state({{\n");
@@ -345,12 +352,24 @@ fn emit_expr(expr: &Expr, indent: usize, opts: &TsExprEmitOpts) -> String {
         Expr::Ident(n) => qualify(n, opts),
         Expr::FieldAccess(base, field) => format!("{}.{}", emit_expr(base, indent, opts), field),
         Expr::Call(call) => emit_call(call, indent, opts),
-        Expr::BinaryOp(op) => format!(
-            "{} {} {}",
-            emit_expr(&op.left, indent, opts),
-            binop_to_ts(&op.op),
-            emit_expr(&op.right, indent, opts)
-        ),
+        Expr::BinaryOp(op) => {
+            // Use strict equality (`===`/`!==`) by default, but keep loose
+            // equality for null/None comparisons — `x == null` is the JS idiom
+            // that matches both `null` and `undefined`.
+            let is_null_cmp = matches!(op.op, BinOp::Eq | BinOp::NotEq)
+                && (is_null_literal(&op.left) || is_null_literal(&op.right));
+            let op_str = match op.op {
+                BinOp::Eq if !is_null_cmp => "===",
+                BinOp::NotEq if !is_null_cmp => "!==",
+                _ => binop_to_ts(&op.op),
+            };
+            format!(
+                "{} {} {}",
+                emit_expr(&op.left, indent, opts),
+                op_str,
+                emit_expr(&op.right, indent, opts)
+            )
+        }
         Expr::UnaryOp(op) => {
             let inner = emit_expr(&op.expr, indent, opts);
             match op.op {
@@ -402,6 +421,19 @@ fn emit_expr(expr: &Expr, indent: usize, opts: &TsExprEmitOpts) -> String {
                 emit_expr(idx, indent, opts)
             )
         }
+        Expr::IndexAssign { target, value } => format!(
+            "{} = {}",
+            emit_expr(target, indent, opts),
+            emit_expr(value, indent, opts)
+        ),
+        Expr::New { class, args } => {
+            let a = args
+                .iter()
+                .map(|e| emit_expr(e, indent, opts))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("new {}({})", class, a)
+        }
         Expr::ArrayLit(items) => {
             let parts = items
                 .iter()
@@ -410,6 +442,7 @@ fn emit_expr(expr: &Expr, indent: usize, opts: &TsExprEmitOpts) -> String {
                 .join(", ");
             format!("[{}]", parts)
         }
+        Expr::Spread(inner) => format!("...{}", emit_expr(inner, indent, opts)),
         Expr::Range { start, end, .. } => {
             let s = start
                 .as_ref()
@@ -530,6 +563,10 @@ fn emit_object_lit(
         .iter()
         .map(|(k, v)| {
             let val = emit_expr(v, indent, opts);
+            // Object-spread element: key "..." emits as `...base`.
+            if k == "..." {
+                return val;
+            }
             if let Expr::Ident(n) = v {
                 if n == k && !opts.qualify_names.contains(n) {
                     return k.clone();
@@ -693,6 +730,12 @@ fn pattern_to_ts(pat: &Pattern) -> String {
         }
         other => other.to_string_repr(),
     }
+}
+
+/// True when an expression is a null/None literal (`null`, `None`), used to
+/// keep loose equality for JS null-check idioms (`x == null`).
+fn is_null_literal(e: &Expr) -> bool {
+    matches!(e, Expr::Ident(n) if n == "null" || n == "None")
 }
 
 fn binop_to_ts(op: &BinOp) -> &'static str {

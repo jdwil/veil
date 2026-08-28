@@ -298,6 +298,14 @@ pub enum TsExpr {
         else_body: Option<Vec<TsExpr>>,
     },
 
+    /// Conditional (ternary) expression: `cond ? then : else`.
+    /// Used for value-context `if/else` (e.g. a `derived` field RHS).
+    Ternary {
+        condition: Box<TsExpr>,
+        then_expr: Box<TsExpr>,
+        else_expr: Box<TsExpr>,
+    },
+
     /// `switch (scrutinee) { case "X": ...; break; default: ... }`
     Switch {
         scrutinee: Box<TsExpr>,

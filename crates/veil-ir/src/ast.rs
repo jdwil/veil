@@ -773,8 +773,17 @@ pub enum Expr {
     Continue,
     /// Index access: `expr[index]`
     Index(Box<Expr>, Box<Expr>),
+    /// Index/computed-member assignment: `target[index] = value`.
+    /// `target` is an `Index` (or nested) LHS. Field assignment to a plain
+    /// dotted path uses `Assign` with a string path instead.
+    IndexAssign { target: Box<Expr>, value: Box<Expr> },
+    /// JS constructor call: `new Class(args)` (e.g. `new URL(x)`, `new Date()`).
+    New { class: String, args: Vec<Expr> },
     /// Array literal: `[1, 2, 3]`
     ArrayLit(Vec<Expr>),
+    /// Spread element: `...expr` inside an array/object literal or call args.
+    /// e.g. `[...items, x]`, `{ ...base, f: v }`, `fn(...args)`.
+    Spread(Box<Expr>),
     /// Range expression: `start..end` or `start..=end`
     Range { start: Option<Box<Expr>>, end: Option<Box<Expr>>, inclusive: bool },
     /// Infinite loop: `loop { body }`

@@ -1515,6 +1515,189 @@ fn lower_tuple_as_array() {
     assert_eq!(emit_ts(&ts), "[\"hello\", 42]");
 }
 
+// ─── Spread operator (`...`) lowering ────────────────────────────────────────
+
+#[test]
+fn lower_array_spread_trailing() {
+    // [...items, newItem] → [...items, newItem]
+    let expr = Expr::ArrayLit(vec![
+        Expr::Spread(Box::new(Expr::Ident("items".to_string()))),
+        Expr::Ident("newItem".to_string()),
+    ]);
+    let ts = lower_to_ts(&expr, &test_ctx());
+    assert_eq!(emit_ts(&ts), "[...items, newItem]");
+}
+
+#[test]
+fn lower_array_spread_leading_and_multiple() {
+    // [a, ...b] and [...a, ...b]
+    let e1 = Expr::ArrayLit(vec![
+        Expr::Ident("a".to_string()),
+        Expr::Spread(Box::new(Expr::Ident("b".to_string()))),
+    ]);
+    assert_eq!(emit_ts(&lower_to_ts(&e1, &test_ctx())), "[a, ...b]");
+
+    let e2 = Expr::ArrayLit(vec![
+        Expr::Spread(Box::new(Expr::Ident("a".to_string()))),
+        Expr::Spread(Box::new(Expr::Ident("b".to_string()))),
+    ]);
+    assert_eq!(emit_ts(&lower_to_ts(&e2, &test_ctx())), "[...a, ...b]");
+}
+
+#[test]
+fn lower_object_spread() {
+    // { ...base, x: 1 } — parser stores spread as synthetic "..." field.
+    let expr = Expr::StructLit(
+        String::new(),
+        vec![
+            ("...".to_string(), Expr::Spread(Box::new(Expr::Ident("base".to_string())))),
+            ("x".to_string(), Expr::IntLit(1)),
+        ],
+    );
+    let ts = lower_to_ts(&expr, &test_ctx());
+    assert_eq!(emit_ts(&ts), "{ ...base, x: 1 }");
+}
+
+#[test]
+fn lower_call_arg_spread() {
+    // f(...args) → f(...args)
+    let expr = Expr::Call(veil_ir::ast::CallExpr {
+        target: "f".to_string(),
+        method: String::new(),
+        args: vec![Expr::Spread(Box::new(Expr::Ident("args".to_string())))],
+        receiver: None,
+        sugar: None,
+        span: veil_ir::Span::new(0, 0),
+    });
+    let ts = lower_to_ts(&expr, &test_ctx());
+    assert_eq!(emit_ts(&ts), "f(...args)");
+}
+
+#[test]
+fn struct_update_spread_emits_clean_object() {
+    // Regression: the "..." key must emit `...base`, not `...: ...base`.
+    let expr = Expr::StructUpdate {
+        name: "Config".to_string(),
+        fields: vec![("port".to_string(), Expr::IntLit(8080))],
+        base: Box::new(Expr::Ident("defaultConfig".to_string())),
+    };
+    let ts = lower_to_ts(&expr, &test_ctx());
+    assert_eq!(emit_ts(&ts), "{ ...defaultConfig, port: 8080 }");
+}
+
+// ─── L2: arrow closures lower to TS arrow functions ──────────────────────────
+
+#[test]
+fn lower_js_arrow_multi_param() {
+    // (_, i) => i != index  →  (_, i) => i !== index
+    let expr = Expr::Closure {
+        params: vec!["_".to_string(), "i".to_string()],
+        body: vec![Expr::BinaryOp(veil_ir::ast::BinaryOpExpr {
+            left: Box::new(Expr::Ident("i".to_string())),
+            op: veil_ir::ast::BinOp::NotEq,
+            right: Box::new(Expr::Ident("index".to_string())),
+        })],
+    };
+    let out = emit_ts(&lower_to_ts(&expr, &test_ctx()));
+    assert!(out.contains("(_, i) =>"), "arrow params lost: {}", out);
+    assert!(out.contains("!=="), "strict-neq lost: {}", out);
+}
+
+#[test]
+fn lower_js_arrow_single_param() {
+    // x => x.name  →  (x) => x.name
+    let expr = Expr::Closure {
+        params: vec!["x".to_string()],
+        body: vec![Expr::FieldAccess(
+            Box::new(Expr::Ident("x".to_string())),
+            "name".to_string(),
+        )],
+    };
+    let out = emit_ts(&lower_to_ts(&expr, &test_ctx()));
+    assert!(out.contains("=>"), "arrow missing: {}", out);
+    assert!(out.contains("x.name"), "body lost: {}", out);
+}
+
+// ─── L1: ternary (value-context if/else) lowers to `a ? b : c` ───────────────
+
+#[test]
+fn lower_ternary_to_conditional() {
+    // IfExpr with single-expr branches → TS ternary, not an if-statement.
+    let expr = Expr::IfExpr(veil_ir::ast::IfExprData {
+        condition: Box::new(Expr::BinaryOp(veil_ir::ast::BinaryOpExpr {
+            left: Box::new(Expr::Ident("label".to_string())),
+            op: veil_ir::ast::BinOp::NotEq,
+            right: Box::new(Expr::StringLit("".to_string())),
+        })),
+        then_body: vec![Expr::Ident("label".to_string())],
+        else_body: Some(vec![Expr::Ident("entity".to_string())]),
+    });
+    let out = emit_ts(&lower_to_ts(&expr, &test_ctx()));
+    assert_eq!(out, "label !== \"\" ? label : entity");
+}
+
+#[test]
+fn lower_if_with_statement_bodies_stays_if() {
+    // Multi-statement branches must remain an if-statement, not a ternary.
+    let expr = Expr::IfExpr(veil_ir::ast::IfExprData {
+        condition: Box::new(Expr::BoolLit(true)),
+        then_body: vec![
+            Expr::Assign("a".to_string(), Box::new(Expr::IntLit(1)), None),
+            Expr::Assign("b".to_string(), Box::new(Expr::IntLit(2)), None),
+        ],
+        else_body: Some(vec![Expr::Assign("a".to_string(), Box::new(Expr::IntLit(0)), None)]),
+    });
+    let out = emit_ts(&lower_to_ts(&expr, &test_ctx()));
+    assert!(out.starts_with("if ("), "should stay an if-statement: {}", out);
+}
+
+// ─── L3: index-assignment lowers to `x[i] = v` ───────────────────────────────
+
+#[test]
+fn lower_index_assign() {
+    // collapsed[index] = !collapsed[index]
+    let target = Expr::Index(
+        Box::new(Expr::Ident("collapsed".to_string())),
+        Box::new(Expr::Ident("index".to_string())),
+    );
+    let value = Expr::UnaryOp(veil_ir::ast::UnaryOpExpr {
+        op: veil_ir::ast::UnaryOp::Not,
+        expr: Box::new(Expr::Index(
+            Box::new(Expr::Ident("collapsed".to_string())),
+            Box::new(Expr::Ident("index".to_string())),
+        )),
+    });
+    let expr = Expr::IndexAssign {
+        target: Box::new(target),
+        value: Box::new(value),
+    };
+    let out = emit_ts(&lower_to_ts(&expr, &test_ctx()));
+    assert_eq!(out, "collapsed[index] = !collapsed[index]");
+}
+
+// ─── L5: `new Class(args)` lowers to `new Class(args)` ───────────────────────
+
+#[test]
+fn lower_new_constructor() {
+    // new URL(apiList)
+    let expr = Expr::New {
+        class: "URL".to_string(),
+        args: vec![Expr::Ident("api_list".to_string())],
+    };
+    let out = emit_ts(&lower_to_ts(&expr, &test_ctx()));
+    assert_eq!(out, "new URL(apiList)");
+}
+
+#[test]
+fn lower_new_no_args() {
+    let expr = Expr::New {
+        class: "Date".to_string(),
+        args: vec![],
+    };
+    let out = emit_ts(&lower_to_ts(&expr, &test_ctx()));
+    assert_eq!(out, "new Date()");
+}
+
 #[test]
 fn lower_struct_lit_to_object() {
     let expr = Expr::StructLit(

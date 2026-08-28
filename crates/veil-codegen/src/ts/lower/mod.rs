@@ -98,6 +98,8 @@ pub fn lower_to_ts(expr: &Expr, ctx: &GenCtx) -> TsExpr {
             items: items.iter().map(|e| lower_to_ts(e, ctx)).collect(),
             ty: None,
         },
+        // Spread element: `...expr` → `...{lowered}` (arrays, objects, call args).
+        Expr::Spread(inner) => TsExpr::Spread(Box::new(lower_to_ts(inner, ctx))),
         Expr::Tuple(items) => TsExpr::ArrayLit {
             items: items.iter().map(|e| lower_to_ts(e, ctx)).collect(),
             ty: None, // TS tuples are typed arrays
@@ -109,6 +111,17 @@ pub fn lower_to_ts(expr: &Expr, ctx: &GenCtx) -> TsExpr {
         Expr::Index(base_expr, idx) => TsExpr::Index {
             base: Box::new(lower_to_ts(base_expr, ctx)),
             index: Box::new(lower_to_ts(idx, ctx)),
+        },
+        // Index/computed-member assignment: `x[i] = v` → `x[i] = v`.
+        Expr::IndexAssign { target, value } => TsExpr::Assign {
+            target: Box::new(lower_to_ts(target, ctx)),
+            value: Box::new(lower_to_ts(value, ctx)),
+        },
+        // JS constructor call: `new Class(args)` → `new Class(args)`.
+        Expr::New { class, args } => TsExpr::NewCall {
+            class: class.clone(),
+            args: args.iter().map(|a| lower_to_ts(a, ctx)).collect(),
+            ty: None,
         },
 
         // ── Batch 8: Additional Wrappers ─────────────────────────────────
@@ -328,11 +341,55 @@ pub fn lower_block(body: &[Expr], ctx: &GenCtx) -> Vec<TsExpr> {
 // ─── Batch 6: Control Flow ──────────────────────────────────────────────────
 
 fn lower_if_expr(data: &IfExprData, ctx: &GenCtx) -> TsExpr {
+    let then_ts = lower_block(&data.then_body, ctx);
+    let else_ts = data.else_body.as_ref().map(|eb| lower_block(eb, ctx));
+
+    // Value-context ternary: `cond ? a : b`. When both branches are a single
+    // non-statement expression (as produced by `a ? b : c` and value-position
+    // if/else), emit a TS conditional expression rather than an if-statement so
+    // it is valid inside a `derived` RHS, an argument, or an assignment.
+    if let Some(else_body) = &else_ts {
+        if then_ts.len() == 1
+            && else_body.len() == 1
+            && is_ts_value_expr(&then_ts[0])
+            && is_ts_value_expr(&else_body[0])
+        {
+            return TsExpr::Ternary {
+                condition: Box::new(lower_to_ts(&data.condition, ctx)),
+                then_expr: Box::new(then_ts[0].clone()),
+                else_expr: Box::new(else_body[0].clone()),
+            };
+        }
+    }
+
     TsExpr::If {
         condition: Box::new(lower_to_ts(&data.condition, ctx)),
-        then_body: lower_block(&data.then_body, ctx),
-        else_body: data.else_body.as_ref().map(|eb| lower_block(eb, ctx)),
+        then_body: then_ts,
+        else_body: else_ts,
     }
+}
+
+/// True when a lowered TS expression is usable as a ternary branch value
+/// (i.e. not a statement/control-flow form that has no value in expression
+/// position — `return`, `throw`, `let`, assignment, loops, etc.).
+fn is_ts_value_expr(e: &TsExpr) -> bool {
+    !matches!(
+        e,
+        TsExpr::If { .. }
+            | TsExpr::Switch { .. }
+            | TsExpr::For { .. }
+            | TsExpr::ForIndex { .. }
+            | TsExpr::While { .. }
+            | TsExpr::Loop { .. }
+            | TsExpr::Break
+            | TsExpr::Continue
+            | TsExpr::Return(_)
+            | TsExpr::Throw { .. }
+            | TsExpr::Let { .. }
+            | TsExpr::Assign { .. }
+            | TsExpr::Destructure { .. }
+            | TsExpr::Noop
+    )
 }
 
 fn lower_match(scrutinee: &Expr, arms: &[MatchArm], ctx: &GenCtx) -> TsExpr {
@@ -401,7 +458,16 @@ fn lower_do_block(body: &[Expr], ctx: &GenCtx) -> TsExpr {
 fn lower_struct_lit(_name: &str, fields: &[(String, Expr)], ctx: &GenCtx) -> TsExpr {
     let ts_fields: Vec<(String, TsExpr)> = fields
         .iter()
-        .map(|(k, v)| (to_camel_case(k), lower_to_ts(v, ctx)))
+        .map(|(k, v)| {
+            // Object-spread synthetic field: key is the reserved "..." marker and
+            // the value is an Expr::Spread. Preserve the key verbatim so emit can
+            // render it as a JS spread element (`...base`) rather than a property.
+            if k == "..." {
+                ("...".to_string(), lower_to_ts(v, ctx))
+            } else {
+                (to_camel_case(k), lower_to_ts(v, ctx))
+            }
+        })
         .collect();
     TsExpr::ObjectLit {
         fields: ts_fields,
@@ -449,7 +515,18 @@ fn lower_closure(params: &[String], body: &[Expr], ctx: &GenCtx) -> TsExpr {
     let lowered_body = lower_block(body, ctx);
     let is_async = body_contains_await(body);
     TsExpr::ArrowFn {
-        params: params.iter().map(|p| to_camel_case(p)).collect(),
+        params: params
+            .iter()
+            .map(|p| {
+                // Preserve placeholder/underscore-only params verbatim
+                // (`_`, `__`) — camel-casing them yields an empty string.
+                if p.chars().all(|c| c == '_') {
+                    p.clone()
+                } else {
+                    to_camel_case(p)
+                }
+            })
+            .collect(),
         body: lowered_body,
         is_async,
     }

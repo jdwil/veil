@@ -2141,3 +2141,406 @@ pkg T
         f.body
     );
 }
+
+// ─── Spread operator (`...`) parsing ─────────────────────────────────────────
+
+#[cfg(test)]
+mod spread_tests {
+    use veil_ir::ast::Expr;
+    use veil_ir::layer::LayerRegistry;
+
+#[test]
+fn spread_in_array_literal_trailing() {
+    // `[...items, {}]` → ArrayLit[ Spread(items), StructLit ]
+    let reg = LayerRegistry::builtin();
+    let expr = crate::parser::parse_expr_str("[...items, {}]", &reg).expect("parse");
+    match expr {
+        Expr::ArrayLit(items) => {
+            assert_eq!(items.len(), 2, "expected 2 elements: {:?}", items);
+            assert!(
+                matches!(&items[0], Expr::Spread(inner) if matches!(inner.as_ref(), Expr::Ident(n) if n == "items")),
+                "first element should be Spread(items): {:?}",
+                items[0]
+            );
+        }
+        other => panic!("expected ArrayLit, got {:?}", other),
+    }
+}
+
+#[test]
+fn spread_in_array_literal_leading() {
+    // `[a, ...b]`
+    let reg = LayerRegistry::builtin();
+    let expr = crate::parser::parse_expr_str("[a, ...b]", &reg).expect("parse");
+    match expr {
+        Expr::ArrayLit(items) => {
+            assert_eq!(items.len(), 2);
+            assert!(matches!(&items[0], Expr::Ident(n) if n == "a"));
+            assert!(
+                matches!(&items[1], Expr::Spread(inner) if matches!(inner.as_ref(), Expr::Ident(n) if n == "b")),
+                "second element should be Spread(b): {:?}",
+                items[1]
+            );
+        }
+        other => panic!("expected ArrayLit, got {:?}", other),
+    }
+}
+
+#[test]
+fn spread_multiple_in_array() {
+    // `[...a, ...b]`
+    let reg = LayerRegistry::builtin();
+    let expr = crate::parser::parse_expr_str("[...a, ...b]", &reg).expect("parse");
+    match expr {
+        Expr::ArrayLit(items) => {
+            assert_eq!(items.len(), 2);
+            assert!(matches!(&items[0], Expr::Spread(_)));
+            assert!(matches!(&items[1], Expr::Spread(_)));
+        }
+        other => panic!("expected ArrayLit, got {:?}", other),
+    }
+}
+
+#[test]
+fn spread_in_object_literal() {
+    // `{ ...base, x: 1 }` → anonymous StructLit with synthetic "..." field.
+    let reg = LayerRegistry::builtin();
+    let expr = crate::parser::parse_expr_str("{ ...base, x: 1 }", &reg).expect("parse");
+    match expr {
+        Expr::StructLit(_, fields) => {
+            assert_eq!(fields.len(), 2, "fields: {:?}", fields);
+            assert_eq!(fields[0].0, "...");
+            assert!(
+                matches!(&fields[0].1, Expr::Spread(inner) if matches!(inner.as_ref(), Expr::Ident(n) if n == "base")),
+                "first field should be spread of base: {:?}",
+                fields[0]
+            );
+            assert_eq!(fields[1].0, "x");
+        }
+        other => panic!("expected StructLit, got {:?}", other),
+    }
+}
+
+#[test]
+fn spread_in_call_args() {
+    // `f(...args)` → Call with a Spread argument.
+    let reg = LayerRegistry::builtin();
+    let expr = crate::parser::parse_expr_str("f(...args)", &reg).expect("parse");
+    match expr {
+        Expr::Call(call) => {
+            assert_eq!(call.args.len(), 1, "args: {:?}", call.args);
+            assert!(
+                matches!(&call.args[0], Expr::Spread(inner) if matches!(inner.as_ref(), Expr::Ident(n) if n == "args")),
+                "arg should be Spread(args): {:?}",
+                call.args[0]
+            );
+        }
+        other => panic!("expected Call, got {:?}", other),
+    }
+}
+
+#[test]
+fn range_not_parsed_as_spread_regression() {
+    // Ranges (`..`, `..=`) must still parse and serialize correctly after the
+    // `...` (spread) lexer/parser changes — longest-match must not eat `..`.
+    use crate::lexer::lex;
+    use crate::parser::parse_with_registry;
+    use veil_ir::layer::LayerRegistry;
+    use veil_ir::serialize::serialize_solution;
+
+    let mut reg = LayerRegistry::builtin();
+    reg.load_content("base", include_str!("../../../layers/base.layer")).unwrap();
+    reg.load_content("rust", include_str!("../../../layers/rust.layer")).unwrap();
+    reg.load_content("tokio", include_str!("../../../layers/tokio.layer")).unwrap();
+    reg.load_content("di", include_str!("../../../layers/di.layer")).unwrap();
+    reg.load_content("ddd", include_str!("../../../layers/ddd.layer")).expect("ddd layer");
+
+    let src = "\
+pkg RangeReg
+  use ddd
+  fn Demo
+    step s
+      for i in start..end
+        use_it(i)
+  fn Demo2
+    step t
+      for j in lo..=hi
+        use_it(j)
+";
+    let sol = parse_with_registry(&lex(src), reg).expect("parse ranges");
+    let emitted = serialize_solution(&sol);
+    assert!(
+        emitted.contains("start..end"),
+        "exclusive range lost:\n{}",
+        emitted
+    );
+    assert!(
+        emitted.contains("lo..=hi"),
+        "inclusive range lost:\n{}",
+        emitted
+    );
+    // The spread token must NOT leak into a range render.
+    assert!(
+        !emitted.contains("...end") && !emitted.contains("...="),
+        "spread leaked into range render:\n{}",
+        emitted
+    );
+}
+}
+
+// ─── L2: JS-style arrow closures in argument position ────────────────────────
+
+#[cfg(test)]
+mod arrow_closure_tests {
+    use crate::parser::parse_expr_str;
+    use veil_ir::ast::Expr;
+    use veil_ir::layer::LayerRegistry;
+
+    fn parse(src: &str) -> Expr {
+        let reg = LayerRegistry::builtin();
+        parse_expr_str(src, &reg).unwrap_or_else(|e| panic!("parse `{src}`: {}", e.message))
+    }
+
+    #[test]
+    fn single_param_arrow() {
+        // `x => x.name`
+        match parse("x => x.name") {
+            Expr::Closure { params, body } => {
+                assert_eq!(params, vec!["x".to_string()]);
+                assert_eq!(body.len(), 1);
+                assert!(matches!(&body[0], Expr::FieldAccess(_, f) if f == "name"));
+            }
+            other => panic!("expected Closure, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn multi_param_arrow() {
+        // `(_, i) => i !== index`
+        match parse("(_, i) => i != index") {
+            Expr::Closure { params, body } => {
+                assert_eq!(params, vec!["_".to_string(), "i".to_string()]);
+                assert_eq!(body.len(), 1);
+                assert!(matches!(&body[0], Expr::BinaryOp(_)));
+            }
+            other => panic!("expected Closure, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn arrow_in_filter_arg() {
+        // `items.filter((_, i) => i != index)` — arrow as a method arg.
+        match parse("items.filter((_, i) => i != index)") {
+            Expr::Call(call) => {
+                assert_eq!(call.method, "filter");
+                assert_eq!(call.args.len(), 1, "args: {:?}", call.args);
+                assert!(
+                    matches!(&call.args[0], Expr::Closure { params, .. } if params.len() == 2),
+                    "arg should be a 2-param closure: {:?}",
+                    call.args[0]
+                );
+            }
+            other => panic!("expected Call, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn arrow_in_map_arg_single_param() {
+        // `xs.map(x => x.name)`
+        match parse("xs.map(x => x.name)") {
+            Expr::Call(call) => {
+                assert_eq!(call.method, "map");
+                assert_eq!(call.args.len(), 1);
+                assert!(
+                    matches!(&call.args[0], Expr::Closure { params, .. } if params == &vec!["x".to_string()]),
+                    "arg should be single-param closure: {:?}",
+                    call.args[0]
+                );
+            }
+            other => panic!("expected Call, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn paren_expr_not_mistaken_for_arrow() {
+        // `(a + b)` is a parenthesized expression, NOT an arrow closure.
+        let e = parse("(a + b)");
+        assert!(matches!(e, Expr::BinaryOp(_)), "got {:?}", e);
+    }
+
+    #[test]
+    fn tuple_not_mistaken_for_arrow() {
+        // `(a, b)` with no `=>` stays a tuple.
+        let e = parse("(a, b)");
+        assert!(matches!(e, Expr::Tuple(_)), "got {:?}", e);
+    }
+}
+
+// ─── L1: ternary `a ? b : c` ─────────────────────────────────────────────────
+
+#[cfg(test)]
+mod ternary_tests {
+    use crate::parser::parse_expr_str;
+    use veil_ir::ast::Expr;
+    use veil_ir::layer::LayerRegistry;
+
+    fn parse(src: &str) -> Expr {
+        let reg = LayerRegistry::builtin();
+        parse_expr_str(src, &reg).unwrap_or_else(|e| panic!("parse `{src}`: {}", e.message))
+    }
+
+    #[test]
+    fn simple_ternary() {
+        // `a ? b : c` → IfExpr with single-expr branches.
+        match parse("a ? b : c") {
+            Expr::IfExpr(data) => {
+                assert!(matches!(data.condition.as_ref(), Expr::Ident(n) if n == "a"));
+                assert_eq!(data.then_body.len(), 1);
+                assert!(matches!(&data.then_body[0], Expr::Ident(n) if n == "b"));
+                let eb = data.else_body.expect("else branch");
+                assert_eq!(eb.len(), 1);
+                assert!(matches!(&eb[0], Expr::Ident(n) if n == "c"));
+            }
+            other => panic!("expected IfExpr, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn ternary_with_comparison_condition() {
+        // `entity_label != "" ? entity_label : entity` — the classic derived RHS.
+        match parse("entity_label != \"\" ? entity_label : entity") {
+            Expr::IfExpr(data) => {
+                assert!(matches!(data.condition.as_ref(), Expr::BinaryOp(_)));
+                assert!(matches!(&data.then_body[0], Expr::Ident(n) if n == "entity_label"));
+                let eb = data.else_body.expect("else");
+                assert!(matches!(&eb[0], Expr::Ident(n) if n == "entity"));
+            }
+            other => panic!("expected IfExpr, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn try_postfix_still_works() {
+        // `foo?.bar` / `expr?` must NOT be parsed as a ternary. A bare `x?`
+        // followed by a terminator stays a Try.
+        let e = parse("repo.find(id)?");
+        assert!(matches!(e, Expr::Try(_)), "expected Try, got {:?}", e);
+    }
+
+    #[test]
+    fn nested_ternary_right_assoc() {
+        // `a ? b : c ? d : e` → a ? b : (c ? d : e)
+        match parse("a ? b : c ? d : e") {
+            Expr::IfExpr(outer) => {
+                let eb = outer.else_body.expect("else");
+                assert!(
+                    matches!(&eb[0], Expr::IfExpr(_)),
+                    "else branch should be a nested ternary: {:?}",
+                    eb[0]
+                );
+            }
+            other => panic!("expected IfExpr, got {:?}", other),
+        }
+    }
+}
+
+// ─── L3: index-assignment LHS `x[i] = v` ─────────────────────────────────────
+
+#[cfg(test)]
+mod index_assign_tests {
+    use crate::parser::parse_expr_str;
+    use veil_ir::ast::Expr;
+    use veil_ir::layer::LayerRegistry;
+
+    fn parse(src: &str) -> Expr {
+        let reg = LayerRegistry::builtin();
+        parse_expr_str(src, &reg).unwrap_or_else(|e| panic!("parse `{src}`: {}", e.message))
+    }
+
+    #[test]
+    fn simple_index_assign() {
+        // `xs[0] = 1`
+        match parse("xs[0] = 1") {
+            Expr::IndexAssign { target, value } => {
+                assert!(matches!(target.as_ref(), Expr::Index(_, _)));
+                assert!(matches!(value.as_ref(), Expr::IntLit(1)));
+            }
+            other => panic!("expected IndexAssign, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn index_assign_with_index_rhs() {
+        // `collapsed[index] = !collapsed[index]`
+        match parse("collapsed[index] = !collapsed[index]") {
+            Expr::IndexAssign { target, value } => {
+                assert!(matches!(target.as_ref(), Expr::Index(_, _)));
+                assert!(matches!(value.as_ref(), Expr::UnaryOp(_)));
+            }
+            other => panic!("expected IndexAssign, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn index_read_still_works() {
+        // `xs[0]` without `=` stays a plain Index read.
+        assert!(matches!(parse("xs[0]"), Expr::Index(_, _)));
+    }
+}
+
+// ─── L5: `new` constructor calls ─────────────────────────────────────────────
+
+#[cfg(test)]
+mod new_ctor_tests {
+    use crate::parser::parse_expr_str;
+    use veil_ir::ast::Expr;
+    use veil_ir::layer::LayerRegistry;
+
+    fn parse(src: &str) -> Expr {
+        let reg = LayerRegistry::builtin();
+        parse_expr_str(src, &reg).unwrap_or_else(|e| panic!("parse `{src}`: {}", e.message))
+    }
+
+    #[test]
+    fn new_with_arg() {
+        // `new URL(api_list)`
+        match parse("new URL(api_list)") {
+            Expr::New { class, args } => {
+                assert_eq!(class, "URL");
+                assert_eq!(args.len(), 1);
+                assert!(matches!(&args[0], Expr::Ident(n) if n == "api_list"));
+            }
+            other => panic!("expected New, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn new_no_args() {
+        // `new Date()`
+        match parse("new Date()") {
+            Expr::New { class, args } => {
+                assert_eq!(class, "Date");
+                assert!(args.is_empty());
+            }
+            other => panic!("expected New, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn new_with_chain() {
+        // `new URL(x).searchParams` → field access on a New.
+        match parse("new URL(x).searchParams") {
+            Expr::FieldAccess(base, field) => {
+                assert_eq!(field, "searchParams");
+                assert!(matches!(base.as_ref(), Expr::New { class, .. } if class == "URL"));
+            }
+            other => panic!("expected FieldAccess on New, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn new_as_ident_not_ctor() {
+        // `new` alone (not followed by an identifier) stays a plain ident.
+        assert!(matches!(parse("new"), Expr::Ident(n) if n == "new"));
+    }
+}

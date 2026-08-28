@@ -3284,3 +3284,212 @@ pkg Test
         "state write of filtered missing:\n{c}"
     );
 }
+
+/// Regression: svelte5 `comp` must emit `derived` → `$derived(...)`,
+/// `effect` → `$effect(() => { ... })`, and `fn` → LOCAL functions in the
+/// component `<script>`. Previously derived/effect/fn were dropped, so
+/// templates referenced undeclared variables (e.g. `veil_agent is not defined`).
+#[test]
+fn svelte5_component_emits_derived_effect_and_local_fn() {
+    let src = r#"
+pkg UiKit
+  use svelte5
+  app Kit
+    group components
+      comp Widget
+        props
+          agent: Json = {}
+          items: List<Json> = []
+        state
+          open: Bool = false
+        derived
+          veil_agent: Json = {version: 1, role: "widget", product: agent}
+        effect load
+          if items.length == 0
+            open = true
+        fn toggle()
+          open = !open
+        template """
+          <div data-veil-agent={JSON.stringify(veil_agent)}>
+            <button onclick={toggle}>{open}</button>
+          </div>
+        """
+"#;
+    let mut reg = LayerRegistry::builtin();
+    let svelte = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../layers/svelte5.layer");
+    if !svelte.is_file() {
+        return; // skip if layer missing
+    }
+    reg.load_layer("svelte5", svelte.parent().unwrap())
+        .expect("svelte5");
+    let tokens = veil_parser::lex(src);
+    let sol = veil_parser::parse_with_registry(&tokens, reg.clone()).expect("parse failed");
+    let project = veil_codegen::generate_ts_ir(&sol, &reg);
+    let widget = project
+        .files
+        .iter()
+        .find(|f| f.path.ends_with("Widget.svelte"))
+        .expect("Widget.svelte not generated");
+    let c = &widget.content;
+
+    // derived → $derived value form, declared before the template uses it
+    assert!(
+        c.contains("veil_agent = $derived("),
+        "derived not emitted as $derived:\n{c}"
+    );
+    // effect → $effect(() => { ... })
+    assert!(
+        c.contains("$effect(() =>"),
+        "effect not emitted as $effect:\n{c}"
+    );
+    // fn → LOCAL function (not exported)
+    assert!(
+        c.contains("function toggle()"),
+        "fn not emitted as local function:\n{c}"
+    );
+    assert!(
+        !c.contains("export function toggle()"),
+        "component fn must be local, not exported:\n{c}"
+    );
+    // The template's veil_agent reference is now backed by a declaration.
+    assert!(
+        c.contains("JSON.stringify(veil_agent)"),
+        "template should reference veil_agent:\n{c}"
+    );
+}
+
+/// E2E acceptance for the expression-grammar completion (L1–L5, L7): a
+/// component that uses a ternary `derived`, an arrow-closure `.filter`, an
+/// index-assignment, a `new URL(...)`, array spread, and a template literal —
+/// all as structured VEIL with NO raw `script` block — must generate valid TS.
+#[test]
+fn svelte5_component_expression_grammar_completion_e2e() {
+    let src = r#"
+pkg CrudKit
+  use svelte5
+  app Kit
+    group components
+      comp Crud
+        props
+          entity: Str = ""
+          api_base: Str = ""
+        state
+          items: List<Json> = []
+          collapsed: List<Bool> = []
+        derived
+          label: Str = entity != "" ? entity : "record"
+        fn add_item()
+          items = [...items, {}]
+        fn remove_item(index: Int)
+          items = items.filter((_, i) => i != index)
+        fn toggle(index: Int)
+          collapsed[index] = !collapsed[index]
+        fn endpoint()
+          mut u = new URL(api_base)
+          ret u
+        template """
+          <div>{label}</div>
+        """
+"#;
+    let mut reg = LayerRegistry::builtin();
+    let svelte = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../layers/svelte5.layer");
+    if !svelte.is_file() {
+        return; // skip if layer missing
+    }
+    reg.load_layer("svelte5", svelte.parent().unwrap())
+        .expect("svelte5");
+    let tokens = veil_parser::lex(src);
+    let sol = veil_parser::parse_with_registry(&tokens, reg.clone()).expect("parse failed");
+    let project = veil_codegen::generate_ts_ir(&sol, &reg);
+    let comp = project
+        .files
+        .iter()
+        .find(|f| f.path.ends_with("Crud.svelte"))
+        .expect("Crud.svelte not generated");
+    let c = &comp.content;
+
+    // L1 — ternary in derived RHS.
+    assert!(
+        c.contains("label = $derived(") && c.contains("? entity :"),
+        "ternary derived not emitted as `a ? b : c`:\n{c}"
+    );
+    // L4 — array spread.
+    assert!(
+        c.contains("[...items, {}]"),
+        "array spread not emitted:\n{c}"
+    );
+    // L2 — arrow closure in .filter.
+    assert!(
+        c.contains(".filter((_, i) =>") && c.contains("i !== index"),
+        "arrow closure filter not emitted:\n{c}"
+    );
+    // L3 — index assignment.
+    assert!(
+        c.contains("collapsed[index] = !collapsed[index]"),
+        "index-assignment not emitted:\n{c}"
+    );
+    // L5 — new constructor (references the prop, which is declared snake_case).
+    assert!(
+        c.contains("new URL(api_base)"),
+        "new URL(...) not emitted:\n{c}"
+    );
+    // No raw script escape hatch was needed (the source had none).
+    assert!(
+        !c.contains("veil_escape") && !c.contains("/* raw */"),
+        "unexpected escape-hatch marker:\n{c}"
+    );
+}
+
+/// L7 acceptance: typed map/Record locals, template-literal string interp, and
+/// string-key index-assignment (header building) lower to valid TS in a fn
+/// body — the concrete needs of an authenticated-fetch transport.
+#[test]
+fn svelte5_component_l7_typed_map_template_and_index_assign() {
+    let src = r#"
+pkg L7Kit
+  use svelte5
+  app Kit
+    group components
+      comp Fetcher
+        props
+          token: Str = ""
+        fn headers()
+          let h: Map<Str, Str> = {}
+          h["Authorization"] = f"Bearer {token}"
+          ret h
+        template """
+          <div>ok</div>
+        """
+"#;
+    let mut reg = LayerRegistry::builtin();
+    let svelte = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../layers/svelte5.layer");
+    if !svelte.is_file() {
+        return;
+    }
+    reg.load_layer("svelte5", svelte.parent().unwrap()).expect("svelte5");
+    let tokens = veil_parser::lex(src);
+    let sol = veil_parser::parse_with_registry(&tokens, reg.clone()).expect("parse failed");
+    let project = veil_codegen::generate_ts_ir(&sol, &reg);
+    let comp = project
+        .files
+        .iter()
+        .find(|f| f.path.ends_with("Fetcher.svelte"))
+        .expect("Fetcher.svelte not generated");
+    let c = &comp.content;
+
+    // Typed map local → Record<string, string>.
+    assert!(
+        c.contains("let h: Record<string, string> = {}"),
+        "typed map local not lowered:\n{c}"
+    );
+    // String-key index assignment.
+    assert!(
+        c.contains("h[\"Authorization\"] ="),
+        "string-key index-assign not lowered:\n{c}"
+    );
+    // Template literal (StringInterp).
+    assert!(
+        c.contains("`Bearer ${token}`"),
+        "template literal not lowered:\n{c}"
+    );
+}

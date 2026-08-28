@@ -123,6 +123,7 @@ pub enum TokenKind {
     RBracket,   // ]
     DotDot,     // ..
     DotDotEq,   // ..=
+    Ellipsis,   // ... (spread operator)
     Question,   // ?
     Boundary,
     As,
@@ -255,6 +256,12 @@ impl Lexer {
                 ':' => {
                     self.emit(TokenKind::Colon, self.pos, self.pos + 1);
                     self.pos += 1;
+                }
+                '.' if self.peek() == Some('.') && self.chars.get(self.pos + 2) == Some(&'.') => {
+                    // Longest-match: `...` (spread) must be tried before `..`/`..=`
+                    // so range operators never mis-lex the third dot.
+                    self.emit(TokenKind::Ellipsis, self.pos, self.pos + 3);
+                    self.pos += 3;
                 }
                 '.' if self.peek() == Some('.') && self.chars.get(self.pos + 2) == Some(&'=') => {
                     self.emit(TokenKind::DotDotEq, self.pos, self.pos + 3);

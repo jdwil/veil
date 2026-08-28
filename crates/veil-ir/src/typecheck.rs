@@ -1612,6 +1612,13 @@ fn infer_expr(
         Expr::ArrayLit(items) => {
             let mut elem = Ty::Unknown;
             for e in items {
+                // A spread element (`...xs`) contributes zero-or-more elements of
+                // the collection's element type, not a single element. Infer it
+                // for name resolution but skip it from element-type unification.
+                if let Expr::Spread(inner) = e {
+                    let _ = infer_expr(inner, scope, env, self_type, location, diagnostics);
+                    continue;
+                }
                 let t = infer_expr(e, scope, env, self_type, location, diagnostics);
                 if elem.is_unknown() {
                     elem = t;
@@ -1631,6 +1638,13 @@ fn infer_expr(
                 }
             }
             Ty::List(Box::new(elem))
+        }
+        Expr::Spread(inner) => {
+            // Standalone spread (call arg / object base). Infer the inner for
+            // name resolution; the surrounding context determines the effective
+            // type, so the spread itself is Unknown.
+            let _ = infer_expr(inner, scope, env, self_type, location, diagnostics);
+            Ty::Unknown
         }
         Expr::Index(base, idx) => {
             let bt = infer_expr(base, scope, env, self_type, location, diagnostics);
@@ -1665,6 +1679,20 @@ fn infer_expr(
                 Ty::Named(n) if n == "Str" => Ty::Named("Str".into()),
                 other => other,
             }
+        }
+        Expr::IndexAssign { target, value } => {
+            // `x[i] = v` — infer both sides (surfaces name/type diagnostics)
+            // and yield Unit (assignment is a statement).
+            let _ = infer_expr(target, scope, env, self_type, location, diagnostics);
+            let _ = infer_expr(value, scope, env, self_type, location, diagnostics);
+            Ty::Unit
+        }
+        Expr::New { class, args } => {
+            // External constructor — check args, type is the (opaque) class name.
+            for a in args {
+                let _ = infer_expr(a, scope, env, self_type, location, diagnostics);
+            }
+            Ty::Named(class.clone())
         }
         Expr::ForLoop {
             binding,

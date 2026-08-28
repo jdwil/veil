@@ -24,6 +24,15 @@ const BUILTIN_CALLS: &[&str] = &[
     "now", "env", "panic", "todo", "unreachable", "assert", "Ok", "Err",
 ];
 
+/// Standard crates always available to generated code (mirrors the codegen's
+/// `known_modules` fallback list). Calls like `serde_json.from_str(s)` or
+/// `serde_json.to_string(obj)` resolve to real crate functions during codegen
+/// (the Rust backend infers turbofish types from the return type), so the
+/// name resolver must not flag them as `unresolved_external`.
+pub(crate) const KNOWN_STD_CRATES: &[&str] = &[
+    "serde_json", "serde", "tokio", "tracing", "uuid", "chrono", "std",
+];
+
 /// Index of names visible in a package for resolution.
 #[derive(Debug, Default)]
 struct NameIndex {
@@ -756,6 +765,17 @@ fn check_expr(
                 push_unknown_type(ty_name, location, index, diagnostics);
             }
         }
+        Expr::IndexAssign { target, value } => {
+            check_expr(target, location, scope, index, self_type, diagnostics);
+            check_expr(value, location, scope, index, self_type, diagnostics);
+        }
+        Expr::New { class: _, args } => {
+            // `class` is an external (JS/TS) constructor name — not resolved
+            // against VEIL types. Only the arguments are checked.
+            for a in args {
+                check_expr(a, location, scope, index, self_type, diagnostics);
+            }
+        }
         Expr::StructLit(name, fields) => {
             if !index.constructs.contains_key(name)
                 && !index.stub_types.contains(name)
@@ -791,6 +811,9 @@ fn check_expr(
             for e in items {
                 check_expr(e, location, scope, index, self_type, diagnostics);
             }
+        }
+        Expr::Spread(inner) => {
+            check_expr(inner, location, scope, index, self_type, diagnostics);
         }
         Expr::StringInterp(parts) => {
             for p in parts {
@@ -922,6 +945,13 @@ fn check_call(
         return;
     }
 
+    // Standard crates the codegen always makes available (serde_json, chrono, …).
+    // e.g. `serde_json.from_str(s)` / `serde_json.to_string(obj)`. These map to
+    // real crate functions during codegen, so they are not unresolved externals.
+    if KNOWN_STD_CRATES.contains(&target) {
+        return;
+    }
+
     // Construct / type / stub
     if let Some(info) = index.constructs.get(target) {
         if !call.method.is_empty() {
@@ -1020,13 +1050,28 @@ fn check_action(
 /// Built-in methods on container types (name-resolution only).
 fn is_container_method(type_name: &str, method: &str) -> bool {
     match type_name {
+        // Includes JS array transforms that lower to real TS/Rust iterator ops
+        // (used pervasively in frontend VEIL: filter/map/find/etc.).
         "List" | "Vec" => matches!(
             method,
             "get" | "at" | "len" | "length" | "count" | "is_empty" | "push" | "pop" | "contains"
+                | "filter" | "map" | "find" | "findIndex" | "some" | "every" | "reduce"
+                | "sort" | "reverse" | "slice" | "splice" | "concat" | "join" | "includes"
+                | "indexOf" | "flat" | "flatMap" | "forEach" | "first" | "last"
         ),
         "Opt" | "Option" => matches!(method, "is_some" | "is_none" | "unwrap" | "unwrap_or"),
         "Res" | "Result" => matches!(method, "is_ok" | "is_err" | "unwrap" | "unwrap_or"),
-        "Map" | "HashMap" => matches!(method, "get" | "insert" | "contains" | "len" | "is_empty"),
+        "Map" | "HashMap" => matches!(
+            method,
+            "get" | "insert" | "contains" | "len" | "is_empty" | "keys" | "values" | "entries"
+                | "has" | "delete" | "set"
+        ),
+        "Str" | "String" => matches!(
+            method,
+            "split" | "join" | "indexOf" | "slice" | "trim" | "toLowerCase" | "toUpperCase"
+                | "replace" | "startsWith" | "endsWith" | "includes" | "len" | "length"
+                | "charAt" | "substring" | "padStart" | "padEnd" | "repeat"
+        ),
         _ => false,
     }
 }

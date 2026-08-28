@@ -910,6 +910,7 @@ fn rewrite_name_in_expr(e: &mut Expr, old: &str, new: &str) {
             }
         }
         Expr::LetPattern(_, expr, _) => rewrite_name_in_expr(expr, old, new),
+        Expr::Spread(inner) => rewrite_name_in_expr(inner, old, new),
         Expr::StringInterp(parts) => {
             for p in parts {
                 if let crate::ast::StringPart::Expr(x) = p {

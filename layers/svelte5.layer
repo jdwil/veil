@@ -148,7 +148,7 @@ pkg svelte5 v1
       output_path: "src/lib/components/{{name}}.svelte"
       typescript: """
 <script lang="ts">
-  {{props_decl}}{{state_decl}}{{script}}
+  {{props_decl}}{{state_decl}}{{derived_decl}}{{fn_decl}}{{script}}{{effect_decl}}
 </script>
 {{template}}
 {{#if style}}<style>{{style}}</style>{{/if}}

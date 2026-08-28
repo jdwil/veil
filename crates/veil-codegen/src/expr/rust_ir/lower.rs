@@ -92,10 +92,21 @@ fn lower_to_rust_inner(expr: &Expr, ctx: &GenCtx) -> RustExpr {
         Expr::Return(inner) => lower_return(inner, expr, ctx),
         Expr::Break => RustExpr::Break,
         Expr::Continue => RustExpr::Continue,
-        Expr::ArrayLit(items) => RustExpr::Array {
-            items: items.iter().map(|e| lower_to_rust(e, ctx)).collect(),
-            ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
-        },
+        Expr::ArrayLit(items) => {
+            if items.iter().any(|e| matches!(e, Expr::Spread(_))) {
+                lower_array_with_spreads(items, expr, ctx)
+            } else {
+                RustExpr::Array {
+                    items: items.iter().map(|e| lower_to_rust(e, ctx)).collect(),
+                    ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
+                }
+            }
+        }
+        // Standalone spread outside an array/struct context has no Rust equivalent.
+        // (Array-literal spreads are handled above; struct `..base` uses StructUpdate.)
+        Expr::Spread(_) => compile_error(
+            "spread (`...`) is only supported in array literals and struct updates for the Rust target",
+        ),
         Expr::Tuple(items) => RustExpr::Tuple {
             items: items.iter().map(|e| lower_to_rust(e, ctx)).collect(),
             ty: infer_expr_type(expr, ctx).map(|s| RustType::parse(&s)),
@@ -104,6 +115,17 @@ fn lower_to_rust_inner(expr: &Expr, ctx: &GenCtx) -> RustExpr {
         Expr::Try(inner) => RustExpr::Try(Box::new(lower_to_rust(inner, ctx))),
         Expr::Require(inner) => lower_require(inner, expr, ctx),
         Expr::Index(base, idx) => lower_index(base, idx, expr, ctx),
+        Expr::IndexAssign { target, value } => RustExpr::Assign {
+            target: Box::new(lower_to_rust(target, ctx)),
+            op: "=".to_string(),
+            value: Box::new(lower_to_rust(value, ctx)),
+        },
+        // JS `new Class(args)` maps to Rust `Class::new(args)`.
+        Expr::New { class, args } => RustExpr::FnCall {
+            path: format!("{}::new", class),
+            args: args.iter().map(|a| lower_to_rust(a, ctx)).collect(),
+            ty: None,
+        },
         Expr::Action(a) => translate_action(a, ctx),
         Expr::Range {
             start,
@@ -152,6 +174,63 @@ fn lower_to_rust_inner(expr: &Expr, ctx: &GenCtx) -> RustExpr {
         },
         Expr::DoBlock(body) => lower_do_block(body, expr, ctx),
         Expr::Stock => compile_error("stock not expanded"),
+    }
+}
+
+/// Lower an array literal that contains one or more spread (`...`) elements to a
+/// block that builds a `Vec` by extending from spreads and pushing plain items:
+/// `{ let mut __veil_spread = Vec::new(); __veil_spread.extend(base); __veil_spread.push(x); __veil_spread }`.
+fn lower_array_with_spreads(items: &[Expr], expr: &Expr, ctx: &GenCtx) -> RustExpr {
+    let ty = infer_expr_type(expr, ctx).map(|s| RustType::parse(&s));
+    let tmp = "__veil_spread";
+    let mut stmts: Vec<RustExpr> = Vec::with_capacity(items.len() + 1);
+    // let mut __veil_spread = Vec::new();
+    stmts.push(RustExpr::Let {
+        name: tmp.to_string(),
+        mutable: true,
+        ty: None,
+        value: Box::new(RustExpr::FnCall {
+            path: "Vec::new".to_string(),
+            args: vec![],
+            ty: None,
+        }),
+    });
+    for item in items {
+        let recv = Box::new(RustExpr::Ident {
+            name: tmp.to_string(),
+            ty: None,
+        });
+        match item {
+            Expr::Spread(inner) => {
+                // __veil_spread.extend(<inner>);
+                stmts.push(RustExpr::MethodCall {
+                    receiver: recv,
+                    method: "extend".to_string(),
+                    args: vec![lower_to_rust(inner, ctx)],
+                    ty: None,
+                    is_async: false,
+                    is_fallible: false,
+                });
+            }
+            other => {
+                // __veil_spread.push(<item>);
+                stmts.push(RustExpr::MethodCall {
+                    receiver: recv,
+                    method: "push".to_string(),
+                    args: vec![lower_to_rust(other, ctx)],
+                    ty: None,
+                    is_async: false,
+                    is_fallible: false,
+                });
+            }
+        }
+    }
+    RustExpr::Block {
+        stmts,
+        value: Some(Box::new(RustExpr::Ident {
+            name: tmp.to_string(),
+            ty,
+        })),
     }
 }
 

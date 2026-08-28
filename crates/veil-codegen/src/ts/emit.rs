@@ -60,6 +60,11 @@ fn emit_ts_indent(expr: &TsExpr, indent: usize) -> String {
                     .iter()
                     .map(|(k, v)| {
                         let val = emit_ts(v);
+                        // Object-spread element: key "..." with a Spread value emits
+                        // as `...base`, not a `key: value` property.
+                        if k == "..." {
+                            return val;
+                        }
                         // Shorthand: `{ name }` when key === value ident
                         if let TsExpr::Ident { name, .. } = v {
                             if name == k {
@@ -190,6 +195,19 @@ fn emit_ts_indent(expr: &TsExpr, indent: usize) -> String {
                     )
                 }
             }
+        }
+
+        TsExpr::Ternary {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            format!(
+                "{} ? {} : {}",
+                emit_ts(condition),
+                emit_ts(then_expr),
+                emit_ts(else_expr)
+            )
         }
 
         TsExpr::Switch {
@@ -415,6 +433,7 @@ fn is_expression_node(expr: &TsExpr) -> bool {
             | TsExpr::TypeAssertion { .. }
             | TsExpr::NonNullAssertion(_)
             | TsExpr::Spread(_)
+            | TsExpr::Ternary { .. }
     )
 }
 

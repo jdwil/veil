@@ -361,6 +361,17 @@ fn check_construct_escape(
         for p in &fndef.params {
             locals.insert(p.name.clone());
         }
+        // A component/store `fn` can reference the construct's own fields
+        // (state/props/derived and any direct fields), so a method call like
+        // `items.filter(...)` on a state field is a local, not an external call.
+        for f in &c.fields {
+            locals.insert(f.name.clone());
+        }
+        for block in &c.blocks {
+            for f in &block.fields {
+                locals.insert(f.name.clone());
+            }
+        }
         for e in &fndef.body {
             check_expr_escape(e, &c.name, stub_names, construct_names, free_fns, &mut locals, diagnostics);
         }
@@ -696,6 +707,12 @@ fn flag_external_call(
     }
     // Has stub coverage
     if stub_names.contains(target) {
+        return;
+    }
+    // Standard crates the codegen always provides (serde_json, chrono, …).
+    // Calls like `serde_json.from_str(s)` / `serde_json.to_string(obj)` lower to
+    // real crate functions, so they are not escape-hatch debt.
+    if crate::names::KNOWN_STD_CRATES.contains(&target) {
         return;
     }
     // Capitalized unknown is unresolved_name (CHK-003), not escape debt

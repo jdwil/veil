@@ -168,6 +168,11 @@ fn collect_imports_from_expr(expr: &TsExpr, names: &mut BTreeSet<String>) {
                 }
             }
         }
+        TsExpr::Ternary { condition, then_expr, else_expr } => {
+            collect_imports_from_expr(condition, names);
+            collect_imports_from_expr(then_expr, names);
+            collect_imports_from_expr(else_expr, names);
+        }
         TsExpr::Switch { scrutinee, cases, default } => {
             collect_imports_from_expr(scrutinee, names);
             for (_, body) in cases {
@@ -327,6 +332,9 @@ fn has_await(expr: &TsExpr) -> bool {
             has_await(condition)
                 || then_body.iter().any(|e| has_await(e))
                 || else_body.as_ref().is_some_and(|els| els.iter().any(|e| has_await(e)))
+        }
+        TsExpr::Ternary { condition, then_expr, else_expr } => {
+            has_await(condition) || has_await(then_expr) || has_await(else_expr)
         }
         TsExpr::Switch { scrutinee, cases, default } => {
             has_await(scrutinee)

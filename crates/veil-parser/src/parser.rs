@@ -3420,9 +3420,93 @@ impl<'a> Parser<'a> {
 // ─── Expression parsing ───────────────────────────────────────────────────
 
 impl<'a> Parser<'a> {
+    /// Try to parse a JS-style arrow closure at the current position:
+    /// `x => body` (single param) or `(a, b) => body` (parenthesized params).
+    /// Returns `Ok(None)` (without consuming) if the current tokens are not an
+    /// arrow closure, so the caller falls through to normal expression parsing.
+    ///
+    /// Arrow bodies are single expressions (the common frontend case, e.g.
+    /// `.filter((_, i) => i !== index)`, `.map(x => x.name)`).
+    fn try_parse_js_arrow(&mut self) -> Result<Option<Expr>, ParseError> {
+        // Form 1: `ident =>`
+        if self.at(&TokenKind::Ident)
+            && self.tokens.get(self.pos + 1).map(|t| &t.kind) == Some(&TokenKind::FatArrow)
+        {
+            let param = self.advance().text; // ident
+            self.advance(); // =>
+            let body = self.parse_expr()?;
+            return Ok(Some(Expr::Closure {
+                params: vec![param],
+                body: vec![body],
+            }));
+        }
+
+        // Form 2: `( params ) =>` — look ahead for the matching `)` then `=>`.
+        if self.at(&TokenKind::LParen) {
+            let mut depth = 0usize;
+            let mut i = self.pos;
+            let mut close = None;
+            while let Some(tok) = self.tokens.get(i) {
+                match tok.kind {
+                    TokenKind::LParen => depth += 1,
+                    TokenKind::RParen => {
+                        depth -= 1;
+                        if depth == 0 {
+                            close = Some(i);
+                            break;
+                        }
+                    }
+                    TokenKind::Eof => break,
+                    _ => {}
+                }
+                i += 1;
+            }
+            if let Some(close_idx) = close {
+                let is_arrow = self
+                    .tokens
+                    .get(close_idx + 1)
+                    .map(|t| t.kind == TokenKind::FatArrow)
+                    .unwrap_or(false);
+                if is_arrow {
+                    // Consume `(`, parse comma-separated ident params, `)`, `=>`.
+                    self.advance(); // (
+                    let mut params = Vec::new();
+                    while !self.at(&TokenKind::RParen) && !self.at(&TokenKind::Eof) {
+                        if !params.is_empty() && self.at(&TokenKind::Comma) {
+                            self.advance();
+                        }
+                        if self.at(&TokenKind::RParen) {
+                            break;
+                        }
+                        // Params are plain identifiers (including `_`). Any
+                        // keyword-like token whose text is an identifier is fine.
+                        params.push(self.advance().text);
+                    }
+                    if self.at(&TokenKind::RParen) {
+                        self.advance(); // )
+                    }
+                    self.expect(&TokenKind::FatArrow)?; // =>
+                    let body = self.parse_expr()?;
+                    return Ok(Some(Expr::Closure {
+                        params,
+                        body: vec![body],
+                    }));
+                }
+            }
+        }
+
+        Ok(None)
+    }
+
     /// Parse an expression with operator precedence. Layer statements
     /// (registry lookup on the leading ident) are parsed by statement shape.
     fn parse_expr(&mut self) -> Result<Expr, ParseError> {
+        // JS-style arrow closures in expression position: `x => body` and
+        // `(a, b) => body`. Must be checked before the general dispatch so the
+        // params aren't mis-parsed as a paren/tuple expression or bare ident.
+        if let Some(closure) = self.try_parse_js_arrow()? {
+            return Ok(closure);
+        }
         match self.peek_kind().clone() {
             TokenKind::Stock => {
                 self.advance();
@@ -3472,6 +3556,24 @@ impl<'a> Parser<'a> {
                 // infinite-loop expression when followed by a block, otherwise
                 // it's a plain identifier (field name, enum variant, etc.).
                 let word = self.current().text.clone();
+                // JS constructor call: `new Class(args)` (e.g. `new URL(x)`,
+                // `new Date()`). `new` is contextual — only a constructor when
+                // followed by an identifier (the class name).
+                if word == "new"
+                    && self.tokens.get(self.pos + 1).map(|t| &t.kind) == Some(&TokenKind::Ident)
+                {
+                    self.advance(); // consume `new`
+                    let class = self.expect_ident()?;
+                    let args = if self.at(&TokenKind::LParen) {
+                        self.parse_paren_args()
+                    } else {
+                        Vec::new()
+                    };
+                    let new_expr = Expr::New { class, args };
+                    // Allow chaining: `new URL(x).searchParams` etc.
+                    let start_span = self.current().span;
+                    return self.parse_postfix(new_expr, start_span);
+                }
                 // ACS-010 force-present: `require repo.find!(id)` → T (NotFound).
                 if word == "require" {
                     let next_kind = self.tokens.get(self.pos + 1).map(|t| &t.kind);
@@ -3625,6 +3727,16 @@ impl<'a> Parser<'a> {
                 let rhs = self.parse_expr()?;
                 return Ok(Expr::Assign(path, Box::new(rhs), None));
             }
+            // Index / computed-member assignment: `x[i] = v`, `obj.arr[i] = v`.
+            // The LHS is an Index expression (possibly with a field-access base).
+            if matches!(&lhs, Expr::Index(_, _)) {
+                self.advance();
+                let rhs = self.parse_expr()?;
+                return Ok(Expr::IndexAssign {
+                    target: Box::new(lhs),
+                    value: Box::new(rhs),
+                });
+            }
             // Tuple destructuring: (a, b) = expr → LetPattern
             if let Expr::Tuple(items) = &lhs {
                 let parts: Vec<Pattern> = items.iter().map(|e| {
@@ -3640,7 +3752,44 @@ impl<'a> Parser<'a> {
             }
         }
 
-        self.parse_binary_rhs(lhs, 0)
+        let cond = self.parse_binary_rhs(lhs, 0)?;
+        self.maybe_parse_ternary(cond)
+    }
+
+    /// If the next token is `?` in ternary position, parse `cond ? then : else`
+    /// and lower it to an `IfExpr` (which TS lowers to `cond ? then : else`).
+    /// Otherwise return `cond` unchanged.
+    fn maybe_parse_ternary(&mut self, cond: Expr) -> Result<Expr, ParseError> {
+        if !self.at(&TokenKind::Question) {
+            return Ok(cond);
+        }
+        self.advance(); // ?
+        // Parse the branches WITHOUT the typed-binding/assignment logic in
+        // parse_expr, so the ternary's own `:` isn't mistaken for a `name: Type`
+        // delimiter (the L1 bug). Branches are full conditional expressions
+        // (ternary is right-associative, so `then`/`else` may nest).
+        let then_expr = self.parse_conditional_operand()?;
+        self.expect(&TokenKind::Colon)?; // ternary separator, not a field delimiter
+        let else_expr = self.parse_conditional_operand()?;
+        Ok(Expr::IfExpr(IfExprData {
+            condition: Box::new(cond),
+            then_body: vec![then_expr],
+            else_body: Some(vec![else_expr]),
+        }))
+    }
+
+    /// Parse a ternary branch: a binary expression (with its own nested
+    /// ternary), but NOT the statement/assignment/typed-binding forms that
+    /// `parse_expr` layers on top. This keeps a branch's `:` from being read as
+    /// a `name: Type` binding.
+    fn parse_conditional_operand(&mut self) -> Result<Expr, ParseError> {
+        // Allow arrow closures as branch values (rare, but harmless).
+        if let Some(closure) = self.try_parse_js_arrow()? {
+            return Ok(closure);
+        }
+        let lhs = self.parse_primary()?;
+        let bin = self.parse_binary_rhs(lhs, 0)?;
+        self.maybe_parse_ternary(bin)
     }
 
     /// Fold `name = Action(…)` into `Action { result_binding: name }`.
@@ -3828,6 +3977,18 @@ impl<'a> Parser<'a> {
             && !self.at(&TokenKind::Newline)
         {
             let before_pos = self.pos;
+            // Object spread: `{ ...base, field: v }`. Stored as a synthetic field
+            // with the reserved key "..." and an Expr::Spread value; codegen
+            // lowers this to a JS object-spread element (`...base`).
+            if self.at(&TokenKind::Ellipsis) {
+                self.advance();
+                let inner = self.parse_expr()?;
+                named.push(("...".to_string(), Expr::Spread(Box::new(inner))));
+                if self.at(&TokenKind::Comma) {
+                    self.advance();
+                }
+                continue;
+            }
             // Accept keywords as field names in struct literals (e.g. {input, output: x}).
             // Many VEIL keywords (input, output, desc, etc.) are valid field names.
             let name = if self.at(&TokenKind::Ident) {
@@ -3947,7 +4108,14 @@ impl<'a> Parser<'a> {
                 while !self.at(&TokenKind::RBracket) && !self.at(&TokenKind::Eof) && !self.at(&TokenKind::Newline) {
                     if !items.is_empty() && self.at(&TokenKind::Comma) { self.advance(); }
                     if self.at(&TokenKind::RBracket) { break; }
-                    items.push(self.parse_expr()?);
+                    if self.at(&TokenKind::Ellipsis) {
+                        // Spread element: `[...items, x]`
+                        self.advance();
+                        let inner = self.parse_expr()?;
+                        items.push(Expr::Spread(Box::new(inner)));
+                    } else {
+                        items.push(self.parse_expr()?);
+                    }
                 }
                 if self.at(&TokenKind::RBracket) { self.advance(); }
                 return Ok(Expr::ArrayLit(items));
@@ -4240,7 +4408,33 @@ impl<'a> Parser<'a> {
                     let fields = self.parse_brace_args()?;
                     expr = Expr::StructLit(name, fields);
                 }
-                TokenKind::Question => { self.advance(); expr = Expr::Try(Box::new(expr)); }
+                TokenKind::Question => {
+                    // Distinguish postfix Try (`expr?`) from ternary (`c ? a : b`).
+                    // Try is followed by a chain/operator/terminator; ternary is
+                    // followed by an expression. If the next token starts an
+                    // expression, leave `?` for the ternary handler in parse_expr.
+                    let next = self.tokens.get(self.pos + 1).map(|t| &t.kind);
+                    let is_ternary = matches!(
+                        next,
+                        Some(TokenKind::Ident)
+                            | Some(TokenKind::IntLit)
+                            | Some(TokenKind::FloatLit)
+                            | Some(TokenKind::StringLit)
+                            | Some(TokenKind::FStringLit)
+                            | Some(TokenKind::True)
+                            | Some(TokenKind::False)
+                            | Some(TokenKind::LParen)
+                            | Some(TokenKind::LBracket)
+                            | Some(TokenKind::LBrace)
+                            | Some(TokenKind::Minus)
+                            | Some(TokenKind::Bang)
+                    );
+                    if is_ternary {
+                        break;
+                    }
+                    self.advance();
+                    expr = Expr::Try(Box::new(expr));
+                }
                 TokenKind::LBracket => {
                     self.advance();
                     let index = self.parse_expr()?;
@@ -4655,11 +4849,24 @@ impl<'a> Parser<'a> {
             // closures, and nested/chained calls). Falling back to advance() on
             // error prevents an infinite loop without silently dropping tokens
             // from a well-formed argument.
-            match self.parse_expr() {
-                Ok(expr) => args.push(expr),
-                Err(_) => {
-                    if self.pos == before {
-                        self.advance();
+            if self.at(&TokenKind::Ellipsis) {
+                // Spread argument: `fn(...args)`
+                self.advance();
+                match self.parse_expr() {
+                    Ok(expr) => args.push(Expr::Spread(Box::new(expr))),
+                    Err(_) => {
+                        if self.pos == before {
+                            self.advance();
+                        }
+                    }
+                }
+            } else {
+                match self.parse_expr() {
+                    Ok(expr) => args.push(expr),
+                    Err(_) => {
+                        if self.pos == before {
+                            self.advance();
+                        }
                     }
                 }
             }

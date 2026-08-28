@@ -1348,10 +1348,18 @@ fn expr_to_veil(expr: &Expr) -> String {
         Expr::Break => "break".to_string(),
         Expr::Continue => "continue".to_string(),
         Expr::Index(base, idx) => format!("{}[{}]", expr_to_veil(base), expr_to_veil(idx)),
+        Expr::IndexAssign { target, value } => {
+            format!("{} = {}", expr_to_veil(target), expr_to_veil(value))
+        }
+        Expr::New { class, args } => {
+            let a = args.iter().map(expr_to_veil).collect::<Vec<_>>().join(", ");
+            format!("new {}({})", class, a)
+        }
         Expr::ArrayLit(items) => {
             let s = items.iter().map(expr_to_veil).collect::<Vec<_>>().join(", ");
             format!("[{}]", s)
         }
+        Expr::Spread(inner) => format!("...{}", expr_to_veil(inner)),
         Expr::Range {
             start,
             end,

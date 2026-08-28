@@ -568,7 +568,7 @@ fn collect_construct_files(
 ) {
     // Check if this construct's layer spec has a `lowers_to { typescript: "..." }` template
     if let Some(template) = registry.construct_lowers_to(c, "typescript") {
-        let content = interpolate_construct_template(template, c);
+        let content = interpolate_construct_template(template, c, registry);
         let path = construct_output_path(c, registry);
         // For .svelte files: auto-inject imports for referenced components
         let content = if path.ends_with(".svelte") {
@@ -596,7 +596,13 @@ fn collect_construct_files(
 /// - `{{for field in state}}...{{end}}` → iterate state fields
 /// - `{{#if style}}...{{/if}}` → conditional on style existence
 /// - `{{field.name}}`, `{{field.type}}`, `{{field.default}}` — inside for loops
-fn interpolate_construct_template(template: &str, c: &Construct) -> String {
+/// - `{{derived_decl}}` → `derived` block fields as `let {name} = $derived({expr});`
+/// - `{{effect_decl}}` → `effect` blocks as `$effect(() => { ... })` (async-aware)
+/// - `{{fn_decl}}` → construct `fn`s as LOCAL (non-exported) component functions
+///
+/// The `$derived` / `$effect` shapes come from the layer's `reactivity_policy`
+/// (never hardcoded here) so framework APIs stay layer-owned (MISSION).
+fn interpolate_construct_template(template: &str, c: &Construct, registry: &LayerRegistry) -> String {
     let mut result = template.to_string();
 
     // Simple replacements
@@ -654,6 +660,104 @@ fn interpolate_construct_template(template: &str, c: &Construct) -> String {
             String::new()
         };
         result = result.replace("{{state_decl}}", &state_script);
+    }
+
+    // {{derived_decl}} — `derived` block fields → layer's derived_line pattern.
+    // Value form (`let x = $derived(expr)`) keeps object literals valid.
+    if result.contains("{{derived_decl}}") {
+        let pattern = &registry.reactivity_policy.derived_line;
+        let mut s = String::new();
+        if !pattern.is_empty() {
+            let fn_opts = store_fn_opts(c);
+            for block in c.blocks.iter().filter(|b| b.keyword == "derived") {
+                for field in &block.fields {
+                    let expr_ts = field
+                        .default_expr
+                        .as_ref()
+                        .map(|e| expr_as_ts_value(e, &fn_opts))
+                        .unwrap_or_else(|| "undefined".to_string());
+                    let line = veil_ir::layer::ReactivityPolicy::fill(
+                        pattern,
+                        &[("name", &field.name), ("expr", &expr_ts)],
+                    );
+                    s.push_str("  ");
+                    s.push_str(&line);
+                    s.push('\n');
+                }
+            }
+        }
+        result = result.replace("{{derived_decl}}", &s);
+    }
+
+    // {{fn_decl}} — construct `fn`s as LOCAL (non-exported) component functions.
+    // Unlike {{fn_declarations}} (stores → `export function`), components keep
+    // handlers local so the template can reference them directly.
+    if result.contains("{{fn_decl}}") {
+        let mut s = String::new();
+        let fn_opts = store_fn_opts(c);
+        for f in &c.fns {
+            if f.name == "template" || f.name == "style" || f.name == "script" {
+                continue;
+            }
+            let params = f
+                .params
+                .iter()
+                .map(|p| format!("{}: {}", p.name, ts_type_for_field(&p.type_expr)))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let ret_type = match &f.return_type {
+                Some(ty) => format!(": {}", ts_type_for_field(ty)),
+                None => String::new(),
+            };
+            let async_kw = if f.is_async { "async " } else { "" };
+            s.push_str(&format!(
+                "  {}function {}({}){} {{\n",
+                async_kw, f.name, params, ret_type
+            ));
+            s.push_str(&super::expr_emit::emit_typescript_stmts_with(&f.body, 2, &fn_opts));
+            s.push_str("  }\n");
+        }
+        result = result.replace("{{fn_decl}}", &s);
+    }
+
+    // {{effect_decl}} — `effect` blocks → layer's effect_sync / effect_async.
+    // An effect whose body contains an `await` (recursively) uses effect_async.
+    if result.contains("{{effect_decl}}") {
+        let sync_pat = &registry.reactivity_policy.effect_sync;
+        let async_pat = &registry.reactivity_policy.effect_async;
+        let mut s = String::new();
+        if !sync_pat.is_empty() {
+            let fn_opts = store_fn_opts(c);
+            for effect in &c.effects {
+                let body_ts = super::expr_emit::emit_typescript_stmts_with(
+                    &effect.body,
+                    2,
+                    &fn_opts,
+                );
+                let mut body_full = body_ts.trim_end().to_string();
+                if !effect.cleanup.is_empty() {
+                    let cleanup_ts = super::expr_emit::emit_typescript_stmts_with(
+                        &effect.cleanup,
+                        3,
+                        &fn_opts,
+                    );
+                    body_full.push_str(&format!(
+                        "\n    return () => {{\n{}\n    }};",
+                        cleanup_ts.trim_end()
+                    ));
+                }
+                let is_async = body_full.contains("await ");
+                let pattern = if is_async { async_pat } else { sync_pat };
+                let block = veil_ir::layer::ReactivityPolicy::fill(
+                    pattern,
+                    &[("name", &effect.name), ("body", &body_full)],
+                );
+                s.push_str("  ");
+                s.push_str(&block);
+                s.push('\n');
+            }
+        }
+        result = result.replace("{{effect_decl}}", &s);
     }
 
     // {{store_state}} — Svelte 5 legal shared state object.
@@ -1058,6 +1162,17 @@ fn to_kebab(s: &str) -> String {
         }
     }
     result
+}
+
+/// Emit a VEIL expression as a TypeScript *value* string (for `$derived(expr)`).
+///
+/// `expr_to_typescript` is a statement emitter — for a bare expression it yields
+/// `<expr>;` at the given indent. We reuse it and strip the leading indent and a
+/// trailing semicolon so the result nests inside the derived_line pattern.
+fn expr_as_ts_value(expr: &Expr, opts: &super::expr_emit::TsExprEmitOpts) -> String {
+    let rendered = super::expr_emit::emit_expr_value_with(expr, 0, opts);
+    let trimmed = rendered.trim();
+    trimmed.strip_suffix(';').unwrap_or(trimmed).to_string()
 }
 
 /// Convert a VEIL TypeExpr to a TypeScript type string.

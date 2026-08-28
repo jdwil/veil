@@ -43,6 +43,52 @@ mod tests {
     }
 
     #[test]
+    fn test_ellipsis_spread_token() {
+        // `...` must lex as a single Ellipsis token (longest match).
+        let k = kinds("...");
+        assert_eq!(k, vec![TokenKind::Ellipsis]);
+    }
+
+    #[test]
+    fn test_ellipsis_before_range_operators_no_regression() {
+        // Longest-match: `...` wins over `..`/`..=` but ranges still lex correctly.
+        assert_eq!(kinds(".."), vec![TokenKind::DotDot]);
+        assert_eq!(kinds("..="), vec![TokenKind::DotDotEq]);
+        // `0..10` is a range; `...items` is a spread.
+        assert_eq!(
+            kinds("0..10"),
+            vec![TokenKind::IntLit, TokenKind::DotDot, TokenKind::IntLit]
+        );
+        assert_eq!(
+            kinds("0..=10"),
+            vec![TokenKind::IntLit, TokenKind::DotDotEq, TokenKind::IntLit]
+        );
+    }
+
+    #[test]
+    fn test_spread_in_array_context() {
+        // `[...items, x]` → LBracket Ellipsis Ident Comma Ident RBracket
+        let k = kinds("[...items, x]");
+        assert_eq!(
+            k,
+            vec![
+                TokenKind::LBracket,
+                TokenKind::Ellipsis,
+                TokenKind::Ident,
+                TokenKind::Comma,
+                TokenKind::Ident,
+                TokenKind::RBracket,
+            ]
+        );
+    }
+
+    #[test]
+    fn test_four_dots_lexes_ellipsis_then_dot() {
+        // `....` → Ellipsis (`...`) followed by a single Dot.
+        assert_eq!(kinds("...."), vec![TokenKind::Ellipsis, TokenKind::Dot]);
+    }
+
+    #[test]
     fn test_core_structure_keywords() {
         // `step`/`par` are NOT core tokens — they are layer flow vocabulary and
         // lex as identifiers so they can be used as variable names.
