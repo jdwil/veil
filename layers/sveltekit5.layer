@@ -200,6 +200,8 @@ pkg sveltekit5 v1
           return o;
         };
         g.set_auth_token = (t: string) => localStorage.setItem('veil_auth_token', t);
+        g.get_auth_token = () => (localStorage.getItem('veil_auth_token') ?? '');
+        g.clear_url_hash = () => { try { history.replaceState(null, '', window.location.pathname + window.location.search); } catch {} };
         g.clear_auth_token = () => localStorage.removeItem('veil_auth_token');
 
         export {};
@@ -227,6 +229,8 @@ pkg sveltekit5 v1
         declare function oauth_implicit_login(authorizeBase: string, clientId: string, redirectUri: string, scope: string, idp: string): void;
         declare function oauth_implicit_tokens(): Record<string, string>;
         declare function set_auth_token(t: string): void;
+        declare function get_auth_token(): string;
+        declare function clear_url_hash(): void;
         declare function clear_auth_token(): void;
       """
 
