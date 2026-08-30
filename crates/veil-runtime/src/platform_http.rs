@@ -273,6 +273,38 @@ async fn read_file_api(
         .branch
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "main".into());
+    // Git-backed projects: read from the provider working tree.
+    if let Ok(repo) = crate::origin_resolve::resolve_repo_full(&st.deps, &raw_id).await {
+        if crate::origin_resolve::is_git_backed(&repo) {
+            let origin = crate::origin_resolve::git_origin_for(&repo);
+            return match crate::git_files::read_file(&origin, &branch, path) {
+                Ok(Some(content)) => Ok(Json(json!({
+                    "ok": true,
+                    "exists": true,
+                    "repo_id": repo.id.value,
+                    "branch": branch,
+                    "path": path,
+                    "content": content,
+                    "bytes": content.len(),
+                    "via": "git",
+                }))),
+                Ok(None) => Ok(Json(json!({
+                    "ok": true,
+                    "exists": false,
+                    "repo_id": repo.id.value,
+                    "branch": branch,
+                    "path": path,
+                    "content": "",
+                    "bytes": 0,
+                    "via": "git",
+                }))),
+                Err(e) => {
+                    tracing::error!(error = %e, "git-backed read_file failed");
+                    Err(StatusCode::BAD_GATEWAY)
+                }
+            };
+        }
+    }
     let repo_id_val = resolve_repo_id_value(&st.deps, &raw_id).await?;
     let rid = storage::domain::types::RepoId {
         value: repo_id_val.clone(),
@@ -335,6 +367,30 @@ async fn write_file_api(
         .message
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| format!("update {path}"));
+    // Git-backed projects: write into the provider working tree + push.
+    if let Ok(repo) = crate::origin_resolve::resolve_repo_full(&st.deps, &raw_id).await {
+        if crate::origin_resolve::is_git_backed(&repo) {
+            let origin = crate::origin_resolve::git_origin_for(&repo);
+            return match crate::git_files::write_file(
+                &origin, &branch, path, &body.content, &message, None, None,
+            ) {
+                Ok(sha) => Ok(Json(json!({
+                    "ok": true,
+                    "repo_id": repo.id.value,
+                    "branch": branch,
+                    "path": path,
+                    "bytes": body.content.len(),
+                    "commit": { "hash": sha },
+                    "message": message,
+                    "via": "git",
+                }))),
+                Err(e) => {
+                    tracing::error!(error = %e, "git-backed write_file failed");
+                    Err(StatusCode::BAD_GATEWAY)
+                }
+            };
+        }
+    }
     let repo_id_val = resolve_repo_id_value(&st.deps, &raw_id).await?;
     let rid = storage::domain::types::RepoId {
         value: repo_id_val.clone(),
@@ -360,6 +416,154 @@ async fn write_file_api(
         }))),
         Err(e) => Err(domain_status(e)),
     }
+}
+
+#[derive(Deserialize)]
+struct ListFilesBody {
+    #[serde(default)]
+    repo_id: Option<String>,
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    branch: Option<String>,
+    #[serde(default)]
+    prefix: Option<String>,
+}
+
+/// List files for a project. Git-backed → provider working tree; else S3.
+async fn list_files_api(
+    State(st): State<StorageState>,
+    Json(body): Json<ListFilesBody>,
+) -> Result<Json<Value>, StatusCode> {
+    let raw_id = body
+        .repo_id
+        .or(body.id)
+        .filter(|s| !s.is_empty())
+        .ok_or(StatusCode::BAD_REQUEST)?;
+    let branch = body
+        .branch
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "main".into());
+    let prefix = body.prefix.unwrap_or_default();
+
+    let repo = crate::origin_resolve::resolve_repo_full(&st.deps, &raw_id)
+        .await
+        .map_err(domain_status)?;
+    if crate::origin_resolve::is_git_backed(&repo) {
+        let origin = crate::origin_resolve::git_origin_for(&repo);
+        return match crate::git_files::list_files(&origin, &branch, &prefix) {
+            Ok(files) => Ok(Json(json!({
+                "ok": true,
+                "repo_id": repo.id.value,
+                "branch": branch,
+                "files": files,
+                "via": "git",
+            }))),
+            Err(e) => {
+                tracing::error!(error = %e, "git-backed list_files failed");
+                Err(StatusCode::BAD_GATEWAY)
+            }
+        };
+    }
+    match storage::application::list_files(&st.deps, repo.id.clone(), branch.clone(), prefix).await {
+        Ok(files) => Ok(Json(json!({
+            "ok": true,
+            "repo_id": repo.id.value,
+            "branch": branch,
+            "files": files,
+            "via": "s3",
+        }))),
+        Err(e) => Err(domain_status(e)),
+    }
+}
+
+#[derive(Deserialize)]
+struct BindOriginBody {
+    /// "git" or "s3" (default s3 = clears binding).
+    #[serde(default)]
+    kind: Option<String>,
+    #[serde(default)]
+    provider: Option<String>,
+    /// `org/name` on the provider.
+    #[serde(default)]
+    repo: Option<String>,
+    #[serde(default)]
+    subpath: Option<String>,
+    #[serde(default)]
+    branch: Option<String>,
+}
+
+/// GET /api/repos/{id}/origin — report the current origin binding.
+async fn get_repo_origin(
+    State(st): State<StorageState>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, StatusCode> {
+    let repo = crate::origin_resolve::resolve_repo_full(&st.deps, &id)
+        .await
+        .map_err(domain_status)?;
+    Ok(Json(json!({
+        "ok": true,
+        "repo_id": repo.id.value,
+        "git_backed": crate::origin_resolve::is_git_backed(&repo),
+        "origin": repo.origin,
+    })))
+}
+
+/// POST /api/repos/{id}/origin — bind a project to a git repo (or reset to S3).
+async fn bind_repo_origin(
+    State(st): State<StorageState>,
+    Path(id): Path<String>,
+    Json(body): Json<BindOriginBody>,
+) -> Result<Json<Value>, StatusCode> {
+    use storage::domain::types::{GitProvider, OriginBinding};
+
+    let kind = body.kind.unwrap_or_else(|| "git".into()).to_ascii_lowercase();
+    let binding = if kind == "s3" {
+        None
+    } else if kind == "git" {
+        let provider_s = body.provider.unwrap_or_default();
+        let provider = match provider_s.trim().to_ascii_lowercase().as_str() {
+            "github" | "gh" => GitProvider::Github,
+            "bitbucket" | "bb" => GitProvider::Bitbucket,
+            _ => return Err(StatusCode::BAD_REQUEST),
+        };
+        let repo = body.repo.filter(|s| !s.trim().is_empty()).ok_or(StatusCode::BAD_REQUEST)?;
+        // repo must look like org/name
+        if repo.matches('/').count() < 1 {
+            return Err(StatusCode::BAD_REQUEST);
+        }
+        Some(OriginBinding::Git {
+            provider,
+            repo: repo.trim().to_string(),
+            subpath: body
+                .subpath
+                .map(|s| s.trim().trim_matches('/').to_string())
+                .filter(|s| !s.is_empty()),
+            branch: body.branch.filter(|s| !s.trim().is_empty()),
+        })
+    } else {
+        return Err(StatusCode::BAD_REQUEST);
+    };
+
+    let repo = storage::application::set_repo_origin(&st.deps, id, binding)
+        .await
+        .map_err(domain_status)?;
+
+    // Best-effort reachability check for git bindings (does not fail the bind
+    // if the token is missing — the binding is still recorded).
+    let mut reachable = None;
+    if crate::origin_resolve::is_git_backed(&repo) {
+        let origin = crate::origin_resolve::git_origin_for(&repo);
+        reachable = Some(origin.exists());
+    }
+
+    Ok(Json(json!({
+        "ok": true,
+        "repo_id": repo.id.value,
+        "git_backed": crate::origin_resolve::is_git_backed(&repo),
+        "origin": repo.origin,
+        "remote_reachable": reachable,
+    })))
 }
 
 #[derive(Deserialize)]
@@ -531,11 +735,29 @@ async fn create_pull_request_flat(
                 }
             }
             let _ = ensure_ci_passed(&st.deps, cr.id, "pending", Some(slug.as_str())).await;
+            // SINGLE SOURCE OF TRUTH split (not a double-write of one record):
+            //   - change_management (above) owns the git/PR **transport** record
+            //     (branch + PrStatus lifecycle). It is NOT an approval authority.
+            //   - review.rs owns the single **review-facing** item that the human
+            //     signs and that `review::may_ship` gates on. We record exactly
+            //     one review item per PR create here.
+            // See Mind Palace: decision-single-review-source-of-truth.
             let _ = veil_server::review::record_pr(&slug, &cr.title, Some(&cr.id.to_string()));
+            // Git-backed projects: also open a PR on the provider and post the
+            // initial `veil/review` = pending status (the merge gate).
+            let provider_pr = maybe_open_provider_pr(
+                &slug,
+                &cr.source_branch,
+                &cr.target_branch,
+                &cr.title,
+                &description,
+            )
+            .await;
             Ok(Json(json!({
                 "pull_request": cr,
                 "slug": slug,
                 "wizard_path": format!("/pulls/{}", cr.id),
+                "provider_pr": provider_pr,
             })))
         }
         Err(e) => {
@@ -810,6 +1032,49 @@ struct ReviewBody {
     comment: Option<String>,
 }
 
+fn reviewer_note(comment: &Option<String>) -> Option<String> {
+    comment
+        .as_ref()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// Record the authoritative review `SignOffRecord` (Model B) for a PR-Wizard /
+/// PR-detail approval or request-changes. This is the ship-gate record that
+/// `review::may_ship` consults. It is idempotent with the `/review` UI: if the
+/// UI already signed the outstanding items, there is nothing left to match and
+/// we return `Null` rather than erroring. The actor is the current human
+/// operator (`via=ui`) — never an agent — so it passes `review`'s human gate.
+fn record_review_sign_off(
+    slug: Option<&str>,
+    pr_id: Option<&str>,
+    decision: &str,
+    note: Option<String>,
+) -> Value {
+    let actor = veil_server::session::current_user_id();
+    let req = veil_server::review::SignOffRequest {
+        ids: vec![],
+        slug: slug.map(str::to_string).filter(|s| !s.is_empty()),
+        all: slug.map(|s| s.is_empty()).unwrap_or(true),
+        decision: decision.to_string(),
+        actor,
+        note,
+        pr_id: pr_id.map(str::to_string).filter(|s| !s.is_empty()),
+        via: Some("ui".into()),
+        ..Default::default()
+    };
+    match veil_server::review::sign_off(req) {
+        Ok((_items, audit)) => serde_json::to_value(&audit).unwrap_or(Value::Null),
+        // Benign: the /review UI already recorded the human decision for these
+        // items, so there is nothing outstanding left to sign here.
+        Err(e) if e.contains("no outstanding items matched") => Value::Null,
+        Err(e) => {
+            tracing::warn!(error = %e, "record_review_sign_off failed");
+            json!({ "ok": false, "error": e })
+        }
+    }
+}
+
 async fn approve_pr(
     State(st): State<CmState>,
     Path(id): Path<String>,
@@ -830,15 +1095,34 @@ async fn approve_pr(
         approve_slug = extract_slug_from_description(&pr.description);
     }
     let _ = ensure_ci_passed(&st.deps, id, "approved", approve_slug.as_deref()).await;
+    // SINGLE SOURCE OF TRUTH: the authoritative approval is a review
+    // `SignOffRecord` (Model B), which is what `review::may_ship` gates on.
+    // The `/review` UI records it before calling this endpoint; but callers
+    // like PullRequestDetailView hit /approve directly, so we record it here
+    // too (idempotent — a no-op when there is nothing outstanding). Updating
+    // the change_management `PrStatus` below is now only transport lifecycle,
+    // NOT an approval authority. See Mind Palace: decision-single-review-source-of-truth.
+    let approval_audit =
+        record_review_sign_off(approve_slug.as_deref(), Some(&id.to_string()), "approve", reviewer_note(&body.comment));
     match change_management::application::approve_pr(&st.deps, id, reviewer, body.comment)
         .await
     {
         Ok(()) => Ok(Json(json!({
             "ok": true,
             "status": "Approved",
+            "sign_off": approval_audit,
             "audit_env": veil_server::review::audit_env_json(),
         }))),
-        Err(e) => Err(domain_status(e)),
+        // Transport-lifecycle transition failing (e.g. PR not ReadyForReview)
+        // MUST NOT lose the recorded human sign-off. Report success on the
+        // authoritative record and surface the transport note.
+        Err(e) => Ok(Json(json!({
+            "ok": true,
+            "status": "Approved",
+            "sign_off": approval_audit,
+            "transport_note": format!("{e:?}"),
+            "audit_env": veil_server::review::audit_env_json(),
+        }))),
     }
 }
 
@@ -871,11 +1155,29 @@ async fn request_pr_changes(
     } else {
         body.comment
     };
+    // Authoritative record: a review sign-off with decision=reject (Model B).
+    let rc_slug = st
+        .deps
+        .pr_repo
+        .find(id)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|p| extract_slug_from_description(&p.description));
+    let reject_audit =
+        record_review_sign_off(rc_slug.as_deref(), Some(&id.to_string()), "reject", Some(comment.clone()));
     match change_management::application::request_pr_changes(&st.deps, id, reviewer, comment)
         .await
     {
-        Ok(()) => Ok(Json(json!({ "ok": true, "status": "ChangesRequested" }))),
-        Err(e) => Err(domain_status(e)),
+        Ok(()) => Ok(Json(json!({ "ok": true, "status": "ChangesRequested", "sign_off": reject_audit }))),
+        // Transport transition may fail (PR not ReadyForReview); the review
+        // decision is already recorded, so do not drop it.
+        Err(e) => Ok(Json(json!({
+            "ok": true,
+            "status": "ChangesRequested",
+            "sign_off": reject_audit,
+            "transport_note": format!("{e:?}"),
+        }))),
     }
 }
 
@@ -885,6 +1187,143 @@ struct MergeBody {
     merger: String,
     #[serde(default)]
     slug: String,
+}
+
+/// If the project (by slug/repo_id) is git-backed, open a provider PR for the
+/// feature branch and post the initial `veil/review` = pending status. Returns
+/// a JSON summary (or null / error info) for the API response. Best-effort:
+/// never fails the internal PR creation.
+async fn maybe_open_provider_pr(
+    slug: &str,
+    source: &str,
+    target: &str,
+    title: &str,
+    description: &str,
+) -> Value {
+    // Skip trivial/no-op branches.
+    if source.is_empty()
+        || source.eq_ignore_ascii_case(target)
+        || source.eq_ignore_ascii_case("main")
+        || source.eq_ignore_ascii_case("master")
+    {
+        return Value::Null;
+    }
+    let deps = resolve_storage_deps().await;
+    let repo = match crate::origin_resolve::resolve_repo_full(&deps, slug).await {
+        Ok(r) => r,
+        Err(_) => return Value::Null,
+    };
+    if !crate::origin_resolve::is_git_backed(&repo) {
+        return Value::Null;
+    }
+    let Some(provider) = crate::origin_resolve::provider_repo_for(&repo) else {
+        return Value::Null;
+    };
+    // Provider calls are blocking; run off the async runtime.
+    let (source, target, title, description) = (
+        source.to_string(),
+        target.to_string(),
+        title.to_string(),
+        description.to_string(),
+    );
+    let result = tokio::task::spawn_blocking(move || {
+        let pr = provider.create_pull_request(&source, &target, &title, &description)?;
+        // Post the gate as pending immediately, on the PR head.
+        if !pr.head_sha.is_empty() {
+            let _ = provider.post_veil_review_status(
+                &pr.head_sha,
+                false,
+                "VEIL structural review pending",
+                None,
+            );
+        }
+        Ok::<_, String>(pr)
+    })
+    .await;
+
+    match result {
+        Ok(Ok(pr)) => json!({
+            "ok": true,
+            "number": pr.number,
+            "head_sha": pr.head_sha,
+            "url": pr.url,
+            "veil_review": "pending",
+        }),
+        Ok(Err(e)) => {
+            tracing::warn!(error = %e, "provider PR open failed");
+            json!({ "ok": false, "error": e })
+        }
+        Err(e) => json!({ "ok": false, "error": format!("join: {e}") }),
+    }
+}
+
+/// For git-backed projects: post `veil/review` = success to the PR head (the
+/// merge gate) and, when `VEIL_GIT_AUTO_MERGE` is not disabled, drive the
+/// provider merge. Returns `Some(summary)` if the repo is git-backed (handled
+/// on the provider), or `None` to fall through to the S3/legacy merge paths.
+async fn maybe_git_backed_merge(slug: &str, source: &str, target: &str) -> Option<Value> {
+    let deps = resolve_storage_deps().await;
+    let repo = crate::origin_resolve::resolve_repo_full(&deps, slug).await.ok()?;
+    if !crate::origin_resolve::is_git_backed(&repo) {
+        return None;
+    }
+    let provider = crate::origin_resolve::provider_repo_for(&repo)?;
+    let origin = crate::origin_resolve::git_origin_for(&repo);
+    let (source, target) = (source.to_string(), target.to_string());
+    let auto_merge = !matches!(
+        std::env::var("VEIL_GIT_AUTO_MERGE")
+            .unwrap_or_else(|_| "on".into())
+            .to_ascii_lowercase()
+            .as_str(),
+        "0" | "false" | "off" | "no"
+    );
+
+    let result = tokio::task::spawn_blocking(move || {
+        // Resolve the PR + head commit for the source branch.
+        let pr = provider.find_open_pr(&source)?;
+        let head = pr
+            .as_ref()
+            .map(|p| p.head_sha.clone())
+            .filter(|s| !s.is_empty())
+            .or_else(|| origin.remote_tip(&source))
+            .ok_or_else(|| format!("cannot resolve head commit for {source}"))?;
+
+        // Sign-off gate: mark veil/review success on the head commit.
+        provider.post_veil_review_status(
+            &head,
+            true,
+            "VEIL structural review approved",
+            None,
+        )?;
+
+        let mut merged_commit = None;
+        if auto_merge {
+            if let Some(pr) = pr.as_ref() {
+                merged_commit = Some(provider.merge_pull_request(
+                    pr.number,
+                    Some(&format!("Merge {source} into {target} (VEIL sign-off)")),
+                )?);
+            }
+        }
+        Ok::<_, String>((pr, head, merged_commit, auto_merge))
+    })
+    .await;
+
+    Some(match result {
+        Ok(Ok((pr, head, merged, auto))) => json!({
+            "ok": true,
+            "veil_review": "success",
+            "head_sha": head,
+            "pr_number": pr.as_ref().map(|p| p.number),
+            "auto_merge": auto,
+            "merge_commit": merged,
+        }),
+        Ok(Err(e)) => {
+            tracing::error!(error = %e, "git-backed provider merge failed");
+            json!({ "ok": false, "error": e })
+        }
+        Err(e) => json!({ "ok": false, "error": format!("join: {e}") }),
+    })
 }
 
 async fn merge_pr(
@@ -942,6 +1381,18 @@ so a `cr/…` branch is created and the session is published, then Merge."
     let _ = ensure_ci_passed(&st.deps, id, "merge", Some(slug.as_str())).await;
     match change_management::application::merge_pr(&st.deps, id, merger, slug.clone()).await {
         Ok(mut v) => {
+            // Git-backed projects: VEIL sign-off is the gate. We are past the
+            // may_ship check, so post `veil/review` = success to the PR head and
+            // drive the provider merge (fast path; configurable via VEIL_GIT_AUTO_MERGE).
+            if let Some(prov_result) =
+                maybe_git_backed_merge(&slug, &source, &target).await
+            {
+                if let Some(obj) = v.as_object_mut() {
+                    obj.insert("provider_merge".into(), prov_result);
+                    obj.insert("via".into(), serde_json::json!("git-provider"));
+                }
+                return Ok(Json(v));
+            }
             if veil_server::git_origin::origin_enabled() {
                 let origin = veil_server::git_origin::GitOrigin::new(pr.repo_id.to_string());
                 if origin.exists() {
@@ -1978,23 +2429,23 @@ async fn finalize_wizard(
         } else {
             Some(body.summary.clone())
         };
-        // Ensure ReadyForReview
+        // Authoritative approval: review SignOffRecord (Model B).
+        let audit = record_review_sign_off(
+            wizard_slug.as_deref(),
+            Some(&id.to_string()),
+            "approve",
+            comment.clone(),
+        );
+        // Ensure ReadyForReview (transport lifecycle only)
         let _ = change_management::application::submit_for_review(&st.deps, id).await;
-        match change_management::application::approve_pr(
-            &st.deps,
-            id,
-            reviewer,
-            comment,
-        )
-        .await
-        {
-            Ok(()) => Ok(Json(json!({
-                "ok": true,
-                "status": "Approved",
-                "outcome": "all_approved",
-            }))),
-            Err(e) => Err(domain_status(e)),
-        }
+        let _ = change_management::application::approve_pr(&st.deps, id, reviewer, comment).await;
+        Ok(Json(json!({
+            "ok": true,
+            "status": "Approved",
+            "outcome": "all_approved",
+            "sign_off": audit,
+            "audit_env": veil_server::review::audit_env_json(),
+        })))
     } else if outcome == "needs_work" {
         let summary = if body.summary.is_empty() {
             format!(
@@ -2004,17 +2455,22 @@ async fn finalize_wizard(
         } else {
             body.summary
         };
+        // Authoritative decision: review SignOffRecord with decision=reject.
+        let audit = record_review_sign_off(
+            wizard_slug.as_deref(),
+            Some(&id.to_string()),
+            "reject",
+            Some(summary.clone()),
+        );
         let _ = change_management::application::submit_for_review(&st.deps, id).await;
-        match change_management::application::request_pr_changes(&st.deps, id, reviewer, summary)
-            .await
-        {
-            Ok(()) => Ok(Json(json!({
-                "ok": true,
-                "status": "ChangesRequested",
-                "outcome": "needs_work",
-            }))),
-            Err(e) => Err(domain_status(e)),
-        }
+        let _ =
+            change_management::application::request_pr_changes(&st.deps, id, reviewer, summary).await;
+        Ok(Json(json!({
+            "ok": true,
+            "status": "ChangesRequested",
+            "outcome": "needs_work",
+            "sign_off": audit,
+        })))
     } else {
         Err(StatusCode::BAD_REQUEST)
     }
@@ -2832,6 +3288,20 @@ async fn trigger_pipeline_deploy(
     Path(slug): Path<String>,
     Json(body): Json<crate::deploy::TriggerDeployRequest>,
 ) -> Result<Json<Value>, StatusCode> {
+    // SOLE SHIP GATE: deploy is a ship action, so it must clear the same
+    // `review::may_ship` gate as merge/provision. This endpoint is routed
+    // directly (not only via provision_project), so gate it here too — no
+    // deploy path may ship unsigned changes by consulting PrStatus or by
+    // skipping the gate. See Mind Palace: decision-single-review-source-of-truth.
+    if let Err(e) = veil_server::review::may_ship(&slug, None) {
+        return Ok(Json(json!({
+            "ok": false,
+            "error": "sign_off_required",
+            "message": e,
+            "hint": "Approve the change set on /review before deploying this SHA.",
+            "audit_env": veil_server::review::audit_env_json(),
+        })));
+    }
     // Triggered_by would come from auth context in production.
     let triggered_by = "user".to_string();
 
@@ -4083,8 +4553,13 @@ pub async fn build_platform_router(
             "/api/repos/{id}/mission",
             get(get_mission).put(put_mission),
         )
+        .route(
+            "/api/repos/{id}/origin",
+            get(get_repo_origin).post(bind_repo_origin),
+        )
         .route("/api/read-file", post(read_file_api))
         .route("/api/write-file", post(write_file_api))
+        .route("/api/list-files", post(list_files_api))
         .route("/api/projects/{slug}/deploy/ws", get(deploy_ws_handler))
         .route(
             "/api/project_infras/{id}",

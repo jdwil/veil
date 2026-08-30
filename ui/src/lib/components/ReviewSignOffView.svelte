@@ -22,13 +22,10 @@
 		prBelongsToProject,
 		isSmokeOrFixturePr,
 		loadWizardDiff,
-		rationalesFromPrTexts,
-		sendFeedbackToAgent,
-		type DiffItem,
-		type FileDiff,
-		type PullRequest,
-		type StructDiff
-	} from '$lib/ide/prWizard';
+		sendFeedbackToAgent
+	} from '$lib/review/pr-api';
+	import { rationalesFromPrTexts } from '$lib/review/grouping';
+	import type { DiffItem, FileDiff, PullRequest, StructDiff } from '$lib/review/types';
 	import { filterDiffsByNames, parseUnifiedPatch } from '$lib/review/diff';
 	import {
 		buildCeremonyIdeas,
@@ -502,7 +499,7 @@
 		const cs = setFor(name);
 		try {
 			if (pr?.id && pr.status !== 'Merged') {
-				const { mergeChangeApi } = await import('$lib/ide/prWizard');
+				const { mergeChangeApi } = await import('$lib/review/pr-api');
 				await mergeChangeApi(pr.id, name);
 			}
 			const rid = repoIdFor(name);

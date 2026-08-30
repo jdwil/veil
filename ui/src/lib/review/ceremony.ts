@@ -8,14 +8,16 @@ import {
 	containerLabel,
 	itemDisplayName,
 	itemKindLabel,
-	pathOf,
-	type DiffItem,
-	type FileDiff,
-	type RiskLevel,
-	type StructDiff,
-	type WizardGroup,
-	type WizardItemState
-} from '$lib/ide/prWizard';
+	pathOf
+} from '$lib/review/grouping';
+import type {
+	DiffItem,
+	FileDiff,
+	RiskLevel,
+	StructDiff,
+	WizardGroup,
+	WizardItemState
+} from '$lib/review/types';
 import { pathsMatch, reviewRelPath } from '$lib/review/diff';
 
 export type CeremonyIdea = {

@@ -227,22 +227,6 @@ export function formatFocusForAgent(focus?: SessionFocus): string {
 				if (bits.length) lines.push(`     ${bits.join(' · ')}`);
 			}
 		}
-		// Explicit PR Wizard deictic help
-		const wiz = f.panes.find((p) => p.id === 'pr-wizard' && p.primary);
-		if (wiz?.details?.itemName) {
-			lines.push('');
-			lines.push(
-				`Operator is reviewing **\`${wiz.details.itemName}\`** in the PR Wizard` +
-					(wiz.details.itemKind ? ` (${wiz.details.itemKind})` : '') +
-					'. Questions about "this", "why", "the signature", or "this change" refer to that wizard step unless they name something else.'
-			);
-			if (wiz.details.rationale) {
-				lines.push(`Agent rationale on this step: ${wiz.details.rationale}`);
-			}
-			if (wiz.details.signature) {
-				lines.push(`Signature: ${wiz.details.signature}`);
-			}
-		}
 	}
 
 	return lines.join('\n');

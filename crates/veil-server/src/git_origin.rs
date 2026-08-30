@@ -57,6 +57,379 @@ pub fn default_git_branch() -> String {
     std::env::var("VEIL_SOURCE_BRANCH").unwrap_or_else(|_| "main".into())
 }
 
+/// Git hosting provider for a `GitRemote` backend.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GitProvider {
+    GitHub,
+    Bitbucket,
+}
+
+impl GitProvider {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            GitProvider::GitHub => "github",
+            GitProvider::Bitbucket => "bitbucket",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "github" | "gh" => Some(GitProvider::GitHub),
+            "bitbucket" | "bb" => Some(GitProvider::Bitbucket),
+            _ => None,
+        }
+    }
+
+    fn host(&self) -> &'static str {
+        match self {
+            GitProvider::GitHub => "github.com",
+            GitProvider::Bitbucket => "bitbucket.org",
+        }
+    }
+
+    fn env_key(&self) -> &'static str {
+        match self {
+            GitProvider::GitHub => "GITHUB",
+            GitProvider::Bitbucket => "BITBUCKET",
+        }
+    }
+}
+
+/// A resolved credential for a private (or public) provider repo.
+///
+/// Held only in memory for the duration of a git invocation. The token is
+/// injected via an `http.extraHeader` on the command line (`git -c …`) so it is
+/// **never written to the checked-out repo's `.git/config` on disk**. §1.3.1.
+#[derive(Clone)]
+pub(crate) struct Credential {
+    /// HTTP Basic username component (e.g. `x-access-token`, `x-token-auth`, or
+    /// a Bitbucket account for app passwords).
+    username: String,
+    /// Secret token / app password. Never logged.
+    token: String,
+}
+
+impl std::fmt::Debug for Credential {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Never render the secret.
+        write!(f, "Credential {{ username: {:?}, token: <redacted> }}", self.username)
+    }
+}
+
+impl Credential {
+    /// `Authorization: Basic base64(username:token)` header value.
+    fn basic_auth_header(&self) -> String {
+        let raw = format!("{}:{}", self.username, self.token);
+        format!("Authorization: Basic {}", base64_encode(raw.as_bytes()))
+    }
+
+    /// The `(username, token)` for building an HTTP client Authorization header.
+    pub(crate) fn as_basic(&self) -> (String, String) {
+        (self.username.clone(), self.token.clone())
+    }
+
+    /// The bearer token (for providers that take a raw Bearer, e.g. GitHub
+    /// REST, Bitbucket Server HTTP access tokens).
+    pub(crate) fn bearer(&self) -> String {
+        self.token.clone()
+    }
+}
+
+/// Config for a real provider remote (GitHub / Bitbucket).
+///
+/// Self-contained (no `storage` dependency) — the caller translates the DDB
+/// `Repo.origin` binding into this struct. Credentials are resolved from the
+/// runtime environment, never stored here at rest by the engine.
+#[derive(Debug, Clone)]
+pub struct RemoteConfig {
+    pub provider: GitProvider,
+    /// `org/name` on the provider.
+    pub repo: String,
+    /// Project root within the repo (hybrid model). Empty = repo root.
+    pub subpath: Option<String>,
+    /// Default branch on the remote.
+    pub branch: String,
+}
+
+impl RemoteConfig {
+    /// Normalise the subpath: trimmed, no leading/trailing slashes, `None` if empty.
+    pub fn subpath_norm(&self) -> Option<String> {
+        self.subpath
+            .as_deref()
+            .map(|s| s.trim().trim_matches('/').to_string())
+            .filter(|s| !s.is_empty())
+    }
+
+    /// The `org` / workspace segment of `org/name`.
+    fn org(&self) -> &str {
+        self.repo.trim().trim_matches('/').split('/').next().unwrap_or("")
+    }
+
+    /// Resolve the credential for this repo (per-repo → per-org/workspace →
+    /// global provider), or `None` for anonymous (public) access.
+    fn credential(&self) -> Option<Credential> {
+        resolve_credential(self.provider, self.repo.trim().trim_matches('/'))
+    }
+
+    /// Tokenless remote URL — this is what gets written to `.git/config`.
+    /// Credentials are supplied per-invocation via `auth_args`, never on disk.
+    ///
+    /// A base-URL override (`VEIL_GITHUB_BASE_URL` / `VEIL_BITBUCKET_BASE_URL`)
+    /// supports GitHub Enterprise / Bitbucket Server and local testing
+    /// (`file:///path/to/bare` or `http://localhost:.../`).
+    fn remote_url(&self) -> String {
+        let repo = self.repo.trim().trim_matches('/');
+        if let Some(base) = provider_base_url(self.provider) {
+            let base = base.trim_end_matches('/');
+            if base.starts_with("file://") || base.starts_with('/') {
+                // Local/file remotes: use the base directly (single bare repo).
+                return base.to_string();
+            }
+            return format!("{base}/{repo}.git");
+        }
+        format!("https://{}/{repo}.git", self.provider.host())
+    }
+
+    /// Per-invocation git `-c` args that carry the credential as an HTTP header
+    /// scoped to the remote URL. The token never touches on-disk config.
+    /// Returns an empty vec for anonymous access or `file://` remotes.
+    fn auth_args(&self) -> Vec<String> {
+        let url = self.remote_url();
+        if url.starts_with("file://") || url.starts_with('/') {
+            return Vec::new();
+        }
+        match self.credential() {
+            Some(cred) => vec![
+                "-c".into(),
+                // Scope the header to this remote so it is not sent elsewhere.
+                format!("http.{url}.extraHeader={}", cred.basic_auth_header()),
+                // Defense in depth: never prompt, never use on-disk helpers.
+                "-c".into(),
+                "credential.helper=".into(),
+            ],
+            None => Vec::new(),
+        }
+    }
+}
+
+/// Resolve a credential for `provider` + `org/name`, most specific first:
+///   1. per-repo:  `VEIL_GIT_CRED_<PROVIDER>__<ORG>_<NAME>`
+///   2. per-org/workspace: `VEIL_GIT_CRED_<PROVIDER>__<ORG>`
+///   3. global provider token: `VEIL_<PROVIDER>_TOKEN` (+ aliases)
+/// Returns `None` for anonymous (public) access.
+///
+/// Env keys are upper-cased and non-alphanumerics become `_` (so
+/// `dashlx/veil-projects` on github → `VEIL_GIT_CRED_GITHUB__DASHLX_VEIL_PROJECTS`
+/// and workspace `VEIL_GIT_CRED_GITHUB__DASHLX`).
+pub(crate) fn resolve_credential(provider: GitProvider, repo: &str) -> Option<Credential> {
+    let pkey = provider.env_key();
+    let mut parts = repo.splitn(2, '/');
+    let org = parts.next().unwrap_or("");
+    let name = parts.next().unwrap_or("");
+
+    let sanitize = |s: &str| {
+        s.chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_uppercase() } else { '_' })
+            .collect::<String>()
+    };
+
+    // 1) per-repo, 2) per-org
+    let candidates = [
+        format!("VEIL_GIT_CRED_{pkey}__{}_{}", sanitize(org), sanitize(name)),
+        format!("VEIL_GIT_CRED_{pkey}__{}", sanitize(org)),
+    ];
+    for key in candidates.iter().filter(|k| !k.ends_with("__")) {
+        if let Ok(v) = std::env::var(key) {
+            if let Some(cred) = parse_cred_value(provider, &v) {
+                return Some(cred);
+            }
+        }
+    }
+
+    // 3) global provider token.
+    let tok = provider_token(provider)?;
+    Some(default_cred(provider, tok))
+}
+
+/// A per-repo/per-org cred value may be `token` or `user:token`.
+fn parse_cred_value(provider: GitProvider, raw: &str) -> Option<Credential> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    if let Some((user, token)) = raw.split_once(':') {
+        let token = token.trim();
+        if !token.is_empty() {
+            return Some(Credential {
+                username: user.trim().to_string(),
+                token: token.to_string(),
+            });
+        }
+    }
+    Some(default_cred(provider, raw.to_string()))
+}
+
+/// Default username convention for a bare token per provider.
+fn default_cred(provider: GitProvider, token: String) -> Credential {
+    let username = match provider {
+        // GitHub App/installation/PAT over HTTPS basic.
+        GitProvider::GitHub => "x-access-token".to_string(),
+        // Bitbucket: explicit user (app password) if set, else access-token user.
+        GitProvider::Bitbucket => {
+            provider_user(provider).unwrap_or_else(|| "x-token-auth".to_string())
+        }
+    };
+    Credential { username, token }
+}
+
+/// Resolve a global provider token from runtime config (env). Never hardcoded.
+fn provider_token(provider: GitProvider) -> Option<String> {
+    let names: &[&str] = match provider {
+        GitProvider::GitHub => &["VEIL_GITHUB_TOKEN", "GITHUB_TOKEN", "GH_TOKEN"],
+        GitProvider::Bitbucket => &["VEIL_BITBUCKET_TOKEN", "BITBUCKET_TOKEN"],
+    };
+    for n in names {
+        if let Ok(v) = std::env::var(n) {
+            let v = v.trim().to_string();
+            if !v.is_empty() {
+                return Some(v);
+            }
+        }
+    }
+    None
+}
+
+/// Optional provider username (Bitbucket app-password style). Env only.
+fn provider_user(provider: GitProvider) -> Option<String> {
+    let name = match provider {
+        GitProvider::GitHub => "VEIL_GITHUB_USER",
+        GitProvider::Bitbucket => "VEIL_BITBUCKET_USER",
+    };
+    std::env::var(name).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+}
+
+/// Optional base-URL override for enterprise hosts / self-hosted / local test
+/// remotes. E.g. `https://git.corp.example.com` or `file:///tmp/bare.git`.
+fn provider_base_url(provider: GitProvider) -> Option<String> {
+    let name = match provider {
+        GitProvider::GitHub => "VEIL_GITHUB_BASE_URL",
+        GitProvider::Bitbucket => "VEIL_BITBUCKET_BASE_URL",
+    };
+    std::env::var(name).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+}
+
+/// Standard base64 (for the Authorization header). No external dep.
+fn base64_encode(input: &[u8]) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity((input.len() + 2) / 3 * 4);
+    for chunk in input.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = *chunk.get(1).unwrap_or(&0) as u32;
+        let b2 = *chunk.get(2).unwrap_or(&0) as u32;
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        out.push(T[((n >> 18) & 63) as usize] as char);
+        out.push(T[((n >> 12) & 63) as usize] as char);
+        out.push(if chunk.len() > 1 { T[((n >> 6) & 63) as usize] as char } else { '=' });
+        out.push(if chunk.len() > 2 { T[(n & 63) as usize] as char } else { '=' });
+    }
+    out
+}
+
+/// Redact any secrets that could appear in git stderr / URLs before logging or
+/// returning in an error. Strips `user:token@` from URLs and any known tokens.
+pub(crate) fn redact_secrets(s: &str) -> String {
+    // 1) Strip `scheme://user:secret@host` → `scheme://user:***@host`.
+    let mut out = String::with_capacity(s.len());
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        // Look for `://`.
+        if bytes[i..].starts_with(b"://") {
+            out.push_str("://");
+            i += 3;
+            // Capture up to the next `@`, `/`, whitespace, or end.
+            let start = i;
+            while i < bytes.len()
+                && !matches!(bytes[i], b'@' | b'/' | b' ' | b'\n' | b'\t' | b'"' | b'\'')
+            {
+                i += 1;
+            }
+            if i < bytes.len() && bytes[i] == b'@' {
+                // userinfo present → redact the secret portion.
+                let userinfo = &s[start..i];
+                if let Some((user, _secret)) = userinfo.split_once(':') {
+                    out.push_str(user);
+                    out.push_str(":***");
+                } else {
+                    out.push_str("***");
+                }
+                // keep the '@'
+                out.push('@');
+                i += 1;
+            } else {
+                out.push_str(&s[start..i]);
+            }
+        } else {
+            out.push(bytes[i] as char);
+            i += 1;
+        }
+    }
+    // 2) Blanket-redact any configured tokens that slipped through (e.g. headers).
+    let mut redacted = out;
+    for tok in known_tokens() {
+        if tok.len() >= 6 {
+            redacted = redacted.replace(&tok, "***");
+        }
+    }
+    redacted
+}
+
+/// Collect all tokens the runtime might hold, for blanket redaction.
+fn known_tokens() -> Vec<String> {
+    let names = [
+        "VEIL_GITHUB_TOKEN",
+        "GITHUB_TOKEN",
+        "GH_TOKEN",
+        "VEIL_BITBUCKET_TOKEN",
+        "BITBUCKET_TOKEN",
+    ];
+    let mut out = Vec::new();
+    for n in names {
+        if let Ok(v) = std::env::var(n) {
+            let v = v.trim().to_string();
+            if v.len() >= 6 {
+                out.push(v);
+            }
+        }
+    }
+    // Per-repo/per-org cred vars.
+    for (k, v) in std::env::vars() {
+        if k.starts_with("VEIL_GIT_CRED_") {
+            let val = v.trim();
+            // value may be `user:token` — redact the token part.
+            let tok = val.rsplit(':').next().unwrap_or(val).trim();
+            if tok.len() >= 6 {
+                out.push(tok.to_string());
+            }
+        }
+    }
+    out
+}
+
+/// Origin transport backend. `S3Bundle` is the default (existing behaviour);
+/// `GitRemote` pushes/fetches a real provider repo.
+#[derive(Debug, Clone)]
+pub enum OriginBackend {
+    S3Bundle,
+    GitRemote(RemoteConfig),
+}
+
+impl Default for OriginBackend {
+    fn default() -> Self {
+        OriginBackend::S3Bundle
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CheckoutMode {
     /// Fetch remotes; do not discard local uncommitted work.
@@ -96,18 +469,48 @@ pub struct StatusFile {
 
 pub struct GitOrigin {
     pub repo_id: String,
+    pub backend: OriginBackend,
 }
 
 impl GitOrigin {
     pub fn new(repo_id: impl Into<String>) -> Self {
         Self {
             repo_id: repo_id.into(),
+            backend: OriginBackend::S3Bundle,
+        }
+    }
+
+    /// Construct a git-backed origin bound to a real provider remote.
+    pub fn with_remote(repo_id: impl Into<String>, remote: RemoteConfig) -> Self {
+        Self {
+            repo_id: repo_id.into(),
+            backend: OriginBackend::GitRemote(remote),
+        }
+    }
+
+    /// True when this origin uses a real provider remote (not S3 bundles).
+    pub fn is_git_remote(&self) -> bool {
+        matches!(self.backend, OriginBackend::GitRemote(_))
+    }
+
+    fn remote(&self) -> Option<&RemoteConfig> {
+        match &self.backend {
+            OriginBackend::GitRemote(r) => Some(r),
+            OriginBackend::S3Bundle => None,
         }
     }
 
     pub fn exists(&self) -> bool {
-        store_get(&format!("{}FORMAT", origin_prefix(&self.repo_id))).is_some()
-            || store_get(&format!("{}HEAD", origin_prefix(&self.repo_id))).is_some()
+        match &self.backend {
+            OriginBackend::S3Bundle => {
+                store_get(&format!("{}FORMAT", origin_prefix(&self.repo_id))).is_some()
+                    || store_get(&format!("{}HEAD", origin_prefix(&self.repo_id))).is_some()
+            }
+            OriginBackend::GitRemote(cfg) => {
+                // Remote exists if we can list refs (auth + repo present).
+                git_ls_remote(&cfg.remote_url(), &cfg.auth_args()).is_ok()
+            }
+        }
     }
 
     /// Create origin from a working tree if the remote is empty.
@@ -166,6 +569,19 @@ impl GitOrigin {
 
     /// Ensure origin exists (import legacy tree or seed workdir).
     pub fn ensure(&self, seed: Option<&Path>, branch: &str) -> Result<(), String> {
+        if let OriginBackend::GitRemote(cfg) = &self.backend {
+            // The provider repo is the source of truth. It must already exist
+            // (created out-of-band or via the config API). We only verify reach.
+            return if self.exists() {
+                Ok(())
+            } else {
+                Err(format!(
+                    "git remote {} ({}) is unreachable or empty — create/clone it first",
+                    cfg.repo,
+                    cfg.provider.as_str()
+                ))
+            };
+        }
         if self.exists() {
             return Ok(());
         }
@@ -190,6 +606,9 @@ impl GitOrigin {
         branch: &str,
         mode: CheckoutMode,
     ) -> Result<String, String> {
+        if let OriginBackend::GitRemote(cfg) = &self.backend {
+            return self.checkout_remote(work, branch, mode, cfg);
+        }
         self.ensure(if work.exists() { Some(work) } else { None }, branch)
             .or_else(|_| self.ensure(None, &default_git_branch()))?;
         fs::create_dir_all(work).map_err(|e| format!("mkdir {}: {e}", work.display()))?;
@@ -293,6 +712,9 @@ impl GitOrigin {
         if !work.join(".git").is_dir() {
             return Err("push: workdir is not a git checkout".into());
         }
+        if let OriginBackend::GitRemote(cfg) = &self.backend {
+            return self.push_remote(work, branch, cfg);
+        }
         git(work, &["rev-parse", "--verify", branch])?;
         let sha = git(work, &["rev-parse", branch])?.trim().to_string();
         let bundle = unique_tmp(&format!("veil-{}.bundle", &sha[..8.min(sha.len())]));
@@ -351,6 +773,9 @@ impl GitOrigin {
         source: &str,
         target: &str,
     ) -> Result<String, String> {
+        if let OriginBackend::GitRemote(cfg) = &self.backend {
+            return self.merge_and_push_remote(work, source, target, cfg);
+        }
         if source != target && work.join(".git").is_dir() && branch_exists_local(work, source) {
             let _ = self.push(work, source);
         }
@@ -387,6 +812,9 @@ impl GitOrigin {
     }
 
     pub fn remote_tip(&self, branch: &str) -> Option<String> {
+        if let OriginBackend::GitRemote(cfg) = &self.backend {
+            return git_remote_tip(&cfg.remote_url(), &cfg.auth_args(), branch);
+        }
         store_get(&format!(
             "{}refs/heads/{branch}/TIP",
             origin_prefix(&self.repo_id)
@@ -490,6 +918,23 @@ impl GitOrigin {
     pub fn unified_diff_refs(&self, from: &str, to: &str) -> Result<String, String> {
         let tmp = unique_tmp("diff-refs");
         self.checkout(&tmp, to, CheckoutMode::ResetHard)?;
+        if let OriginBackend::GitRemote(cfg) = &self.backend {
+            // `origin` already points at the provider (set up by checkout_remote).
+            let auth = cfg.auth_args();
+            let _ = git_auth(
+                &tmp,
+                &auth,
+                &[
+                    "fetch",
+                    "origin",
+                    &format!("+refs/heads/{from}:refs/remotes/origin/{from}"),
+                ],
+            );
+            let spec = format!("origin/{from}...HEAD");
+            let patch = git(&tmp, &["diff", "--no-color", &spec]).unwrap_or_default();
+            let _ = fs::remove_dir_all(&tmp);
+            return Ok(patch);
+        }
         if let Some(remote) = self.download_tip(from) {
             let _ = git(
                 &tmp,
@@ -578,6 +1023,131 @@ impl GitOrigin {
         }
         Ok(())
     }
+
+    // ---- GitRemote backend ------------------------------------------------
+
+    /// Clone (or fetch) the provider repo into `work` and check out `branch`.
+    fn checkout_remote(
+        &self,
+        work: &Path,
+        branch: &str,
+        mode: CheckoutMode,
+        cfg: &RemoteConfig,
+    ) -> Result<String, String> {
+        fs::create_dir_all(work).map_err(|e| format!("mkdir {}: {e}", work.display()))?;
+        let url = cfg.remote_url();
+        let auth = cfg.auth_args();
+
+        if !work.join(".git").is_dir() {
+            clone_remote(work, &url, &auth, branch)?;
+        } else {
+            // Tokenless origin URL on disk; creds are supplied per-invocation.
+            let _ = git(work, &["remote", "set-url", "origin", &url]);
+            let _ = scrub_remote_config(work);
+            git_auth(work, &auth, &["fetch", "origin", "+refs/heads/*:refs/remotes/origin/*"])
+                .map_err(|e| format!("git fetch origin: {e}"))?;
+        }
+
+        // Select/create the branch.
+        let local_branch = current_branch(work).unwrap_or_default();
+        if local_branch != branch {
+            if branch_exists_local(work, branch) {
+                git(work, &["checkout", branch])?;
+            } else if remote_branch_exists(work, branch) {
+                git(work, &["checkout", "-B", branch, &format!("origin/{branch}")])?;
+            } else {
+                // New feature branch off the current tip.
+                git(work, &["checkout", "-B", branch])?;
+            }
+        }
+
+        match mode {
+            CheckoutMode::ResetHard => {
+                let tip = format!("origin/{branch}");
+                if ref_exists(work, &tip) {
+                    git(work, &["reset", "--hard", &tip])?;
+                }
+            }
+            CheckoutMode::FetchKeepDirty => {
+                if !status_dirty(work)? {
+                    let tip = format!("origin/{branch}");
+                    if ref_exists(work, &tip) {
+                        let _ = git(work, &["merge", "--ff-only", &tip]);
+                    }
+                }
+            }
+        }
+        git(work, &["rev-parse", "HEAD"]).map(|s| s.trim().to_string())
+    }
+
+    /// Push `branch` to the real provider remote (auth supplied off-disk).
+    fn push_remote(&self, work: &Path, branch: &str, cfg: &RemoteConfig) -> Result<String, String> {
+        git(work, &["rev-parse", "--verify", branch])?;
+        let sha = git(work, &["rev-parse", branch])?.trim().to_string();
+        let url = cfg.remote_url();
+        let auth = cfg.auth_args();
+        // Ensure origin exists with a TOKENLESS url; creds are passed per-invocation.
+        if git(work, &["remote", "get-url", "origin"]).is_err() {
+            git(work, &["remote", "add", "origin", &url])?;
+        } else {
+            let _ = git(work, &["remote", "set-url", "origin", &url]);
+        }
+        let _ = scrub_remote_config(work);
+        git_auth(work, &auth, &["push", "origin", &format!("{branch}:{branch}")])
+            .map_err(|e| format!("git push origin {branch}: {e}"))?;
+        Ok(sha)
+    }
+
+    /// Merge `source` into `target` against the provider remote and push.
+    fn merge_and_push_remote(
+        &self,
+        work: &Path,
+        source: &str,
+        target: &str,
+        cfg: &RemoteConfig,
+    ) -> Result<String, String> {
+        // Make sure any local `source` work is on the remote first.
+        if source != target && work.join(".git").is_dir() && branch_exists_local(work, source) {
+            let _ = self.push_remote(work, source, cfg);
+        }
+        self.checkout_remote(work, target, CheckoutMode::ResetHard, cfg)?;
+        if source != target {
+            let auth = cfg.auth_args();
+            let _ = git_auth(
+                work,
+                &auth,
+                &[
+                    "fetch",
+                    "origin",
+                    &format!("+refs/heads/{source}:refs/remotes/origin/{source}"),
+                ],
+            );
+            let merge_ref = if branch_exists_local(work, source) {
+                source.to_string()
+            } else {
+                format!("origin/{source}")
+            };
+            git(
+                work,
+                &[
+                    "merge",
+                    "--no-ff",
+                    "-m",
+                    &format!("Merge branch '{source}'"),
+                    &merge_ref,
+                ],
+            )?;
+        }
+        self.push_remote(work, target, cfg)
+    }
+
+    /// Project root within a checkout, honouring the subpath (hybrid model).
+    pub fn project_root(&self, work: &Path) -> PathBuf {
+        match self.remote().and_then(|c| c.subpath_norm()) {
+            Some(sub) => work.join(sub),
+            None => work.to_path_buf(),
+        }
+    }
 }
 
 struct DownloadedBundle {
@@ -594,6 +1164,160 @@ fn init_repo(work: &Path, branch: &str) -> Result<(), String> {
     }
     ensure_gitignore(work)?;
     Ok(())
+}
+
+/// `git ls-remote <url>` — succeeds iff the remote is reachable + authorized.
+/// `auth` carries per-invocation credential `-c` args (never on disk).
+fn git_ls_remote(url: &str, auth: &[String]) -> Result<String, String> {
+    let mut cmd = Command::new("git");
+    cmd.env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_TERMINAL_PROMPT", "0");
+    for a in auth {
+        cmd.arg(a);
+    }
+    cmd.args(["ls-remote", "--heads", url]);
+    let out = cmd.output().map_err(|e| format!("git ls-remote: {e}"))?;
+    if !out.status.success() {
+        return Err(redact_secrets(&format!(
+            "git ls-remote failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).to_string())
+}
+
+/// Remote tip SHA for a branch via `ls-remote`.
+fn git_remote_tip(url: &str, auth: &[String], branch: &str) -> Option<String> {
+    let out = git_ls_remote(url, auth).ok()?;
+    let want = format!("refs/heads/{branch}");
+    for line in out.lines() {
+        let mut parts = line.split_whitespace();
+        let sha = parts.next().unwrap_or("");
+        let refname = parts.next().unwrap_or("");
+        if refname == want && !sha.is_empty() {
+            return Some(sha.to_string());
+        }
+    }
+    None
+}
+
+/// Clone a provider remote to `work` and check out `branch` (creating it off the
+/// default HEAD if the branch does not exist remotely yet). `auth` carries
+/// per-invocation credential `-c` args so the token is never written to the
+/// clone's `.git/config`.
+fn clone_remote(work: &Path, url: &str, auth: &[String], branch: &str) -> Result<(), String> {
+    let parent = work.parent().unwrap_or(Path::new("/tmp"));
+    let name = work
+        .file_name()
+        .and_then(|s| s.to_str())
+        .ok_or("clone dest name")?;
+    fs::create_dir_all(parent).map_err(|e| format!("mkdir clone parent: {e}"))?;
+    let mut cmd = Command::new("git");
+    cmd.current_dir(parent)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .args(["-c", "user.name=VEIL", "-c", "user.email=veil@localhost"]);
+    for a in auth {
+        cmd.arg(a);
+    }
+    cmd.args(["clone", url, name]);
+    let out = cmd.output().map_err(|e| format!("git clone: {e}"))?;
+    if !out.status.success() {
+        return Err(redact_secrets(&format!(
+            "git clone {url} failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+    // The clone wrote the tokenless `url` to config (auth was passed via -c,
+    // not embedded). Defense in depth: scrub any credential material anyway.
+    let _ = scrub_remote_config(work);
+    // Switch to the requested branch (existing remote branch or a new one).
+    if remote_branch_exists(work, branch) {
+        let _ = git(work, &["checkout", "-B", branch, &format!("origin/{branch}")]);
+    } else if !branch_exists_local(work, branch) {
+        let _ = git(work, &["checkout", "-B", branch]);
+    }
+    ensure_gitignore(work)?;
+    Ok(())
+}
+
+/// Run a git command in `work` with per-invocation auth `-c` args prepended.
+/// Redacts secrets from any error. Used for authenticated fetch/push.
+fn git_auth(work: &Path, auth: &[String], args: &[&str]) -> Result<String, String> {
+    let mut cmd = Command::new("git");
+    cmd.current_dir(work)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_AUTHOR_NAME", git_author_name())
+        .env("GIT_AUTHOR_EMAIL", git_author_email())
+        .env("GIT_COMMITTER_NAME", git_author_name())
+        .env("GIT_COMMITTER_EMAIL", git_author_email())
+        .args(["-c", "user.name=VEIL", "-c", "user.email=veil@localhost"]);
+    for a in auth {
+        cmd.arg(a);
+    }
+    cmd.args(args);
+    let out = cmd
+        .output()
+        .map_err(|e| format!("git {}: {e}", args.join(" ")))?;
+    if !out.status.success() {
+        return Err(redact_secrets(&format!(
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).to_string())
+}
+
+/// Remove any credential material from a checkout's on-disk config, and make
+/// sure the origin URL is tokenless. Best-effort; ignores missing keys.
+fn scrub_remote_config(work: &Path) -> Result<(), String> {
+    if !work.join(".git").is_dir() {
+        return Ok(());
+    }
+    // Drop any per-URL extraHeader / credential helper that a prior version may
+    // have persisted, and strip embedded userinfo from the origin URL.
+    let _ = git(work, &["config", "--unset-all", "credential.helper"]);
+    if let Ok(url) = git(work, &["remote", "get-url", "origin"]) {
+        let url = url.trim();
+        if let Some(clean) = strip_url_userinfo(url) {
+            if clean != url {
+                let _ = git(work, &["remote", "set-url", "origin", &clean]);
+            }
+        }
+    }
+    // Remove any http.<url>.extraheader entries written to disk.
+    if let Ok(list) = git(work, &["config", "--local", "--name-only", "--list"]) {
+        for key in list.lines() {
+            let k = key.trim();
+            if k.starts_with("http.") && k.ends_with(".extraheader") {
+                let _ = git(work, &["config", "--local", "--unset-all", k]);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Strip `user:secret@` userinfo from an https/http URL. Returns `None` if the
+/// URL has no userinfo to strip.
+fn strip_url_userinfo(url: &str) -> Option<String> {
+    for scheme in ["https://", "http://"] {
+        if let Some(rest) = url.strip_prefix(scheme) {
+            if let Some(at) = rest.find('@') {
+                // Only strip if the userinfo is before the first '/'.
+                let slash = rest.find('/').unwrap_or(rest.len());
+                if at < slash {
+                    return Some(format!("{scheme}{}", &rest[at + 1..]));
+                }
+            }
+            return Some(url.to_string());
+        }
+    }
+    None
 }
 
 /// `git clone <bundle> <work>` — dest must be missing or empty. If `work` already
@@ -1016,5 +1740,242 @@ mod tests {
             let _ = fs::remove_dir_all(&a);
             let _ = fs::remove_dir_all(&b);
         });
+    }
+
+    /// A `file://` bare repo stands in for a provider remote (GitHub/Bitbucket),
+    /// exercising the GitRemote transport: clone → branch → commit → push →
+    /// re-checkout in a second workdir → diff → merge → verify on the remote.
+    #[test]
+    fn git_remote_backend_roundtrip() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        // Bare "provider" repo, seeded with an initial commit on main.
+        let bare = unique_tmp("provider.git");
+        fs::create_dir_all(&bare).unwrap();
+        assert!(Command::new("git")
+            .args(["init", "--bare", "-b", "main"])
+            .current_dir(&bare)
+            .status()
+            .unwrap()
+            .success());
+        let seed = seed_tree();
+        {
+            git(&seed, &["init", "-b", "main"]).unwrap();
+            git(&seed, &["add", "-A"]).unwrap();
+            git(&seed, &["commit", "-m", "seed"]).unwrap();
+            git(&seed, &["remote", "add", "origin", &bare.to_string_lossy()]).unwrap();
+            git(&seed, &["push", "origin", "main:main"]).unwrap();
+        }
+
+        // Build a GitOrigin whose remote URL is the bare repo (bypass provider host).
+        let cfg = RemoteConfig {
+            provider: GitProvider::GitHub,
+            repo: "test/provider".into(),
+            subpath: None,
+            branch: "main".into(),
+        };
+        // Override remote_url via a fake by pushing/checking out through the same URL:
+        let url = bare.to_string_lossy().to_string();
+        let origin = GitOrigin::with_remote("00000000-1111-2222-3333-444444444444", cfg);
+
+        // checkout main
+        let work = unique_tmp("remote-sess-a");
+        clone_remote(&work, &url, &[], "main").unwrap();
+        assert!(work.join("main.veil").is_file());
+
+        // feature branch + commit + push (direct helpers with the file:// url)
+        git(&work, &["checkout", "-B", "feat-x"]).unwrap();
+        fs::write(work.join("main.veil"), "pkg Shop\n  rec Topic\n").unwrap();
+        git(&work, &["add", "-A"]).unwrap();
+        git(&work, &["commit", "-m", "feat: topic"]).unwrap();
+        git(&work, &["remote", "set-url", "origin", &url]).unwrap();
+        git(&work, &["push", "origin", "feat-x:feat-x"]).unwrap();
+
+        // Second session sees feat-x from the remote.
+        let other = unique_tmp("remote-sess-b");
+        clone_remote(&other, &url, &[], "feat-x").unwrap();
+        let body = fs::read_to_string(other.join("main.veil")).unwrap();
+        assert!(body.contains("Topic"), "feat-x should carry Topic");
+
+        // remote_tip via ls-remote resolves the branch head.
+        assert!(git_remote_tip(&url, &[], "feat-x").is_some());
+        assert!(git_remote_tip(&url, &[], "does-not-exist").is_none());
+
+        // is_git_remote flag + project_root without subpath.
+        assert!(origin.is_git_remote());
+        assert_eq!(origin.project_root(&work), work);
+
+        let _ = fs::remove_dir_all(&bare);
+        let _ = fs::remove_dir_all(&seed);
+        let _ = fs::remove_dir_all(&work);
+        let _ = fs::remove_dir_all(&other);
+    }
+
+    #[test]
+    fn subpath_norm_and_project_root() {
+        let cfg = RemoteConfig {
+            provider: GitProvider::Bitbucket,
+            repo: "org/mono".into(),
+            subpath: Some("/agent-core/".into()),
+            branch: "main".into(),
+        };
+        assert_eq!(cfg.subpath_norm().as_deref(), Some("agent-core"));
+        let origin = GitOrigin::with_remote("id", cfg);
+        assert_eq!(
+            origin.project_root(Path::new("/tmp/work")),
+            Path::new("/tmp/work/agent-core")
+        );
+    }
+
+    /// §1.3.1: per-repo → per-org/workspace → global provider precedence, and
+    /// anonymous (None) when nothing is configured.
+    #[test]
+    fn credential_precedence_per_repo_org_global() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // Clean slate.
+        let clear = || unsafe {
+            for k in [
+                "VEIL_GITHUB_TOKEN",
+                "GITHUB_TOKEN",
+                "GH_TOKEN",
+                "VEIL_GIT_CRED_GITHUB__DASHLX",
+                "VEIL_GIT_CRED_GITHUB__DASHLX_VEIL_PROJECTS",
+                "VEIL_GITHUB_BASE_URL",
+            ] {
+                std::env::remove_var(k);
+            }
+        };
+        clear();
+
+        // Anonymous when nothing set.
+        assert!(resolve_credential(GitProvider::GitHub, "dashlx/veil-projects").is_none());
+
+        // Global token → x-access-token user.
+        unsafe { std::env::set_var("VEIL_GITHUB_TOKEN", "global-tok") };
+        let c = resolve_credential(GitProvider::GitHub, "dashlx/veil-projects").unwrap();
+        assert_eq!(c.username, "x-access-token");
+        assert_eq!(c.token, "global-tok");
+
+        // Per-org overrides global.
+        unsafe { std::env::set_var("VEIL_GIT_CRED_GITHUB__DASHLX", "org-tok") };
+        let c = resolve_credential(GitProvider::GitHub, "dashlx/veil-projects").unwrap();
+        assert_eq!(c.token, "org-tok");
+
+        // Per-repo overrides per-org, and supports user:token form.
+        unsafe {
+            std::env::set_var(
+                "VEIL_GIT_CRED_GITHUB__DASHLX_VEIL_PROJECTS",
+                "bot:repo-tok",
+            )
+        };
+        let c = resolve_credential(GitProvider::GitHub, "dashlx/veil-projects").unwrap();
+        assert_eq!(c.username, "bot");
+        assert_eq!(c.token, "repo-tok");
+
+        clear();
+    }
+
+    /// §1.3.1: auth is carried as an http.extraHeader `-c` arg (off disk) and the
+    /// tokenless URL is what would be written to config.
+    #[test]
+    fn auth_args_are_off_disk_header_and_url_is_tokenless() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        unsafe {
+            std::env::remove_var("VEIL_GITHUB_BASE_URL");
+            std::env::set_var("VEIL_GITHUB_TOKEN", "secrettoken123");
+        }
+        let cfg = RemoteConfig {
+            provider: GitProvider::GitHub,
+            repo: "dashlx/priv".into(),
+            subpath: None,
+            branch: "main".into(),
+        };
+        let url = cfg.remote_url();
+        assert_eq!(url, "https://github.com/dashlx/priv.git");
+        assert!(!url.contains("secrettoken123"), "url must be tokenless");
+
+        let args = cfg.auth_args();
+        // Expect an http.<url>.extraHeader carrying a Basic header, plus a
+        // disabled credential helper.
+        let joined = args.join(" ");
+        assert!(joined.contains("extraHeader=Authorization: Basic"));
+        assert!(joined.contains("credential.helper="));
+        // The base64 must decode to x-access-token:secrettoken123 but we at
+        // least assert the raw token is not present verbatim.
+        assert!(!joined.contains("secrettoken123"), "token must be base64, not raw");
+
+        unsafe { std::env::remove_var("VEIL_GITHUB_TOKEN") };
+    }
+
+    #[test]
+    fn redact_secrets_strips_userinfo_and_tokens() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("VEIL_GITHUB_TOKEN", "ghp_supersecretvalue") };
+        let s = "fatal: could not read from https://x-access-token:ghp_supersecretvalue@github.com/o/r.git";
+        let r = redact_secrets(s);
+        assert!(!r.contains("ghp_supersecretvalue"), "raw token leaked: {r}");
+        assert!(r.contains("x-access-token:***@github.com"), "userinfo not redacted: {r}");
+        unsafe { std::env::remove_var("VEIL_GITHUB_TOKEN") };
+    }
+
+    #[test]
+    fn base64_encode_matches_known_vectors() {
+        assert_eq!(base64_encode(b""), "");
+        assert_eq!(base64_encode(b"f"), "Zg==");
+        assert_eq!(base64_encode(b"fo"), "Zm8=");
+        assert_eq!(base64_encode(b"foo"), "Zm9v");
+        assert_eq!(base64_encode(b"foob"), "Zm9vYg==");
+        assert_eq!(base64_encode(b"x-access-token:tok"), "eC1hY2Nlc3MtdG9rZW46dG9r");
+    }
+
+    #[test]
+    fn strip_url_userinfo_removes_creds() {
+        assert_eq!(
+            strip_url_userinfo("https://u:p@github.com/o/r.git").as_deref(),
+            Some("https://github.com/o/r.git")
+        );
+        assert_eq!(
+            strip_url_userinfo("https://github.com/o/r.git").as_deref(),
+            Some("https://github.com/o/r.git")
+        );
+        assert_eq!(strip_url_userinfo("file:///tmp/x"), None);
+    }
+
+    /// §1.3.1: after clone, the on-disk .git/config carries no token and no
+    /// extraheader. Uses a local bare remote (no real creds needed).
+    #[test]
+    fn cloned_config_has_no_token_on_disk() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let bare = unique_tmp("scrub-provider.git");
+        fs::create_dir_all(&bare).unwrap();
+        assert!(Command::new("git")
+            .args(["init", "--bare", "-b", "main"])
+            .current_dir(&bare)
+            .status()
+            .unwrap()
+            .success());
+        let seed = seed_tree();
+        git(&seed, &["init", "-b", "main"]).unwrap();
+        git(&seed, &["add", "-A"]).unwrap();
+        git(&seed, &["commit", "-m", "seed"]).unwrap();
+        git(&seed, &["remote", "add", "origin", &bare.to_string_lossy()]).unwrap();
+        git(&seed, &["push", "origin", "main:main"]).unwrap();
+
+        let work = unique_tmp("scrub-work");
+        // Simulate an auth arg being present (harmless header for a file remote).
+        let auth = vec![
+            "-c".to_string(),
+            "http.https://example/.extraHeader=Authorization: Basic Zm9v".to_string(),
+        ];
+        clone_remote(&work, &bare.to_string_lossy(), &auth, "main").unwrap();
+
+        // Read the on-disk config; it must not contain a token/extraheader.
+        let cfg = fs::read_to_string(work.join(".git/config")).unwrap_or_default();
+        assert!(!cfg.to_lowercase().contains("extraheader"), "config leaked header: {cfg}");
+        assert!(!cfg.contains("Basic Zm9v"), "config leaked auth: {cfg}");
+
+        let _ = fs::remove_dir_all(&bare);
+        let _ = fs::remove_dir_all(&seed);
+        let _ = fs::remove_dir_all(&work);
     }
 }

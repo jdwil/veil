@@ -100,6 +100,79 @@ pub struct SignOffRecord {
 struct ReviewState {
     items: Vec<OutstandingItem>,
     audits: Vec<SignOffRecord>,
+    /// Durable per-edit capture (Spec A). Additive / back-compat: older
+    /// `review-state.json` files without this key load as an empty vec.
+    #[serde(default)]
+    edits: Vec<EditRecord>,
+}
+
+const MAX_EDITS: usize = 2000;
+
+// ─── Durable edit-capture record (Spec A) ─────────────────────────────────
+//
+// One `EditRecord` per logical construct-level change the agent made in a turn.
+// It captures everything the "delta-on-map" visual review UX needs at write
+// time, keyed to `(slug, construct, turn)`. Reuses `veil_ir` edit + struct_diff
+// types verbatim — this is the single edit model shared by the agent
+// (whole-file `write_source` synthesis) and the viewer (`POST /api/edit`).
+
+/// A durable, queryable record of one construct-level edit in a turn.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EditRecord {
+    pub id: String,
+    pub slug: String,
+    /// The agent turn this edit belongs to (filmstrip grouping key). May be
+    /// empty when no turn context is threaded (e.g. a raw viewer edit).
+    #[serde(default)]
+    pub turn_id: String,
+    /// Coding session id when known.
+    #[serde(default)]
+    pub session_id: Option<String>,
+    /// File the construct lives in.
+    #[serde(default)]
+    pub path: Option<String>,
+    /// Projection-aware container path (e.g. "Identity/Customer").
+    #[serde(default)]
+    pub container_path: Option<String>,
+    pub construct_name: String,
+    /// IR node kind (`TypeDef`, `Flow`, `Step`, `InterfaceMethod`, …).
+    #[serde(default)]
+    pub construct_kind: String,
+    /// Structured operations (true EditOps on the viewer path; synthesized /
+    /// empty on the whole-file path where the delta carries the shape).
+    #[serde(default)]
+    pub edit_ops: Vec<veil_ir::EditOp>,
+    /// Intent / category / criticality. Criticality is always resolved via
+    /// `infer_criticality` when the agent omits it.
+    pub annotation: veil_ir::EditAnnotation,
+    /// Criticality surfaced at record level for cheap querying / pip rendering.
+    pub criticality: veil_ir::Criticality,
+    /// Topology delta for this construct (the `struct_diff` items touching it).
+    #[serde(default)]
+    pub structural_delta: Vec<veil_ir::DiffItem>,
+    /// Statement-sized VEIL body text for High/Critical body changes only.
+    /// Never generated Rust — bodies are VEIL only (review principle).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body_before: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body_after: Option<String>,
+    pub created_at: String,
+}
+
+/// Fields a caller supplies to synthesize an `EditRecord`. `slug`,
+/// `session_id`, `turn_id`, `id`, and `created_at` are filled by `record_edits`.
+#[derive(Debug, Clone)]
+pub struct EditRecordSpec {
+    pub path: Option<String>,
+    pub container_path: Option<String>,
+    pub construct_name: String,
+    pub construct_kind: String,
+    pub edit_ops: Vec<veil_ir::EditOp>,
+    pub annotation: veil_ir::EditAnnotation,
+    pub criticality: veil_ir::Criticality,
+    pub structural_delta: Vec<veil_ir::DiffItem>,
+    pub body_before: Option<String>,
+    pub body_after: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -755,6 +828,81 @@ pub fn audits(limit: usize) -> Vec<SignOffRecord> {
     guard.audits.iter().rev().take(limit.max(1)).cloned().collect()
 }
 
+// ─── Edit-capture persistence (Spec A) ────────────────────────────────────
+
+fn short_edit_id() -> String {
+    let ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    format!("ed_{ms:x}")
+}
+
+/// Persist a batch of `EditRecord`s for the current turn. Slug / session / turn
+/// are inferred from the active context when not already set on the specs.
+/// Returns the stored records (with ids + timestamps filled in).
+pub fn record_edits(specs: Vec<EditRecordSpec>) -> Vec<EditRecord> {
+    if specs.is_empty() {
+        return Vec::new();
+    }
+    let slug = infer_slug(None);
+    let session_id = infer_session(None);
+    let turn_id = crate::session::current_turn_id().unwrap_or_default();
+    let now = now_rfc3339();
+    let mut records = Vec::with_capacity(specs.len());
+    for (i, spec) in specs.into_iter().enumerate() {
+        records.push(EditRecord {
+            // nanos + index keeps ids unique within a fast batch.
+            id: format!("{}_{i}", short_edit_id()),
+            slug: slug.clone(),
+            turn_id: turn_id.clone(),
+            session_id: session_id.clone(),
+            path: spec.path,
+            container_path: spec.container_path,
+            construct_name: spec.construct_name,
+            construct_kind: spec.construct_kind,
+            edit_ops: spec.edit_ops,
+            annotation: spec.annotation,
+            criticality: spec.criticality,
+            structural_delta: spec.structural_delta,
+            body_before: spec.body_before,
+            body_after: spec.body_after,
+            created_at: now.clone(),
+        });
+    }
+    let mut guard = store().lock().unwrap_or_else(|e| e.into_inner());
+    guard.edits.extend(records.iter().cloned());
+    if guard.edits.len() > MAX_EDITS {
+        let drain = guard.edits.len() - MAX_EDITS;
+        guard.edits.drain(0..drain);
+    }
+    persist(&guard);
+    records
+}
+
+/// Query captured edits, optionally by slug and/or turn. Newest first.
+pub fn edits_for(slug: Option<&str>, turn: Option<&str>) -> Vec<EditRecord> {
+    let guard = store().lock().unwrap_or_else(|e| e.into_inner());
+    guard
+        .edits
+        .iter()
+        .rev()
+        .filter(|e| {
+            slug.map(|s| e.slug.eq_ignore_ascii_case(s)).unwrap_or(true)
+                && turn.map(|t| e.turn_id == t).unwrap_or(true)
+        })
+        .cloned()
+        .collect()
+}
+
+/// All captured edits (newest first), capped for response size.
+pub fn list_edits(slug: Option<&str>, turn: Option<&str>, limit: usize) -> Vec<EditRecord> {
+    edits_for(slug, turn)
+        .into_iter()
+        .take(limit.max(1))
+        .collect()
+}
+
 /// Markdown block for agent preamble (droppable; keep short).
 pub fn preamble_block() -> String {
     let items = outstanding();
@@ -790,6 +938,7 @@ pub fn snapshot_json(filter: ListFilter) -> Value {
         v
     };
     let sets = change_sets(filter.slug.as_deref());
+    let edits = list_edits(filter.slug.as_deref(), None, 200);
     json!({
         "ok": true,
         "outstanding": items.iter().filter(|i| i.status == ItemStatus::Outstanding).count(),
@@ -797,6 +946,7 @@ pub fn snapshot_json(filter: ListFilter) -> Value {
         "change_sets": sets,
         "by_project": summaries,
         "audits": audits(40),
+        "edits": edits,
         "audit_env": audit_env_json(),
     })
 }
@@ -942,6 +1092,7 @@ pub fn export_json() -> Value {
         "audit_env": audit_env_json(),
         "items": guard.items,
         "audits": guard.audits,
+        "edits": guard.edits,
     })
 }
 
@@ -1176,5 +1327,139 @@ mod tests {
         let left = outstanding();
         assert_eq!(left.len(), 1);
         assert_eq!(left[0].slug, "keep-me");
+    }
+
+    /// Creating a PR records exactly ONE review-facing item (the single source
+    /// of truth). change_management holds the transport PR separately; this
+    /// asserts review.rs is not double-writing its own record on create.
+    #[test]
+    fn pr_create_records_single_review_item() {
+        let _g = isolated();
+        let item = record_pr("acme", "Add ports", Some("pr-123"));
+        assert_eq!(item.kind, ItemKind::PullRequest);
+        assert_eq!(item.pr_id.as_deref(), Some("pr-123"));
+        let prs: Vec<_> = outstanding()
+            .into_iter()
+            .filter(|i| i.kind == ItemKind::PullRequest && i.slug == "acme")
+            .collect();
+        assert_eq!(prs.len(), 1, "exactly one review-facing PR item per create");
+    }
+
+    /// may_ship is the SOLE gate: it consults only the recorded review state
+    /// (outstanding items + the human SignOffRecord). It has no knowledge of
+    /// change_management `PrStatus`, so a transport "Approved" can never enable
+    /// ship on its own — only a recorded sign-off flips may_ship to Ok.
+    #[test]
+    fn may_ship_is_gated_only_by_recorded_sign_off() {
+        let _g = isolated();
+        // A PR item + a file edit for the same slug are outstanding.
+        record_pr("acme", "Add ports", Some("pr-9"));
+        record_file_edit("acme", "main.veil", Some("ports"));
+        // No sign-off yet: ship must be refused regardless of any external
+        // transport status (review.rs cannot even see PrStatus).
+        let blocked = may_ship("acme", None);
+        assert!(
+            blocked.is_err(),
+            "may_ship must refuse while items are outstanding"
+        );
+
+        // The recorded human sign-off is the ONLY thing that flips the gate.
+        let (signed, audit) = sign_off(SignOffRequest {
+            slug: Some("acme".into()),
+            all: false,
+            decision: "approve".into(),
+            actor: "operator".into(),
+            ..Default::default()
+        })
+        .expect("human approve");
+        assert_eq!(audit.decision, "approve");
+        assert!(!signed.is_empty());
+        assert!(
+            may_ship("acme", None).is_ok(),
+            "recorded sign-off must enable ship"
+        );
+    }
+
+    /// A brand-new edit AFTER a sign-off re-opens outstanding work and blocks
+    /// ship again — the SignOffRecord is bound to the reviewed set, so ship
+    /// cannot ride a stale approval.
+    #[test]
+    fn new_edit_after_sign_off_reblocks_ship() {
+        let _g = isolated();
+        record_file_edit("acme", "main.veil", Some("v1"));
+        sign_off(SignOffRequest {
+            slug: Some("acme".into()),
+            decision: "approve".into(),
+            actor: "operator".into(),
+            ..Default::default()
+        })
+        .expect("approve");
+        assert!(may_ship("acme", None).is_ok());
+        // New work lands: outstanding again → blocked.
+        record_file_edit("acme", "layers/new.layer", Some("v2"));
+        assert!(
+            may_ship("acme", None).is_err(),
+            "post-approval edits must re-block ship"
+        );
+    }
+
+    fn sample_spec(name: &str, crit: veil_ir::Criticality) -> EditRecordSpec {
+        EditRecordSpec {
+            path: Some("main.veil".into()),
+            container_path: Some("Checkout".into()),
+            construct_name: name.into(),
+            construct_kind: "Step".into(),
+            edit_ops: vec![],
+            annotation: veil_ir::EditAnnotation {
+                intent: Some("why".into()),
+                category: Some(veil_ir::EditCategory::Behavior),
+                criticality: Some(crit),
+            },
+            criticality: crit,
+            structural_delta: vec![],
+            body_before: Some("guard ok".into()),
+            body_after: Some("guard tightened".into()),
+        }
+    }
+
+    /// EditRecords persist to the store file and survive a reload (the ship
+    /// gate requires durable capture, not a transient cache).
+    #[test]
+    fn edit_records_survive_reload() {
+        let _g = isolated();
+        // No turn scope → turn_id is empty but the record still persists.
+        let stored = record_edits(vec![sample_spec("Validate", veil_ir::Criticality::High)]);
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].criticality, veil_ir::Criticality::High);
+        assert_eq!(stored[0].body_after.as_deref(), Some("guard tightened"));
+
+        // Force a reload from disk into a fresh store state.
+        {
+            let mut s = store().lock().unwrap_or_else(|e| e.into_inner());
+            *s = load_from_disk();
+        }
+        let reloaded = list_edits(None, None, 100);
+        assert_eq!(reloaded.len(), 1, "edit must survive store reload");
+        assert_eq!(reloaded[0].construct_name, "Validate");
+        assert_eq!(reloaded[0].criticality, veil_ir::Criticality::High);
+        assert_eq!(reloaded[0].body_before.as_deref(), Some("guard ok"));
+
+        // snapshot_json exposes edits additively.
+        let snap = snapshot_json(ListFilter::default());
+        assert_eq!(snap["edits"].as_array().map(|a| a.len()), Some(1));
+    }
+
+    /// EditRecords are keyed to the active agent turn via CURRENT_TURN.
+    #[test]
+    fn edit_records_key_to_current_turn() {
+        let _g = isolated();
+        crate::session::CURRENT_TURN.sync_scope("turn-xyz".to_string(), || {
+            record_edits(vec![sample_spec("Persist", veil_ir::Criticality::Normal)]);
+        });
+        let by_turn = edits_for(None, Some("turn-xyz"));
+        assert_eq!(by_turn.len(), 1);
+        assert_eq!(by_turn[0].turn_id, "turn-xyz");
+        // A different turn filter finds nothing.
+        assert!(edits_for(None, Some("other-turn")).is_empty());
     }
 }

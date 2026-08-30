@@ -1,11 +1,11 @@
 <script lang="ts">
   /**
    * Domain Layer Explorer — navigate constructs with recent design-journal entries.
-   * Complements the PR Wizard: same rationales/decisions, searchable after accept.
+   * Complements /review: same rationales/decisions, searchable after accept.
    */
   import { onMount } from 'svelte';
   import { focusConstructByName, currentProjectParam } from '$lib/ide/store';
-  import { fetchJournal } from '$lib/ide/prWizard';
+  import { fetchJournal } from '$lib/review/pr-api';
 
   let q = $state('');
   let construct = $state('');

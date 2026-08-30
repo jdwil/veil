@@ -1064,6 +1064,9 @@ async fn dispatch_tool_scoped<P: SourceProvider>(
                 return Ok(block);
             }
             let prev = provider.read_source("").await.ok();
+            // Spec A: keep a copy of the previous full-file source for durable
+            // edit-capture (the smoke-rollback branch moves `prev`).
+            let prev_for_capture = prev.clone().unwrap_or_default();
             let files = provider.list_files().await;
             let active_path = files
                 .iter()
@@ -1198,6 +1201,34 @@ async fn dispatch_tool_scoped<P: SourceProvider>(
             } else {
                 None
             };
+            // Spec A: durable per-construct edit capture for the review UX.
+            // Synthesize EditRecords from the structural diff (prev → content)
+            // and persist them keyed to the current turn. Best-effort: capture
+            // never blocks the write (safety gates already passed above).
+            if !slug.is_empty() {
+                let capture_path = if active_path.is_empty() {
+                    &active_name
+                } else {
+                    &active_path
+                };
+                let specs = crate::edit_capture::synthesize_from_whole_file(
+                    &prev_for_capture,
+                    content,
+                    &registry,
+                    &rats,
+                    Some(capture_path),
+                );
+                if !specs.is_empty() {
+                    let n = specs.len();
+                    crate::review::record_edits(specs);
+                    tracing::info!(
+                        project = %slug,
+                        path = %capture_path,
+                        edits = n,
+                        "write_source: captured EditRecords"
+                    );
+                }
+            }
             let intent = if !slug.is_empty() {
                 Some(crate::review::write_source_intent(
                     &slug,

@@ -51,6 +51,7 @@ pub fn session_routes() -> Router<Arc<MultiProjectProvider>> {
         .route("/api/ux/intent_ack/{id}", get(ux_intent_ack_get))
         .route("/api/ux/sign_off", post(ux_sign_off))
         .route("/api/review/outstanding", get(review_outstanding))
+        .route("/api/review/edits", get(review_edits))
         .route("/api/review/summary", get(review_summary))
         .route("/api/review/sign_off", post(review_sign_off))
         .route("/api/review/changeset", get(review_changeset))
@@ -870,8 +871,34 @@ async fn review_outstanding(Query(q): Query<ReviewQuery>) -> axum::response::Res
     json_ok(crate::review::snapshot_json(filter))
 }
 
-async fn review_summary() -> axum::response::Response {
-    let mut by: Vec<_> = crate::review::summary_by_slug().into_values().collect();
+#[derive(Deserialize)]
+struct EditsQuery {
+    #[serde(default)]
+    slug: Option<String>,
+    #[serde(default)]
+    turn: Option<String>,
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+/// GET /api/review/edits?slug=&turn=&limit= — durable EditRecords (Spec A).
+/// Additive endpoint powering the delta-on-map node cards + filmstrip.
+async fn review_edits(Query(q): Query<EditsQuery>) -> axum::response::Response {
+    let slug = q.slug.filter(|s| !s.is_empty());
+    let turn = q.turn.filter(|s| !s.is_empty());
+    let edits = crate::review::list_edits(
+        slug.as_deref(),
+        turn.as_deref(),
+        q.limit.unwrap_or(200),
+    );
+    json_ok(json!({
+        "ok": true,
+        "count": edits.len(),
+        "edits": edits,
+    }))
+}
+
+async fn review_summary() -> axum::response::Response {    let mut by: Vec<_> = crate::review::summary_by_slug().into_values().collect();
     by.sort_by(|a, b| b.outstanding.cmp(&a.outstanding));
     json_ok(json!({
         "ok": true,

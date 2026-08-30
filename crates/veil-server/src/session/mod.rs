@@ -1621,6 +1621,14 @@ tokio::task_local! {
     pub static CURRENT_SESSION: String;
 }
 
+/// Turn-scoped agent turn id. Set once per `run_turn` so tool-dispatch code
+/// (e.g. `write_source` edit-capture) can key durable `EditRecord`s to the
+/// turn without threading the id through every call. Empty when no agent turn
+/// is active (e.g. a raw viewer `POST /api/edit`).
+tokio::task_local! {
+    pub static CURRENT_TURN: String;
+}
+
 /// Debounce DDB META puts — AWS CLI + SSO is multi-second and was on every IDE request.
 fn schedule_meta_flush(meta: SessionMeta) {
     use std::sync::Mutex;
@@ -1676,4 +1684,12 @@ fn schedule_meta_flush(meta: SessionMeta) {
 
 pub fn current_session_id() -> Option<String> {
     CURRENT_SESSION.try_with(|s| s.clone()).ok()
+}
+
+/// Current agent turn id (set by `run_turn`), if any.
+pub fn current_turn_id() -> Option<String> {
+    CURRENT_TURN
+        .try_with(|s| s.clone())
+        .ok()
+        .filter(|s| !s.is_empty())
 }

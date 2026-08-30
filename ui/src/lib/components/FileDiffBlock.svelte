@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { hunkLineClass } from '$lib/review/diff';
-	import type { FileDiff } from '$lib/ide/prWizard';
+	import type { FileDiff } from '$lib/review/types';
 
 	interface Props {
 		diff: FileDiff;

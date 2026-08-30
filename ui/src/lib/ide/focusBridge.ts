@@ -43,11 +43,7 @@ export function startIdeFocusBridge(project: string): () => void {
 				? graph.nodes.find((n) => String(n.id) === String(id))
 				: undefined;
 
-		// Don't steal primary from PR Wizard while the human is reviewing
-		let primaryPane = prev.primaryPane;
-		if (!prev.prWizard.open) {
-			primaryPane = node ? 'canvas' : prev.primaryPane || 'outline';
-		}
+		const primaryPane = node ? 'canvas' : prev.primaryPane || 'outline';
 
 		patchIdeViewport({
 			project,

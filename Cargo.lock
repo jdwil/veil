@@ -6135,6 +6135,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "veil-jwks"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "jsonwebtoken",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "veil-local"
 version = "0.1.0"
 dependencies = [

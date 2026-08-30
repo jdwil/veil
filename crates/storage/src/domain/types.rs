@@ -152,6 +152,63 @@ impl From<String> for StubId {
     }
 }
 
+/// Git provider for a `GitRemote` origin binding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum GitProvider {
+    Github,
+    Bitbucket,
+}
+
+impl GitProvider {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            GitProvider::Github => "github",
+            GitProvider::Bitbucket => "bitbucket",
+        }
+    }
+
+    /// Parse a provider name (case-insensitive). Accepts common aliases.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "github" | "gh" => Some(GitProvider::Github),
+            "bitbucket" | "bb" => Some(GitProvider::Bitbucket),
+            _ => None,
+        }
+    }
+}
+
+/// Where a project's git history lives.
+///
+/// Absent or `kind: "s3"` → the existing S3 bundle backend (default).
+/// `kind: "git"` → a real GitHub/Bitbucket remote, optionally scoped to a
+/// subpath (hybrid model: the project may be its own repo or a subdir of a
+/// shared repo).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum OriginBinding {
+    /// Existing behaviour: history is S3 bundles under `git/{repo_id}/`.
+    S3,
+    /// Real remote on a provider. `repo` is `org/name`.
+    Git {
+        provider: GitProvider,
+        /// `org/name` on the provider.
+        repo: String,
+        /// Project root within the repo (hybrid model). `None`/empty = repo root.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        subpath: Option<String>,
+        /// Default branch on the remote (falls back to the repo's default_branch).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+    },
+}
+
+impl Default for OriginBinding {
+    fn default() -> Self {
+        OriginBinding::S3
+    }
+}
+
 /// Aggregate: Repo
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Repo {
@@ -162,6 +219,12 @@ pub struct Repo {
     pub default_branch: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    /// Optional git origin binding. Absent → S3 bundle backend (default).
+    ///
+    /// `#[serde(default)]` keeps existing DDB records (written before this
+    /// field existed) deserializable, and they resolve to the S3 backend.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<OriginBinding>,
 }
 
 impl Repo {
@@ -174,6 +237,7 @@ impl Repo {
             default_branch,
             created_at: Utc::now(),
             updated_at: Utc::now(),
+            origin: None,
         }
     }
 }

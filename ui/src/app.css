@@ -759,9 +759,6 @@
     [class*="-toast"] {
       animation: dk-fade-up 0.28s var(--dk-ease-out) both;
     }
-    [class*="-wizard"] {
-      animation: dk-modal-in 0.35s var(--dk-ease-out) both;
-    }
     [class*="-empty"] {
       animation: dk-fade-up 0.35s var(--dk-ease-out) both;
     }

@@ -37,6 +37,7 @@ pub async fn create_repo(
         default_branch: "main".to_string(),
         created_at: now.clone(),
         updated_at: now.clone(),
+        origin: None,
     };
     deps.metadata_store.create_repo(repo.clone()).await?;
     let branch = BranchInfo {
@@ -158,6 +159,25 @@ pub async fn delete_repo(deps: &Deps, id: String) -> Result<(), DomainError> {
         .await?;
 
     Ok(())
+}
+
+/// DomainService: SetRepoOrigin — bind (or clear) a project's git origin.
+///
+/// `binding: None` resets to the default S3 backend.
+#[tracing::instrument(skip_all)]
+pub async fn set_repo_origin(
+    deps: &Deps,
+    id: String,
+    binding: Option<OriginBinding>,
+) -> Result<Repo, DomainError> {
+    let mut repo = resolve_repo(deps, &id).await?;
+    repo.origin = match binding {
+        Some(OriginBinding::S3) | None => None,
+        other => other,
+    };
+    repo.updated_at = Utc::now();
+    deps.metadata_store.update_repo(repo.clone()).await?;
+    Ok(repo)
 }
 
 /// DomainService: GetProjectInfra

@@ -2082,6 +2082,25 @@ async fn post_edit<P: SourceProvider>(
         }
     }
 
+    // Spec A: durable per-edit capture. The transient ANNOTATION_CACHE above
+    // is cleared every batch and only feeds /diff correlation; here we persist
+    // a durable EditRecord per op (real EditOps + resolved annotation +
+    // structural delta) so the review UX survives a product-host restart.
+    let edit_path = state
+        .list_files()
+        .await
+        .into_iter()
+        .find(|f| f.active)
+        .map(|f| if f.path.is_empty() { f.name } else { f.path });
+    persist_edit_records(
+        &req,
+        &resolved_annotations,
+        &source,
+        &graph,
+        &state,
+        edit_path,
+    );
+
     let response = EditResponse {
         source: new_source,
         ir: serde_json::to_value(&graph).unwrap_or(serde_json::Value::Null),
@@ -2090,6 +2109,150 @@ async fn post_edit<P: SourceProvider>(
         resolved_annotations: Some(resolved_annotations),
     };
     Json(response).into_response()
+}
+
+/// Build + persist a durable `review::EditRecord` per structured edit op.
+///
+/// Reuses the head IR `graph` for the target construct's name/kind/container
+/// and a base→head `structural_diff` for the per-construct topology delta, so
+/// the viewer path produces the same `EditRecord` shape as the whole-file
+/// `write_source` synthesis path.
+fn persist_edit_records<P: SourceProvider>(
+    req: &EditRequest,
+    resolved: &[veil_ir::EditAnnotation],
+    base_source: &str,
+    graph: &veil_ir::IrGraph,
+    state: &SharedProvider<P>,
+    path: Option<String>,
+) {
+    use veil_ir::{Criticality, DiffItem, EditOp};
+
+    if req.edits.is_empty() {
+        return;
+    }
+
+    // Structural diff for per-construct deltas (best-effort; empty on failure).
+    let base_diff = parse_source(base_source, &state.registry())
+        .ok()
+        .map(|s| veil_ir::build_ir_with_registry(&s, Some(&state.registry())));
+    let struct_delta = base_diff.as_ref().map(|base| {
+        veil_ir::structural_diff(base, graph, "before", "after")
+    });
+
+    let node_by_span = |span: usize| -> Option<&veil_ir::IrNode> {
+        graph.nodes.iter().find(|n| n.span.start == span)
+    };
+
+    let mut specs = Vec::with_capacity(req.edits.len());
+    for (i, op) in req.edits.iter().enumerate() {
+        let annotation = resolved.get(i).cloned().unwrap_or_default();
+        let criticality = annotation
+            .criticality
+            .unwrap_or_else(|| veil_ir::infer_criticality(op, &[]));
+
+        // Resolve the target construct name + kind from the head IR.
+        let (name, kind) = match op {
+            EditOp::CreateConstruct { name, .. } | EditOp::CreateStep { name, .. } => {
+                let kind = graph
+                    .nodes
+                    .iter()
+                    .find(|n| n.name == *name)
+                    .map(|n| format!("{:?}", n.kind))
+                    .unwrap_or_default();
+                (name.clone(), kind)
+            }
+            EditOp::Rename { name, .. } => {
+                let kind = node_by_span(op.span_start())
+                    .map(|n| format!("{:?}", n.kind))
+                    .unwrap_or_default();
+                (name.clone(), kind)
+            }
+            _ => match node_by_span(op.span_start()) {
+                Some(n) => (n.name.clone(), format!("{:?}", n.kind)),
+                None => (String::new(), String::new()),
+            },
+        };
+        if name.is_empty() {
+            continue;
+        }
+
+        // Per-construct structural delta items (match by construct name).
+        let delta: Vec<DiffItem> = struct_delta
+            .as_ref()
+            .map(|d| {
+                d.items
+                    .iter()
+                    .filter(|it| diff_item_touches(it, &name))
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        // Bodies only for High/Critical SetBody ops; VEIL only.
+        let (body_before, body_after) = match op {
+            EditOp::SetBody { .. } if criticality >= Criticality::High => {
+                extract_body_previews(&delta)
+            }
+            _ => (None, None),
+        };
+
+        specs.push(crate::review::EditRecordSpec {
+            path: path.clone(),
+            container_path: None,
+            construct_name: name,
+            construct_kind: kind,
+            edit_ops: vec![op.clone()],
+            annotation,
+            criticality,
+            structural_delta: delta,
+            body_before,
+            body_after,
+        });
+    }
+    if !specs.is_empty() {
+        crate::review::record_edits(specs);
+    }
+}
+
+/// True when a diff item concerns the named construct.
+fn diff_item_touches(item: &veil_ir::DiffItem, name: &str) -> bool {
+    use veil_ir::DiffItem;
+    match item {
+        DiffItem::Added { name: n, .. }
+        | DiffItem::Removed { name: n, .. }
+        | DiffItem::SignatureChanged { name: n, .. }
+        | DiffItem::BodyChanged { name: n, .. }
+        | DiffItem::AnnotationsChanged { name: n, .. } => n == name,
+        DiffItem::Renamed { from_name, to_name, .. } => from_name == name || to_name == name,
+    }
+}
+
+/// Pull VEIL body before/after from a BodyChanged delta (stock folded out).
+fn extract_body_previews(delta: &[veil_ir::DiffItem]) -> (Option<String>, Option<String>) {
+    use veil_ir::DiffItem;
+    for item in delta {
+        if let DiffItem::BodyChanged {
+            before_preview,
+            after_preview,
+            ..
+        } = item
+        {
+            let clean = |lines: &[String]| -> Option<String> {
+                let kept: Vec<&str> = lines
+                    .iter()
+                    .map(|s| s.trim())
+                    .filter(|t| !t.is_empty() && !t.starts_with("stock."))
+                    .collect();
+                if kept.is_empty() {
+                    None
+                } else {
+                    Some(kept.join("\n"))
+                }
+            };
+            return (clean(before_preview), clean(after_preview));
+        }
+    }
+    (None, None)
 }
 
 /// Look up presentation lenses for the construct targeted by an EditOp.

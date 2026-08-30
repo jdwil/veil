@@ -300,33 +300,40 @@ pub async fn merge_pr(
     merger: String,
     slug: String,
 ) -> Result<serde_json::Value, DomainError> {
-    // step: validate_gates
+    // step: validate_gates (TRANSPORT ONLY)
+    //
+    // Approval authority lives in `veil_server::review` (Model B): the recorded
+    // human `SignOffRecord` and `review::may_ship` are the sole ship gate, and
+    // the HTTP/tool caller enforces `may_ship` *before* calling this function.
+    // change_management is git/PR **transport** — it MUST NOT re-decide approval
+    // here (no `PrStatus::Approved`, no `Approval` row count). Gating on those
+    // would reintroduce the two-source fork this consolidation removed. We only
+    // guard the transport lifecycle: the PR must exist and not already be a
+    // terminal (merged/rejected/closed) record.
+    // See Mind Palace: decision-single-review-source-of-truth.
     let cr = deps.pr_repo.find(id.clone()).await?;
     if cr.is_none() {
         return Err(DomainError::NotFound);
     };
     let mut pr = cr.clone().ok_or(DomainError::NotFound)?;
-    if !(pr.status == PrStatus::Approved) {
-        return Err(DomainError::Validation(
-            "PR must be approved before merge".to_string(),
-        ));
+    if matches!(
+        pr.status,
+        PrStatus::Merged | PrStatus::Rejected | PrStatus::Closed
+    ) {
+        return Err(DomainError::Validation(format!(
+            "PR is {:?}; cannot merge a terminal transport record",
+            pr.status
+        )));
     };
-    let ci = deps.ci_repo.latest_for_pr(id.clone()).await?;
-    if ci.is_none() {
-        return Err(DomainError::Validation(
-            "No CI run — build must pass before merge".to_string(),
-        ));
-    };
-    if !(ci.clone().ok_or(DomainError::NotFound)?.status == CiStatus::Passed) {
-        return Err(DomainError::Validation(
-            "CI must pass before merge".to_string(),
-        ));
-    };
-    let approvals = deps.approval_repo.find_for_pr(id.clone()).await?;
-    if !(!approvals.is_empty()) {
-        return Err(DomainError::Validation(
-            "At least one approval required".to_string(),
-        ));
+    // CI status is transport metadata: if a run exists it must not be Failed,
+    // but its presence is NOT a gate (the review sign-off + host check are the
+    // authority). A missing run does not block a signed-off merge.
+    if let Some(run) = deps.ci_repo.latest_for_pr(id.clone()).await? {
+        if run.status == CiStatus::Failed {
+            return Err(DomainError::Validation(
+                "latest CI run failed — fix the build before merge".to_string(),
+            ));
+        }
     };
 
     // step: merge
@@ -528,4 +535,332 @@ pub async fn update_pull_request_status(
     pr.updated_at = Utc::now();
     deps.pr_repo.save(pr.clone()).await?;
     return Ok(pr);
+}
+
+#[cfg(test)]
+mod tests {
+    //! Transport-only merge gate.
+    //!
+    //! Approval authority lives in `veil_server::review` (Model B): the
+    //! recorded human `SignOffRecord` + `review::may_ship` are the sole ship
+    //! gate, enforced by the HTTP/tool caller *before* `merge_pr` runs. These
+    //! tests pin `change_management` as git/PR **transport**: it merges a PR
+    //! that is NOT `PrStatus::Approved` and has NO `Approval` rows, and it only
+    //! refuses on transport-lifecycle grounds (terminal record) or a failed CI
+    //! run. See Mind Palace: decision-single-review-source-of-truth.
+
+    use super::*;
+    use async_trait::async_trait;
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct MemPrRepo {
+        prs: Mutex<HashMap<Uuid, PullRequest>>,
+    }
+    #[async_trait]
+    impl PullRequestRepo for MemPrRepo {
+        async fn find(&self, id: Uuid) -> Result<Option<PullRequest>, DomainError> {
+            Ok(self.prs.lock().unwrap().get(&id).cloned())
+        }
+        async fn list_by_repo(
+            &self,
+            repo_id: Uuid,
+            _status: Option<PrStatus>,
+        ) -> Result<Vec<PullRequest>, DomainError> {
+            Ok(self
+                .prs
+                .lock()
+                .unwrap()
+                .values()
+                .filter(|p| p.repo_id == repo_id)
+                .cloned()
+                .collect())
+        }
+        async fn list_open(&self, _repo_id: Uuid) -> Result<Vec<PullRequest>, DomainError> {
+            Ok(vec![])
+        }
+        async fn list_all(
+            &self,
+            _status: Option<PrStatus>,
+        ) -> Result<Vec<PullRequest>, DomainError> {
+            Ok(self.prs.lock().unwrap().values().cloned().collect())
+        }
+        async fn save(&self, cr: PullRequest) -> Result<(), DomainError> {
+            self.prs.lock().unwrap().insert(cr.id, cr);
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct MemApprovalRepo {
+        rows: Mutex<Vec<Approval>>,
+    }
+    #[async_trait]
+    impl ApprovalRepo for MemApprovalRepo {
+        async fn find_for_pr(&self, pr_id: Uuid) -> Result<Vec<Approval>, DomainError> {
+            Ok(self
+                .rows
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|a| a.pr_id == pr_id)
+                .cloned()
+                .collect())
+        }
+        async fn save(&self, approval: Approval) -> Result<(), DomainError> {
+            self.rows.lock().unwrap().push(approval);
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct MemCiRepo {
+        runs: Mutex<Vec<CiRun>>,
+    }
+    #[async_trait]
+    impl CiRunRepo for MemCiRepo {
+        async fn latest_for_pr(&self, pr_id: Uuid) -> Result<Option<CiRun>, DomainError> {
+            Ok(self
+                .runs
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|r| r.pr_id == pr_id)
+                .last()
+                .cloned())
+        }
+        async fn list_for_pr(&self, pr_id: Uuid) -> Result<Vec<CiRun>, DomainError> {
+            Ok(self
+                .runs
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|r| r.pr_id == pr_id)
+                .cloned()
+                .collect())
+        }
+        async fn save(&self, run: CiRun) -> Result<(), DomainError> {
+            self.runs.lock().unwrap().push(run);
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct MemCommentRepo;
+    #[async_trait]
+    impl CommentRepo for MemCommentRepo {
+        async fn list_for_pr(&self, _pr_id: Uuid) -> Result<Vec<ReviewComment>, DomainError> {
+            Ok(vec![])
+        }
+        async fn save(&self, _comment: ReviewComment) -> Result<(), DomainError> {
+            Ok(())
+        }
+        async fn resolve(&self, _id: Uuid) -> Result<(), DomainError> {
+            Ok(())
+        }
+    }
+
+    /// Merge is a ref copy; report the source SHA so the test can assert it ran.
+    #[derive(Default)]
+    struct MemGit;
+    #[async_trait]
+    impl GitService for MemGit {
+        async fn init_repo(&self, _slug: String) -> Result<(), DomainError> {
+            Ok(())
+        }
+        async fn repo_exists(&self, _slug: String) -> Result<bool, DomainError> {
+            Ok(true)
+        }
+        async fn create_branch(
+            &self,
+            _slug: String,
+            branch_name: String,
+            _from_ref: String,
+        ) -> Result<String, DomainError> {
+            Ok(branch_name)
+        }
+        async fn delete_branch(&self, _slug: String, _branch: String) -> Result<(), DomainError> {
+            Ok(())
+        }
+        async fn list_branches(&self, _slug: String) -> Result<Vec<String>, DomainError> {
+            Ok(vec![])
+        }
+        async fn get_head(&self, _slug: String, _branch: String) -> Result<String, DomainError> {
+            Ok("head".into())
+        }
+        async fn commit_file(
+            &self,
+            _slug: String,
+            _branch: String,
+            _path: String,
+            _content: String,
+            _message: String,
+            _author: String,
+        ) -> Result<String, DomainError> {
+            Ok("sha".into())
+        }
+        async fn read_file(
+            &self,
+            _slug: String,
+            _branch: String,
+            _path: String,
+        ) -> Result<Option<String>, DomainError> {
+            Ok(None)
+        }
+        async fn list_files(
+            &self,
+            _slug: String,
+            _branch: String,
+        ) -> Result<Vec<String>, DomainError> {
+            Ok(vec![])
+        }
+        async fn log(
+            &self,
+            _slug: String,
+            _branch: String,
+            _limit: i64,
+        ) -> Result<serde_json::Value, DomainError> {
+            Ok(serde_json::json!([]))
+        }
+        async fn merge(
+            &self,
+            _slug: String,
+            _source: String,
+            _target: String,
+            _message: String,
+            _author: String,
+        ) -> Result<String, DomainError> {
+            Ok("merge-sha".into())
+        }
+        async fn diff_files(
+            &self,
+            _slug: String,
+            _base: String,
+            _head: String,
+        ) -> Result<serde_json::Value, DomainError> {
+            Ok(serde_json::json!([]))
+        }
+        async fn can_merge(
+            &self,
+            _slug: String,
+            _source: String,
+            _target: String,
+        ) -> Result<serde_json::Value, DomainError> {
+            Ok(serde_json::json!({ "can_merge": true }))
+        }
+    }
+
+    fn deps() -> (Deps, Arc<MemPrRepo>, Arc<MemCiRepo>) {
+        let pr_repo = Arc::new(MemPrRepo::default());
+        let ci_repo = Arc::new(MemCiRepo::default());
+        let deps = Deps {
+            approval_repo: Arc::new(MemApprovalRepo::default()),
+            pr_repo: pr_repo.clone(),
+            ci_repo: ci_repo.clone(),
+            comment_repo: Arc::new(MemCommentRepo),
+            git: Arc::new(MemGit),
+        };
+        (deps, pr_repo, ci_repo)
+    }
+
+    fn draft_pr(status: PrStatus) -> PullRequest {
+        let now = Utc::now();
+        PullRequest {
+            id: Uuid::new_v4(),
+            repo_id: Uuid::new_v4(),
+            title: "feat".into(),
+            description: "slug: acme\n".into(),
+            jira_ticket: "".into(),
+            source_branch: "cr/feat".into(),
+            target_branch: "main".into(),
+            author: "agent".into(),
+            status,
+            created_at: now,
+            updated_at: now,
+            merged_at: None,
+            merged_by: None,
+            merge_commit: None,
+        }
+    }
+
+    /// Transport merges without a CM approval authority: no `PrStatus::Approved`,
+    /// no `Approval` rows, no CI run. The ship gate (may_ship) is enforced by the
+    /// caller, not here.
+    #[tokio::test]
+    async fn merge_does_not_require_cm_approval_authority() {
+        let (deps, pr_repo, _ci) = deps();
+        let pr = draft_pr(PrStatus::ReadyForReview);
+        let id = pr.id;
+        pr_repo.save(pr).await.unwrap();
+
+        let out = merge_pr(&deps, id, "operator".into(), "acme".into())
+            .await
+            .expect("transport merge should not depend on CM approval");
+        assert_eq!(out["merge_commit"], "merge-sha");
+        let merged = pr_repo.find(id).await.unwrap().unwrap();
+        assert_eq!(merged.status, PrStatus::Merged);
+    }
+
+    /// Even a `Draft` (never submitted / never CM-approved) transport record can
+    /// be merged once the caller's may_ship gate has passed.
+    #[tokio::test]
+    async fn merge_allows_unsubmitted_transport_record() {
+        let (deps, pr_repo, _ci) = deps();
+        let pr = draft_pr(PrStatus::Draft);
+        let id = pr.id;
+        pr_repo.save(pr).await.unwrap();
+
+        merge_pr(&deps, id, "operator".into(), "acme".into())
+            .await
+            .expect("transport merge should not require ReadyForReview/Approved");
+        assert_eq!(
+            pr_repo.find(id).await.unwrap().unwrap().status,
+            PrStatus::Merged
+        );
+    }
+
+    /// Transport still refuses a terminal record (already merged/closed/rejected).
+    #[tokio::test]
+    async fn merge_refuses_terminal_transport_record() {
+        let (deps, pr_repo, _ci) = deps();
+        let pr = draft_pr(PrStatus::Merged);
+        let id = pr.id;
+        pr_repo.save(pr).await.unwrap();
+
+        let err = merge_pr(&deps, id, "operator".into(), "acme".into())
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, DomainError::Validation(ref m) if m.contains("terminal")),
+            "expected terminal-record refusal, got {err:?}"
+        );
+    }
+
+    /// A failed CI run is transport metadata that still blocks (build safety),
+    /// but its *absence* does not (see merge_does_not_require_cm_approval_authority).
+    #[tokio::test]
+    async fn merge_refuses_when_ci_failed() {
+        let (deps, pr_repo, ci_repo) = deps();
+        let pr = draft_pr(PrStatus::ReadyForReview);
+        let id = pr.id;
+        pr_repo.save(pr).await.unwrap();
+        ci_repo
+            .save(CiRun::new(
+                Uuid::new_v4(),
+                id,
+                "abc".into(),
+                CiStatus::Failed,
+                Utc::now(),
+            ))
+            .await
+            .unwrap();
+
+        let err = merge_pr(&deps, id, "operator".into(), "acme".into())
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, DomainError::Validation(ref m) if m.contains("CI")),
+            "expected CI-failed refusal, got {err:?}"
+        );
+    }
 }

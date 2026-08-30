@@ -81,7 +81,23 @@ impl AgentTurnResponse {
 }
 
 /// Run one agent turn against the active source.
+///
+/// Scopes the turn-local `CURRENT_TURN` id so tool-dispatch code (e.g.
+/// `write_source` edit-capture) can key durable `EditRecord`s to this turn.
 pub async fn run_turn<P: SourceProvider>(
+    provider: std::sync::Arc<P>,
+    req: AgentTurnRequest,
+) -> AgentTurnResponse {
+    let turn_id = req
+        .turn_id
+        .clone()
+        .unwrap_or_else(|| format!("t-{}", chrono_like_id()));
+    crate::session::CURRENT_TURN
+        .scope(turn_id, run_turn_inner(provider, req))
+        .await
+}
+
+async fn run_turn_inner<P: SourceProvider>(
     provider: std::sync::Arc<P>,
     req: AgentTurnRequest,
 ) -> AgentTurnResponse {

@@ -191,6 +191,7 @@ impl LocalMetadataStore {
                     default_branch: "main".into(),
                     created_at: Utc::now(),
                     updated_at: Utc::now(),
+                    origin: None,
                 });
                 let bk = format!("{name}/main");
                 db.branches.entry(bk).or_insert_with(|| BranchInfo {

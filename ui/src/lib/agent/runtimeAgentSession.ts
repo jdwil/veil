@@ -984,7 +984,7 @@ function buildSystemPrompt(ctx: AgentContext): string {
 		'6. Short requests ("use ddd.layer", "refactor to X") mean edit the EXISTING package, not invent a new one.',
 		'7. After create_project succeeds, write files. wiki_search is for platform contracts (bang/harness), not a tour before building.',
 		'',
-		'Deictic references ("this component", "this method", "this change", "here", "the wizard"):',
+		'Deictic references ("this component", "this method", "this change", "here", "this change in /review"):',
 		'- Use Session Focus + Visible panes below. Do not ask the user to restate what is selected.',
 		'- Prefer the pane marked ★ primary. If the operator is on /review, "this" is the selected change (name, rationale, hunks).',
 		'- If Focus.construct is set, operate on that construct unless panes point at a more specific review item.',

@@ -1,16 +1,15 @@
-# designkit — stock UI components (public)
+# designkit — stock UI components
 #
 # Source of truth: THIS FILE (VEIL).
 #   props / state / derived / effect / fn  → lowered to TypeScript (sveltekit5)
 #   template / style                        → raw HTML+CSS surfaces only
 #
-# Layer tokens/CSS:  ../../layers/designkit.layer  (system layer)
-# Agent contracts:   docs/AGENT_SURFACE.md
-# Gen library:       veil gen main.veil -t typescript -o generated/library
-#
-# Products: depend on this package + `use designkit` (or adapt stock shells).
+# Gen: veil gen main.veil -t typescript -o generated/library
+# Layer tokens/CSS: layers/main.layer
+# Agent contracts: docs/AGENT_SURFACE.md
 
 pkg designkit
+  use sveltekit5
   use designkit
 
   app DesignKit
@@ -590,22 +589,17 @@ pkg designkit
             if on_close != null
               on_close()
         template """
-          {#key open}
+          {#if true}
           {@const _sync = (() => {
-            // {#key open} re-runs this when open flips. queueMicrotask waits for bind:this.
-            const wantOpen = open;
-            queueMicrotask(() => {
-              const d = dialog_el;
-              if (!d || typeof document === 'undefined') return;
-              if (d.parentElement !== document.body) document.body.appendChild(d);
-              if (wantOpen) {
-                if (!d.open) { try { d.showModal(); } catch { d.setAttribute('open', ''); } }
-              } else if (d.open) {
-                d.close();
-              }
-            });
+            const d = dialog_el;
+            if (!d || typeof document === 'undefined') return;
+            if (d.parentElement !== document.body) document.body.appendChild(d);
+            if (open) {
+              if (!d.open) { try { d.showModal(); } catch { d.setAttribute('open', ''); } }
+            } else if (d.open) {
+              d.close();
+            }
           })()}
-          {/key}
           <dialog
             bind:this={dialog_el}
             class="dk-modal-dialog"
@@ -638,6 +632,7 @@ pkg designkit
               {/if}
             </div>
           </dialog>
+          {/if}
         """
 
       # ── Confirm dialog ─────────────────────────────────────────────────
@@ -753,10 +748,7 @@ pkg designkit
         """
 
       # ── Context menu (⋮) ───────────────────────────────────────────────
-      # open/close is VEIL state. Position + stacking are applied from the trigger
-      # handler (not {@const} during render): table/tile transform stacking and the
-      # status bar otherwise paint above the menu so Delete clicks fall through.
-      # Prefer Popover top-layer; fall back to body portal + fixed position.
+      # open/close is VEIL state; fixed positioning portal is template surface.
       comp ContextMenu
         props
           items: List<Json> = []
@@ -777,26 +769,31 @@ pkg designkit
         fn toggle()
           open = !open
         template """
+          {#if true}
+          {@const _portal = (() => {
+            if (!open || !root_el || !menu_el || typeof document === 'undefined') return;
+            const r = root_el.getBoundingClientRect();
+            document.body.appendChild(menu_el);
+            menu_el.style.position = 'fixed';
+            menu_el.style.top = `${Math.round(r.bottom + 4)}px`;
+            menu_el.style.zIndex = '10000';
+            if (align === 'right') {
+              menu_el.style.right = `${Math.round(window.innerWidth - r.right)}px`;
+              menu_el.style.left = 'auto';
+            } else {
+              menu_el.style.left = `${Math.round(r.left)}px`;
+              menu_el.style.right = 'auto';
+            }
+          })()}
+          {/if}
           <svelte:window
             onclick={(e) => {
               if (!open) return;
               const t = e.target;
               if (root_el?.contains?.(t) || menu_el?.contains?.(t)) return;
               open = false;
-              const menu = menu_el;
-              if (menu && typeof menu.hidePopover === 'function') {
-                try { menu.hidePopover(); } catch (_) {}
-              }
             }}
-            onkeydown={(e) => {
-              if (e.key === 'Escape' && open) {
-                open = false;
-                const menu = menu_el;
-                if (menu && typeof menu.hidePopover === 'function') {
-                  try { menu.hidePopover(); } catch (_) {}
-                }
-              }
-            }}
+            onkeydown={(e) => { if (e.key === 'Escape' && open) open = false; }}
           />
           <div
             class="dk-ctx"
@@ -811,141 +808,45 @@ pkg designkit
               aria-label={aria_label}
               aria-haspopup="menu"
               aria-expanded={open}
-              onclick={(e) => {
-                e.stopPropagation();
-                e.preventDefault();
-                const willOpen = !open;
-                open = willOpen;
-                const menu = menu_el;
-                const root = root_el;
-                const al = align;
-                // After Svelte applies hidden={!open}, place menu above stacking contexts.
-                queueMicrotask(() => {
-                  if (!menu || !root) return;
-                  if (!willOpen) {
-                    if (typeof menu.hidePopover === 'function') {
-                      try { menu.hidePopover(); } catch (_) {}
-                    }
-                    return;
-                  }
-                  const r = root.getBoundingClientRect();
-                  menu.style.position = 'fixed';
-                  menu.style.margin = '0';
-                  menu.style.inset = 'auto';
-                  menu.style.top = `${Math.round(r.bottom + 4)}px`;
-                  menu.style.zIndex = '10000';
-                  menu.style.pointerEvents = 'auto';
-                  menu.style.background = 'color-mix(in srgb, var(--dk-surface-2, #242424) 94%, transparent)';
-                  if (al === 'right') {
-                    menu.style.right = `${Math.round(window.innerWidth - r.right)}px`;
-                    menu.style.left = 'auto';
-                  } else {
-                    menu.style.left = `${Math.round(r.left)}px`;
-                    menu.style.right = 'auto';
-                  }
-                  if (typeof menu.showPopover === 'function') {
-                    try {
-                      if (!menu.matches(':popover-open')) menu.showPopover();
-                      return;
-                    } catch (_) { /* fall through to body portal */ }
-                  }
-                  if (menu.parentElement !== document.body) document.body.appendChild(menu);
-                });
-              }}
+              onclick={(e) => { e.stopPropagation(); e.preventDefault(); open = !open; }}
             >
               <span class="dk-ctx__dots" aria-hidden="true">⋮</span>
             </button>
-            <div
-              bind:this={menu_el}
-              class="dk-ctx__menu"
-              class:dk-ctx__menu--left={align === 'left'}
-              class:dk-ctx__menu--right={align === 'right'}
-              role="menu"
-              popover="manual"
-            >
-              {#if children}
-                {@render children()}
-              {:else}
-                {#each (items || []) as item}
-                  {#if item.href && !item.disabled}
-                    <a
-                      href={item.href}
-                      class="dk-ctx__item"
-                      class:dk-ctx__item--danger={item.danger}
-                      role="menuitem"
-                      tabindex={open ? 0 : -1}
-                      onclick={(e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        open = false;
-                        const menu = menu_el;
-                        if (menu && typeof menu.hidePopover === 'function') {
-                          try { menu.hidePopover(); } catch (_) {}
-                        }
-                        if (item.onSelect) item.onSelect();
-                        else if (item.href) window.location.href = item.href;
-                      }}
-                    >{item.label}</a>
-                  {:else}
-                    <button
-                      type="button"
-                      class="dk-ctx__item"
-                      class:dk-ctx__item--danger={item.danger}
-                      role="menuitem"
-                      disabled={item.disabled}
-                      tabindex={open ? 0 : -1}
-                      onclick={(e) => {
-                        e.stopPropagation();
-                        if (!item.disabled) {
-                          open = false;
-                          const menu = menu_el;
-                          if (menu && typeof menu.hidePopover === 'function') {
-                            try { menu.hidePopover(); } catch (_) {}
-                          }
-                          if (item.onSelect) item.onSelect();
-                        }
-                      }}
-                    >{item.label}</button>
-                  {/if}
-                {/each}
-              {/if}
-            </div>
+            {#if open}
+              <div
+                bind:this={menu_el}
+                class="dk-ctx__menu"
+                class:dk-ctx__menu--left={align === 'left'}
+                class:dk-ctx__menu--right={align === 'right'}
+                role="menu"
+              >
+                {#if children}
+                  {@render children()}
+                {:else}
+                  {#each (items || []) as item}
+                    {#if item.href && !item.disabled}
+                      <a
+                        href={item.href}
+                        class="dk-ctx__item"
+                        class:dk-ctx__item--danger={item.danger}
+                        role="menuitem"
+                        onclick={(e) => { e.preventDefault(); open = false; if (item.onSelect) item.onSelect(); else if (item.href) window.location.href = item.href; }}
+                      >{item.label}</a>
+                    {:else}
+                      <button
+                        type="button"
+                        class="dk-ctx__item"
+                        class:dk-ctx__item--danger={item.danger}
+                        role="menuitem"
+                        disabled={item.disabled}
+                        onclick={() => { if (!item.disabled) { open = false; if (item.onSelect) item.onSelect(); } }}
+                      >{item.label}</button>
+                    {/if}
+                  {/each}
+                {/if}
+              </div>
+            {/if}
           </div>
-        """
-        style """
-          /* Popover top-layer + body portal: beat table/tile stacking without app.css edits */
-          .dk-ctx__menu[popover],
-          .dk-ctx__menu:popover-open {
-            margin: 0;
-            inset: auto;
-            border: 1px solid var(--dk-glass-border, rgba(255, 255, 255, 0.06));
-            background: color-mix(in srgb, var(--dk-surface-2, #242424) 94%, transparent);
-            color: var(--dk-text, #e5e5e5);
-            padding: 0.35rem;
-            min-width: 10rem;
-            border-radius: var(--dk-radius-sm, 0.55rem);
-            box-shadow: var(--dk-shadow-lg, 0 24px 64px rgba(0, 0, 0, 0.55));
-            overflow: visible;
-            pointer-events: auto;
-          }
-          .dk-ctx__item {
-            display: flex;
-            align-items: center;
-            width: 100%;
-            padding: 0.55rem 0.8rem;
-            border: none;
-            background: transparent;
-            color: inherit;
-            font: inherit;
-            text-align: left;
-            text-decoration: none;
-            cursor: pointer;
-            border-radius: 0.4rem;
-          }
-          .dk-ctx__item--danger { color: #f87171; }
-          .dk-ctx__item:hover:not(:disabled) {
-            background: rgba(255, 255, 255, 0.07);
-          }
         """
 
       # ── Collection view ────────────────────────────────────────────────
@@ -974,6 +875,10 @@ pkg designkit
           columns: List<Json> = []
           tile: Opt<Snippet>
           row: Opt<Snippet>
+          # Per-item action controls (View/Edit/Delete …), rendered INLINE inside
+          # each tile (footer) and each table row (trailing cell). Keeps the list
+          # to a single row per item — no separate action strip.
+          row_actions: Opt<Snippet>
           header_actions: Opt<Snippet>
           agent: Json = {}
         state
@@ -1035,21 +940,8 @@ pkg designkit
           }}
           {@const itemHref = (item) => {
             if (!item_href_template) return '';
-            const fieldStr = (v) => {
-              if (v == null) return '';
-              if (typeof v === 'object' && v.value != null) return String(v.value);
-              if (typeof v === 'object') return '';
-              return String(v);
-            };
-            // Prefer explicit id, then nested id.value, then slug (common for repos).
-            const id =
-              fieldStr(item?.id) ||
-              fieldStr(item?.slug) ||
-              '';
-            return String(item_href_template).replace(/\{([a-zA-Z_][a-zA-Z0-9_]*)\}/g, (_, key) => {
-              if (key === 'id') return id;
-              return fieldStr(item?.[key]);
-            });
+            const id = item?.id != null ? String(item.id) : '';
+            return String(item_href_template).split('{id}').join(id);
           }}
           {@const goItem = (item, e) => {
             const href = itemHref(item);
@@ -1154,6 +1046,11 @@ pkg designkit
                     {:else}
                       <pre class="dk-fallback">{JSON.stringify(item, null, 2)}</pre>
                     {/if}
+                    {#if row_actions}
+                      <div class="dk-tile__actions" data-veil-slot="row-actions">
+                        {@render row_actions(item)}
+                      </div>
+                    {/if}
                   </div>
                 {/each}
               </div>
@@ -1166,6 +1063,7 @@ pkg designkit
                         {#each headerLabels as col}
                           <th>{col}</th>
                         {/each}
+                        {#if row_actions}<th class="dk-table__actions-head" aria-label="Actions"></th>{/if}
                       </tr>
                     </thead>
                   {/if}
@@ -1205,6 +1103,11 @@ pkg designkit
                         {:else}
                           <td colspan={headerLabels.length || 1}>
                             <pre class="dk-fallback">{JSON.stringify(item, null, 2)}</pre>
+                          </td>
+                        {/if}
+                        {#if row_actions}
+                          <td class="dk-table__actions" data-veil-slot="row-actions">
+                            {@render row_actions(item)}
                           </td>
                         {/if}
                       </tr>
@@ -1722,10 +1625,10 @@ pkg designkit
           if on_remove != null
             on_remove(index)
           else
-            items = items.toSpliced(index, 1)
-          collapsed = collapsed.toSpliced(index, 1)
+            items.splice(index, 1)
+          collapsed.splice(index, 1)
         fn toggle_collapse(index: Int)
-          collapsed = collapsed.with(index, !collapsed[index])
+          collapsed.splice(index, 1, !collapsed[index])
         template """
           {#if true}
           {@const list = Array.isArray(items) ? items : []}
@@ -1780,4 +1683,424 @@ pkg designkit
             {/if}
           </div>
           {/if}
+        """
+      # ── CRUD resource (declarative list→create→edit→detail→delete) ──────
+      # Declarative composite: describe an entity (fields + API + context) and get
+      # the full CRUD flow built on the designkit primitives — CollectionView,
+      # CreateFormShell/FormSection/FormField, DetailShell/DetailField, ConfirmDialog,
+      # StatusPill, EmptyState. Delete always confirms; empty states always present;
+      # Agent Surface (data-veil-role="crud" + merged data-veil-agent) always emitted.
+      #
+      # Fully structured VEIL: props / state / derived / effect / fn all lower to
+      # TypeScript; only the markup is a raw `template` (as with every designkit comp).
+      comp CrudResource
+        props
+          # Identity
+          entity: Str = ""
+          entity_label: Str = ""
+          entity_label_plural: Str = ""
+
+          # API endpoint templates: "METHOD /path?query" with {id} and {tenant} tokens.
+          api_list: Str = ""
+          api_get: Str = ""
+          api_create: Str = ""
+          api_update: Str = ""
+          api_delete: Str = ""
+          # "" = send the object bare; "agent" = wrap create/update body as { "agent": {...} }.
+          body_wrap_key: Str = ""
+
+          # Field descriptors: [{ id, label, type, required, options?, list?, detail? }].
+          # type: text | textarea | number | select | boolean | json
+          fields: List<Json> = []
+          id_field: Str = "id"
+          status_field: Str = ""
+
+          # Server-managed fields injected into create/update bodies (not shown in the
+          # form). Keep CrudResource backend-agnostic while satisfying entity servers
+          # that require identity + audit columns on the wire.
+          #   tenant_field    — field set to context.tenant on create (e.g. "tenant_id").
+          #   generate_id     — when true, create injects a UUID into id_field if blank.
+          #   created_field   — field stamped with an ISO timestamp on create.
+          #   updated_field   — field stamped with an ISO timestamp on create AND update.
+          #   defaults        — static object merged UNDER the form body on create
+          #                     (e.g. { memory_config: {} }); form values win.
+          # On update the previously-loaded object is merged under the form body so
+          # unedited server fields (id, tenant, created_at, …) survive the round-trip.
+          tenant_field: Str = ""
+          generate_id: Bool = false
+          created_field: Str = ""
+          updated_field: Str = ""
+          defaults: Json = {}
+
+          # View config passed through to CollectionView.
+          view_mode: Str = "both"
+          columns: List<Json> = []
+
+          # Context — { token, tenant, ... } (ContributionContext-shaped). Drives fetch.
+          context: Json = {}
+
+          # Escape-hatch slots (optional overrides). Each still runs inside CrudResource's
+          # managed state / dialogs / API calls / Agent Surface.
+          list_tile: Opt<Snippet>
+          list_row: Opt<Snippet>
+          form_body: Opt<Snippet>
+          detail_body: Opt<Snippet>
+          header_actions: Opt<Snippet>
+
+          # Product Agent Surface binding (merged with the stock crud surface).
+          agent: Json = {}
+        state
+          # mode: list | create | edit | detail
+          items: List<Json> = []
+          loading: Bool = false
+          error: Str = ""
+          mode: Str = "list"
+          inited: Bool = false
+          # True when a browser history entry has been pushed for the current
+          # non-list mode, so the back button (and CreateFormShell's history
+          # back) returns to the list instead of leaving the page.
+          pushed_history: Bool = false
+          selected: Json = {}
+          has_selected: Bool = false
+          form: Json = {}
+          form_error: Str = ""
+          saving: Bool = false
+          confirm_open: Bool = false
+          delete_target: Json = {}
+          deleting: Bool = false
+        derived
+          label_singular: Str = entity_label != "" ? entity_label : (entity != "" ? entity : "Item")
+          label_plural: Str = entity_label_plural != "" ? entity_label_plural : label_singular + "s"
+          create_label: Str = "Create " + label_singular
+          empty_title: Str = "No " + label_plural + " yet"
+          empty_desc: Str = api_create != "" ? "Create your first " + label_singular + " to get started." : ""
+          has_get: Bool = api_get != ""
+          has_create: Bool = api_create != ""
+          has_update: Bool = api_update != ""
+          has_delete: Bool = api_delete != ""
+          has_row_actions: Bool = has_get || has_update || has_delete
+          list_columns: List<Json> = (columns != null && columns.length > 0) ? columns : fields.filter((f) => f && f.id && f.list != false).map((f) => column_of(f))
+          detail_fields: List<Json> = fields.filter((f) => f && f.id && f.detail != false)
+          required_values: List<Json> = fields.filter((f) => f && f.required).map((f) => form[f.id])
+          list_agent: Json = {intent: agent.intent, entity: entity, entityLabel: label_singular}
+          veil_agent: Json = {version: 1, role: "crud", stock: {component: "CrudResource", purpose: "Declarative CRUD flow (list/create/edit/detail/delete) over an entity descriptor", howTo: ["List renders on mount; the primary action creates a new item", "Row actions (View/Edit/Delete) drive detail/edit and confirm-delete", "Delete always routes through a confirm dialog"]}, product: {intent: agent.intent != null ? agent.intent : "manage-" + label_plural, entity: entity, entityLabel: label_singular, actions: agent.actions, api: {list: api_list, get: api_get, create: api_create, update: api_update, delete: api_delete}, fields: fields, notes: agent.notes}, runtime: {mode: mode, loading: loading, error: error, itemCount: items.length, confirmOpen: confirm_open}}
+        effect load_on_mount
+          on_mount_init()
+        async fn on_mount_init()
+          if inited == false
+            inited = true
+            mode = "list"
+          if api_list != ""
+            await load_list()
+        # ── Descriptor + transport helpers ─────────────────────────────────
+        fn column_of(f: Json) -> Json
+          ret {key: f.id, label: f.label != null ? f.label : f.id, cell: (status_field != "" && f.id == status_field) ? "pill" : ""}
+        fn id_of(item: Json) -> Str
+          ret item != null ? String(item[id_field]) : ""
+        fn method_of(tpl: Str) -> Str
+          mut parts = tpl.trim().split(" ")
+          ret parts.length > 1 ? parts[0] : "GET"
+        fn path_of(tpl: Str, id: Str) -> Str
+          mut raw = tpl.trim()
+          mut sp = raw.indexOf(" ")
+          mut path = sp > 0 ? raw.slice(sp + 1).trim() : raw
+          mut tenant = context.tenant != null ? String(context.tenant) : ""
+          path = path.split("{id}").join(id)
+          path = path.split("{tenant}").join(tenant)
+          ret path
+        fn wrap_body(obj: Json) -> Json
+          if body_wrap_key == ""
+            ret obj
+          mut wrapped = {}
+          wrapped[body_wrap_key] = obj
+          ret wrapped
+        fn unwrap(data: Json) -> Json
+          ret (body_wrap_key != "" && data != null && data[body_wrap_key] != null) ? data[body_wrap_key] : data
+        fn coerce_list(data: Json) -> List<Json>
+          mut arr = Array.isArray(data) ? data : (data != null && Array.isArray(data.items) ? data.items : (data != null && Array.isArray(data.results) ? data.results : []))
+          ret arr
+        fn blank_form() -> Json
+          mut f = {}
+          fields.forEach((fld) => set_field(f, fld, fld.type == "boolean" ? false : ""))
+          ret f
+        fn set_field(target: Json, fld: Json, value: Json)
+          if fld != null && fld.id != null
+            target[fld.id] = value
+        fn fill_form(item: Json) -> Json
+          mut f = {}
+          fields.forEach((fld) => set_field(f, fld, read_field(item, fld)))
+          ret f
+        fn read_field(item: Json, fld: Json) -> Json
+          mut v = item != null ? item[fld.id] : null
+          ret (fld.type == "json" && v != null) ? JSON.stringify(v, null, 2) : (v != null ? v : (fld.type == "boolean" ? false : ""))
+        fn build_body() -> Json
+          mut obj = {}
+          fields.forEach((fld) => set_field(obj, fld, coerce_out(fld, form[fld.id])))
+          ret obj
+        fn new_id() -> Str
+          ret String(Date.now()) + "-" + Math.random().toString(36).slice(2, 10) + Math.random().toString(36).slice(2, 10)
+        fn now_iso() -> Str
+          ret new Date().toISOString()
+        # Create body: static defaults, then identity/tenant/audit columns, then the
+        # form values (which always win over defaults) and fresh timestamps.
+        fn create_body() -> Json
+          mut obj = Object.assign({}, defaults != null ? defaults : {})
+          mut has_id = obj[id_field] != null && obj[id_field] != ""
+          if generate_id == true && has_id == false
+            obj[id_field] = new_id()
+          if tenant_field != "" && context != null && context.tenant != null
+            obj[tenant_field] = context.tenant
+          Object.assign(obj, build_body())
+          if created_field != ""
+            obj[created_field] = now_iso()
+          if updated_field != ""
+            obj[updated_field] = now_iso()
+          ret obj
+        # Update body: preserve the loaded object, overlay edited form values, and
+        # bump the updated timestamp. id/tenant/created_at survive untouched.
+        fn update_body() -> Json
+          mut obj = Object.assign({}, has_selected && selected != null ? selected : {})
+          Object.assign(obj, build_body())
+          if updated_field != ""
+            obj[updated_field] = now_iso()
+          ret obj
+        fn coerce_out(fld: Json, v: Json) -> Json
+          if fld.type == "number"
+            ret (v == "" || v == null) ? null : Number(v)
+          if fld.type == "boolean"
+            ret v == true
+          if fld.type == "json"
+            ret v != "" ? JSON.parse(v) : null
+          ret v
+        # ── API calls (method dispatched to the ApiClient shim) ────────────
+        async fn api_send(method: Str, url: Str, body: Json) -> Json
+          if method == "POST"
+            ret await ApiClient.mutate(url, body)
+          if method == "PUT"
+            ret await ApiClient.put(url, body)
+          if method == "DELETE"
+            ret await ApiClient.delete(url)
+          ret await ApiClient.fetch(url, {})
+        async fn load_list()
+          if api_list == ""
+            ret
+          loading = true
+          error = ""
+          mut url = path_of(api_list, "")
+          mut method = method_of(api_list)
+          items = coerce_list(await api_send(method, url, null))
+          loading = false
+        # ── Handlers ───────────────────────────────────────────────────────
+        # Browser-history integration: entering a sub-mode (create/edit/detail)
+        # pushes a SAME-PATH history entry (only a hash marker is added, so the
+        # harness shell router — which routes on pathname — does not switch
+        # contributions). The browser back button and the shells' history-back
+        # pop that entry, firing onpopstate → reset_to_list(). Programmatic
+        # returns (Cancel / after submit / detail Back) go through back_to_list()
+        # which consumes the pushed entry via history.back() (keeping history
+        # clean) or resets directly when nothing was pushed.
+        #
+        # NOTE: the window.history.pushState / .back() calls live INLINE in the
+        # template (raw JS) because codegen cannot type external window.history
+        # calls inside structured fn bodies. These structured fns only mutate
+        # component state; the template handlers pair each with the history op.
+        #
+        # mark_pushed: record that a history entry now exists for the sub-mode.
+        fn mark_pushed()
+          pushed_history = true
+        # set_mode: assign the sub-mode (history op done by the template caller).
+        fn set_mode(next: Str)
+          mode = next
+        # Reset all sub-mode state back to the list view (no history change).
+        fn reset_to_list()
+          pushed_history = false
+          mode = "list"
+          selected = {}
+          has_selected = false
+          form_error = ""
+        # Prepare create-form state (template pushes history + sets mode).
+        fn prep_create()
+          selected = {}
+          has_selected = false
+          form = blank_form()
+          form_error = ""
+        # Prepare edit-form state (template pushes history + sets mode).
+        async fn prep_edit(item: Json)
+          form_error = ""
+          mut full = item
+          if api_get != ""
+            full = unwrap(await api_send("GET", path_of(api_get, id_of(item)), null))
+          selected = full
+          has_selected = true
+          form = fill_form(full)
+        # Prepare detail state (template pushes history + sets mode).
+        async fn prep_detail(item: Json)
+          mut full = item
+          if api_get != ""
+            loading = true
+            full = unwrap(await api_send("GET", path_of(api_get, id_of(item)), null))
+            loading = false
+          selected = full
+          has_selected = true
+        # Performs the create/update API call and reloads the list. Does NOT
+        # change mode/history — the template on_submit arrow calls this and then
+        # (on success) history.back(), which fires onpopstate → reset_to_list().
+        async fn submit_form()
+          if saving == true
+            ret
+          form_error = ""
+          saving = true
+          if mode == "edit"
+            await api_send("PUT", path_of(api_update, id_of(selected)), wrap_body(update_body()))
+          else
+            await api_send("POST", path_of(api_create, ""), wrap_body(create_body()))
+          await load_list()
+          saving = false
+        fn ask_delete(item: Json)
+          delete_target = item
+          confirm_open = true
+        async fn confirm_delete()
+          if deleting == true
+            ret
+          if api_delete == ""
+            confirm_open = false
+            ret
+          deleting = true
+          await api_send("DELETE", path_of(api_delete, id_of(delete_target)), null)
+          await load_list()
+          deleting = false
+          confirm_open = false
+          delete_target = {}
+        fn detail_value(fld: Json) -> Str
+          mut v = has_selected ? selected[fld.id] : null
+          ret v != null ? String(v) : ""
+        template """
+          <svelte:window onpopstate={() => { if (mode !== 'list') reset_to_list(); }} />
+          <div
+            class="dk-crud"
+            data-veil-role="crud"
+            data-veil-agent={JSON.stringify(veil_agent)}
+          >
+            {#if mode !== 'create' && mode !== 'edit' && mode !== 'detail'}
+              <CollectionView
+                title={label_plural}
+                items={items}
+                loading={loading}
+                error={error}
+                view_mode={view_mode}
+                columns={list_columns}
+                primary_label={has_create ? create_label : ''}
+                empty_title={empty_title}
+                empty_description={empty_desc}
+                empty_action_label={has_create ? create_label : ''}
+                tile={list_tile}
+                row={list_row}
+                agent={list_agent}
+              >
+                {#snippet header_actions()}
+                  {#if header_actions}{@render header_actions()}{/if}
+                  {#if has_create}
+                    <button type="button" class="btn-primary" onclick={() => { prep_create(); if (!pushed_history && typeof window !== 'undefined') { mark_pushed(); window.history.pushState({ dkCrud: 'create' }, '', window.location.pathname + '#create'); } set_mode('create'); }} data-veil-action="create">
+                      <span aria-hidden="true">+</span> {create_label}
+                    </button>
+                  {/if}
+                {/snippet}
+                {#snippet row_actions(item)}
+                  {#if has_get}
+                    <button type="button" class="btn-ghost" onclick={async () => { await prep_detail(item); if (!pushed_history && typeof window !== 'undefined') { mark_pushed(); window.history.pushState({ dkCrud: 'detail' }, '', window.location.pathname + '#detail'); } set_mode('detail'); }} data-veil-action="view">View</button>
+                  {/if}
+                  {#if has_update}
+                    <button type="button" class="btn-ghost" onclick={async () => { await prep_edit(item); if (!pushed_history && typeof window !== 'undefined') { mark_pushed(); window.history.pushState({ dkCrud: 'edit' }, '', window.location.pathname + '#edit'); } set_mode('edit'); }} data-veil-action="edit">Edit</button>
+                  {/if}
+                  {#if has_delete}
+                    <button type="button" class="btn-ghost dk-crud__danger" onclick={() => ask_delete(item)} data-veil-action="delete">Delete</button>
+                  {/if}
+                {/snippet}
+              </CollectionView>
+
+            {:else if mode === 'create' || mode === 'edit'}
+              <CreateFormShell
+                title={(mode === 'edit' ? 'Edit ' : 'Create ') + label_singular}
+                mode={mode}
+                back_behavior="history"
+                submit_label={mode === 'edit' ? 'Save' : 'Create'}
+                saving_label={mode === 'edit' ? 'Saving…' : 'Creating…'}
+                saving={saving}
+                error={form_error}
+                required_values={required_values}
+                on_submit={async () => { await submit_form(); if (pushed_history && typeof window !== 'undefined') { window.history.back(); } else { reset_to_list(); } }}
+              >
+                {#snippet header_actions()}
+                  <button type="button" class="btn-ghost" onclick={() => { if (pushed_history && typeof window !== 'undefined') { window.history.back(); } else { reset_to_list(); } }} data-veil-action="cancel">Cancel</button>
+                {/snippet}
+                {#if form_body}
+                  {@render form_body(form)}
+                {:else}
+                  <FormSection title={label_singular}>
+                    {#each fields as fld (fld.id)}
+                      {#if fld && fld.id}
+                        <FormField
+                          id={fld.id}
+                          label={fld.label || fld.id}
+                          input_type={fld.type === 'textarea' ? 'textarea' : fld.type === 'select' ? 'select' : fld.type === 'number' ? 'number' : 'text'}
+                          required={!!fld.required}
+                          options={fld.options || []}
+                          bind:value={form[fld.id]}
+                        />
+                      {/if}
+                    {/each}
+                  </FormSection>
+                {/if}
+              </CreateFormShell>
+
+            {:else if mode === 'detail'}
+              <DetailShell
+                title={has_selected && (selected.name ?? selected[id_field]) ? String(selected.name ?? selected[id_field]) : label_singular}
+                back_behavior="history"
+                loading={loading}
+                error={error}
+              >
+                {#snippet header_actions()}
+                  {#if has_update}
+                    <button type="button" class="btn-outline" onclick={async () => { await prep_edit(selected); set_mode('edit'); }} data-veil-action="edit">Edit</button>
+                  {/if}
+                  {#if has_delete}
+                    <button type="button" class="btn-danger" onclick={() => ask_delete(selected)} data-veil-action="delete">Delete</button>
+                  {/if}
+                  <button type="button" class="btn-ghost" onclick={() => { if (pushed_history && typeof window !== 'undefined') { window.history.back(); } else { reset_to_list(); } }} data-veil-action="back">Back</button>
+                {/snippet}
+                {#if detail_body}
+                  {@render detail_body(selected)}
+                {:else}
+                  <FormSection>
+                    {#each detail_fields as fld (fld.id)}
+                      {#if status_field && fld.id === status_field}
+                        <DetailField id={fld.id} label={fld.label || fld.id}>
+                          <StatusPill label={detail_value(fld)} />
+                        </DetailField>
+                      {:else}
+                        <DetailField
+                          id={fld.id}
+                          label={fld.label || fld.id}
+                          value={detail_value(fld)}
+                          pre={fld.type === 'json'}
+                          mono={fld.type === 'json'}
+                        />
+                      {/if}
+                    {/each}
+                  </FormSection>
+                {/if}
+              </DetailShell>
+            {/if}
+
+            <ConfirmDialog
+              bind:open={confirm_open}
+              title={'Delete ' + label_singular}
+              message={'Delete this ' + label_singular + '? This cannot be undone.'}
+              confirm_label="Delete"
+              variant="danger"
+              busy={deleting}
+              on_confirm={confirm_delete}
+            />
+          </div>
         """

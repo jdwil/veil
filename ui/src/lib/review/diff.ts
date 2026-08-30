@@ -1,4 +1,4 @@
-import type { FileDiff, FileDiffHunk } from '$lib/ide/prWizard';
+import type { FileDiff, FileDiffHunk } from '$lib/review/types';
 
 /** Project-relative path from a session workdir or repo path. */
 export function reviewRelPath(path: string): string {
