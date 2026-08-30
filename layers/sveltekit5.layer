@@ -160,24 +160,35 @@ pkg sveltekit5 v1
             const p = (params ?? {}) as Record<string, unknown>;
             for (const [k, v] of Object.entries(p)) if (v != null && v !== '') u.searchParams.set(k, String(v));
             const r = await fetch(u.toString(), { headers: authHeaders() });
-            if (!r.ok) throw new Error(await r.text());
+            if (!r.ok) { const e: any = new Error(await r.text()); e.status = r.status; throw e; }
             return await r.json();
           },
           mutate: async (endpoint: string, body: any) => {
             const r = await fetch(endpoint, { method: 'POST', headers: authHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify(body) });
-            if (!r.ok) throw new Error(await r.text());
+            if (!r.ok) { const e: any = new Error(await r.text()); e.status = r.status; throw e; }
             const t = await r.text(); return t ? JSON.parse(t) : null;
           },
           put: async (endpoint: string, body: any) => {
             const r = await fetch(endpoint, { method: 'PUT', headers: authHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify(body) });
-            if (!r.ok) throw new Error(await r.text());
+            if (!r.ok) { const e: any = new Error(await r.text()); e.status = r.status; throw e; }
             const t = await r.text(); return t ? JSON.parse(t) : null;
           },
           delete: async (endpoint: string) => {
             const r = await fetch(endpoint, { method: 'DELETE', headers: authHeaders() });
-            if (!r.ok) throw new Error(await r.text());
+            if (!r.ok) { const e: any = new Error(await r.text()); e.status = r.status; throw e; }
             const t = await r.text(); return t ? JSON.parse(t) : null;
           },
+        };
+
+        // JWT expiry check: true if the stored token is missing/expired (with 30s skew).
+        g.token_expired = (token: string) => {
+          if (!token) return true;
+          try {
+            const payload = JSON.parse(atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
+            const exp = payload.exp;
+            if (!exp) return false; // no exp claim → treat as non-expiring
+            return (exp * 1000) <= (Date.now() + 30000);
+          } catch { return true; } // malformed → treat as expired
         };
 
         // OAuth2 Authorization-Code + PKCE (generic).
@@ -246,6 +257,7 @@ pkg sveltekit5 v1
         declare function oauth_implicit_tokens(): Record<string, string>;
         declare function set_auth_token(t: string): void;
         declare function get_auth_token(): string;
+        declare function token_expired(token: string): boolean;
         declare function clear_url_hash(): void;
         declare function clear_auth_token(): void;
       """
