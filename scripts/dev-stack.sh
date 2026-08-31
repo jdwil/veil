@@ -25,12 +25,22 @@ BACKEND_LOG="${BACKEND_LOG:-/tmp/veil-product-host.log}"
 UI_LOG="${UI_LOG:-/tmp/veil-ui.log}"
 
 export AWS_REGION="${AWS_REGION:-us-west-2}"
-export VEIL_DDB_TABLE="${VEIL_DDB_TABLE:-veil-runtime-dev}"
-export BUCKET="${BUCKET:-veil-runtime-dev}"
-export VEIL_S3_BUCKET="${VEIL_S3_BUCKET:-$BUCKET}"
-# Production-like: IDE source R/W via DDB META + S3 only (no veil-projects disk).
-# Override with VEIL_SOURCE_MODE=prefer_s3|disk only when intentionally testing hybrid/local.
-export VEIL_SOURCE_MODE="${VEIL_SOURCE_MODE:-s3}"
+if [[ "${VEIL_PLATFORM_LOCAL:-}" == "1" || "${VEIL_PLATFORM_LOCAL:-}" == "true" || "${VEIL_PLATFORM_LOCAL:-}" == "local" ]]; then
+  # Personal host: local SQLite/JSON catalog + GitHub origin. Do not default to DashLX DDB/S3.
+  export VEIL_PLATFORM_LOCAL=1
+  export VEIL_SOURCE_MODE="${VEIL_SOURCE_MODE:-local}"
+  export VEIL_PROJECTS_DIR="${VEIL_PROJECTS_DIR:-$HOME/.veil/personal/projects}"
+  unset AWS_PROFILE || true
+  unset VEIL_DDB_TABLE || true
+  unset BUCKET || true
+  unset VEIL_S3_BUCKET || true
+else
+  export VEIL_DDB_TABLE="${VEIL_DDB_TABLE:-veil-runtime-dev}"
+  export BUCKET="${BUCKET:-veil-runtime-dev}"
+  export VEIL_S3_BUCKET="${VEIL_S3_BUCKET:-$BUCKET}"
+  # Production-like: IDE source R/W via DDB META + S3 only (no veil-projects disk).
+  export VEIL_SOURCE_MODE="${VEIL_SOURCE_MODE:-s3}"
+fi
 export VEIL_SOURCE_BRANCH="${VEIL_SOURCE_BRANCH:-main}"
 # Platform language packs (ddd, di, …) — monorepo layers/ for local; also seedable to S3+DDB.
 export VEIL_LAYERS_DIR="${VEIL_LAYERS_DIR:-$ROOT/layers}"
@@ -57,7 +67,9 @@ export VEIL_ACP_ARGS="${VEIL_ACP_ARGS:-acp --trust-all-tools}"
 # Dedicated agent with mind-palace + jira + veil-ide-tools (see config/kiro-agent-veil.json).
 # Does not modify hive.json — install as ~/.kiro/agents/veil.json
 export VEIL_ACP_AGENT="${VEIL_ACP_AGENT:-veil}"
-export VEIL_ACP_CWD="${VEIL_ACP_CWD:-$ROOT}"
+# Empty sandbox — not the monorepo, not the session checkout. Agent uses MCP.
+# Optional conversion source: VEIL_REFERENCE_DIRS (read-only MCP reference_*).
+export VEIL_ACP_CWD="${VEIL_ACP_CWD:-${TMPDIR:-/tmp}/veil-acp-cwd}"
 export VEIL_RUNTIME_PROXY="${VEIL_RUNTIME_PROXY:-http://127.0.0.1:$BACKEND_PORT}"
 
 kill_port() {
@@ -145,7 +157,7 @@ smoke() {
 status() {
   echo "ports:"
   ss -tlnp 2>/dev/null | grep -E ":(${BACKEND_PORT}|${UI_PORT}|3000|3001|3210)\\b" || echo "  (none matching)"
-  echo "env: AWS_PROFILE=$AWS_PROFILE TABLE=$VEIL_DDB_TABLE BUCKET=$BUCKET SOURCE_MODE=$VEIL_SOURCE_MODE BRANCH=${VEIL_SOURCE_BRANCH:-main} SESSIONS=${VEIL_SESSIONS:-} WS_ROOT=${VEIL_WS_ROOT:-} PROXY=$VEIL_RUNTIME_PROXY"
+  echo "env: PLATFORM_LOCAL=${VEIL_PLATFORM_LOCAL:-} AWS_PROFILE=${AWS_PROFILE:-off} TABLE=${VEIL_DDB_TABLE:-off} BUCKET=${BUCKET:-off} SOURCE_MODE=$VEIL_SOURCE_MODE BRANCH=${VEIL_SOURCE_BRANCH:-main} SESSIONS=${VEIL_SESSIONS:-} WS_ROOT=${VEIL_WS_ROOT:-} PROXY=$VEIL_RUNTIME_PROXY"
 }
 
 cmd="${1:-status}"

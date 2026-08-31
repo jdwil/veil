@@ -1,353 +1,137 @@
 # VEIL — Visual Engineering Intermediate Language
 
-## Purpose
+This is the product brief. Language mechanics live in
+[`docs/LANGUAGE.md`](docs/LANGUAGE.md). Codegen lives in
+[`docs/CODEGEN_TEMPLATES.md`](docs/CODEGEN_TEMPLATES.md). Repo layout is in
+[`README.md`](README.md). The examples here are not the only legal
+architecture.
 
-VEIL is a **token-efficient, indentation-based intermediate language** for
-software that agents author and humans oversee. Licensed **AGPL-3.0-only**
-(copyright JD Williams, jd@unsung-operators.com). Hosted ProductHost and
-commercial licenses: same address. It compiles to real target
-languages (Rust today; TypeScript/Svelte and others on the roadmap) and
-presents as an interactive structural viewer/editor.
+VEIL is a small, indentation-based IR that agents write and humans oversee.
+It compiles to real languages (Rust today; TypeScript and others on the
+road) and shows up as a structural viewer you can actually review.
 
-VEIL is not low-code and not “just another LLM prompt format.” It is a stable
-IR with:
+Licensed **AGPL-3.0-only** (JD Williams, jd@unsung-operators.com). Hosted
+ProductHost and commercial licenses: same address.
 
-- a small, fixed core grammar
-- **layers** that teach domain and platform vocabulary at runtime
-- **codegen backends** that lower to real projects
-- a **visual surface** for human review of structure and critical logic
+The engine has a fixed core grammar. **Layers** teach domain and platform
+words at runtime. **Backends** lower to real projects. The **runtime** is
+where a human watches the work happen and signs it off.
 
-The long-term aim is **expressiveness parity**: any program expressible in
-major application languages (Rust, TypeScript/Svelte, Swift, Kotlin, …) can
-be represented in VEIL and lowered with preserved semantics. That is
-*expressiveness* parity — not keyword-for-keyword clones of each host
-language.
+The long bet is **expressiveness parity**: anything you can say in a major
+application language can be represented in VEIL and lowered with the same
+meaning. Semantic parity — not a keyword twin of Rust or TypeScript.
 
-Authorship is **visible**. The inner agent is the sole primary author of
-changes inside the VEIL runtime. Humans observe, guide in natural language,
-and sign off — they do not reconstruct what happened from git history, logs,
-or extra panes.
+## Who does what
 
-## Product Intent
-
-| Role | Responsibility |
-|------|----------------|
-| **Agents** (primary authors) | Write `.veil` quickly and cheaply in tokens; drive the runtime through the same surfaces the human sees |
-| **Humans** (primary reviewers) | Observe, guide in natural language, and **sign off** on topology + critical bodies — never line-by-line LoC or forensic reconstruction |
-| **Engine** | Parse, check, lower — with **zero domain knowledge** |
-| **Layers** | Domain/platform vocabulary, visuals, prompts, codegen opinions |
-| **Runtime** | Living canvas: wire generated artifacts; make every agent mutation visible, reviewable, and sign-offable |
-
-### Default daily driver (RT-020)
+| Role | Job |
+|------|-----|
+| Agents | Primary authors. Write `.veil` cheaply; drive the runtime through the same surfaces the human sees. |
+| Humans | Primary reviewers. Watch, steer in English, sign off on topology and critical bodies. Do not reconstruct the session from git blame. |
+| Engine | Parse, check, lower. Zero domain knowledge. |
+| Layers | Vocabulary, visuals, prompts, codegen opinions. |
+| Runtime | Where the human watches. Mutations show up, get reviewed, get signed off. |
 
 ```bash
 veil serve .          # project-root IDE: graph, check, edit, agent
 veil check path.veil  # machine loop
-veil gen path.veil    # lower to target project
+veil gen path.veil    # lower to a target project
 ```
 
-Optional local platform (fs+sqlite / cloud adapters) is power tooling — not a
-gate. App harnesses are VEIL-authored (`@main`); see `docs/HARNESS.md`.
-ProductHost: `scripts/dev-stack.sh` (`ui/` + `crates/veil-runtime`).
-
-### Dual feedback loops (both first-class)
-
-| Loop | Actor | Must be fast and honest |
-|------|-------|-------------------------|
-| **Machine** | Agent | `parse → check (types, constraints, target capabilities) → codegen → (optional) target compile` |
-| **Human** | Reviewer | Topology + critical bodies, presented as an **outstanding change set**, closed by **explicit sign-off** |
-
-Graphics alone do not speed agents. **Diagnostics and deterministic codegen**
-are half the product. Canvas review plus recorded sign-off is the other half.
-Sign-off is the human half of the dual loop for any mutation that affects the
-system of record.
-
-### Human review depth
-
-Humans should typically review:
-
-1. **Topology** — packages, modules/contexts, groups, constructs, ports, wiring, expose contracts, annotations
-2. **Critical bodies** — guards, orchestration steps, adapter implementations, other high-risk expressions
-
-They should **not** need to read every expression or all generated target code
-for routine approval. Generated code remains available when drilling down
-(performance, odd bugs, distrust). Success is *rarely* needing it, not
-*never*.
-
-Viewer UX prioritizes **read, navigate, restructure, and diff** of topology
-and critical bodies. Dense expression editing may stay text or hybrid;
-full click-to-build of every expression kind is not the primary human path.
-
-Topology diffs, critical-body diffs, file-level diffs, and the agent’s
-rationale must be one click or one agent utterance away. Generated target
-code remains available for deep inspection but is **not** the default review
-surface.
-
-## Agent-Driven Runtime UX (Visible Agency)
-
-**Invariant:** The inner agent is the sole primary author of changes inside
-the VEIL runtime. Humans observe, guide via natural language, and sign off.
-They do not dig through git history, logs, or multiple panes to understand
-what happened.
-
-The **agent pane** is the primary conversation surface. The rest of the
-runtime is the living canvas the agent paints on in real time.
-
-### Core principles
-
-**All mutations are agent-driven.** Creating a project, editing files,
-opening the IDE, bouncing between projects, generating code, creating PRs —
-the inner agent performs these through the same surfaces and APIs the UI
-itself uses, or through first-class agent tools that the UI then reflects.
-There is no parallel “agent backend” that mutates state invisibly.
-
-**Actions are visible as they happen.** Every significant agent action must
-produce live, understandable UI feedback so a human watching the runtime can
-follow the work without cognitive overhead. The pace must be fast enough to
-feel productive yet slow enough that a human can parse intent and outcome in
-real time.
-
-**Human-speed simulation is required** for form and control interactions —
-a product requirement, not polish. When the agent fills a form, types into
-an input, selects options, or presses a button, the UI animates as if a
-careful human were performing the same actions:
-
-- Simulated typing (character-by-character or word-by-word with realistic cadence)
-- Focus movement and hover states
-- Button press feedback (brief scale/flash/pulse + disabled state while the request is in flight)
-- Progress indicators on multi-step flows
-
-Default to a cadence a human can comfortably track. A “fast-forward / skip
-animation” escape exists only for power users and automated tests.
-
-**IDE auto-open and live reflection.** The moment the agent begins editing
-files that belong to a project, the corresponding IDE surface (viewer /
-structural editor) must open or come to the foreground. Subsequent edits
-appear live so the human sees topology and critical bodies change in real
-time. Outstanding (unreviewed) diffs must be visually distinct.
-
-**Multi-project awareness is first-class.** VEIL makes small libraries,
-layers, and micro-services cheap to create, so a single coding session
-frequently touches several projects. The agent must switch context fluidly.
-The Projects page (and any project-list surface) surfaces at a glance:
-
-- Which projects have been touched in the current session / by the current agent turn
-- Which projects have outstanding unreviewed changes
-- A lightweight “needs sign-off” indicator
-
-### Implementation law (agents and implementers)
-
-- Prefer the real UI contracts (`data-veil-agent` / surface metadata,
-  structured edit APIs, the `/api/repos` family, Focus + Intent + Present)
-  over inventing parallel mutation paths.
-- Every mutating tool must emit a corresponding UI event **or** call the
-  same endpoints the UI uses, so the visual surface stays the single source
-  of truth for *what the human sees*.
-- Git remains the source of truth for *history* (commits, branches, merge).
-  Do not reinvent a second commit graph, a second status model, or a
-  GitHub facsimile. Leverage git; put product energy into visibility and
-  sign-off, which git does not provide.
-- The agent **announces intent before acting** (“I am going to create a new
-  project called X and then open its IDE”) and then performs the visible
-  sequence.
-
-## Change Surfacing & Human Sign-Off
-
-**Goal:** A human must never reverse-engineer what the agent did. The
-system (and the agent) must surface exactly what changed, why, and request
-explicit sign-off.
-
-**Outstanding changes are a product surface**, not an afterthought of
-`git status`. Git answers history. Review state answers “has a human signed
-this off?”
-
-Every unreviewed mutation (file edits, new projects, layer changes,
-generated artifacts, PR creation, …) produces a durable, queryable
-**outstanding change set**, visible on:
-
-- The Projects list (badges / indicators per project)
-- The project detail / IDE surface
-- A dedicated review / sign-off surface the agent can navigate the user to
-
-**The agent itself presents the change set.** After a coherent unit of work
-the agent says and renders the equivalent of:
-
-> Here is exactly what I did and why.
->
-> - Created project *foo*
-> - Added layer *bar* and three constructs
-> - Edited `src/main.veil` (diff + rationale)
-> - Generated Rust for the new service
->
-> I need you to sign off on this set before I proceed / merge / deploy.
-
-**Sign-off is explicit and recorded.** Approval is a first-class action
-(button, command, or agent-mediated confirmation) that clears
-outstanding-change markers and writes an audit record suitable for SOC 2.
-Rejection and **partial approval** are supported; remaining items stay
-marked outstanding.
-
-**Session and multi-project roll-up.** At the end of a session (or on
-demand) the agent can produce a consolidated “everything I touched” view
-across projects, with a single sign-off path or per-project sign-offs.
-
-## Inner Agent Capabilities
-
-The inner agent must possess (or be able to acquire via tools / context):
-
-- Full awareness of the current Projects list, open IDEs, outstanding
-  change sets, and the agent-surface contracts published by the UI
-- Tools that correspond **1:1** with user-visible actions (create project,
-  open IDE, edit file, run check/gen, create PR, …) and that trigger the
-  visible simulation above
-- The ability to bounce between projects without losing context, updating
-  Projects-page indicators as it goes
-- Enough domain knowledge (via layers, stubs, and the existing dual-loop
-  feedback) to perform **real work**, not just UI puppetry
-
-## Expressiveness Parity
-
-| Meaning | Status |
-|---------|--------|
-| **Expressiveness parity** — any program representable in core IR + layers; backends preserve semantics | **Mission** |
-| **Surface syntax parity** — every host-language keyword has a VEIL twin | **Rejected** (explodes the core; kills the small-engine story) |
-| **Idiomatic output parity** — generated code always looks hand-written | **Per-target quality bar**, not a blocker |
-
-Escape hatches (raw template/style blocks, untyped `Json` boundaries, stub-only
-calls, FFI) are **temporary debt** with a retirement plan — not a permanent
-second language. Agents will dump complexity into them unless the system
-surfaces that debt in diagnostics and review.
-
-Platform and framework APIs (Svelte, SwiftUI, AWS, …) live in **layers and
-stubs**, never in the engine core.
-
-### Semantic substrate (direction)
-
-Today the core is a rich expression AST with Rust as the primary lowering
-target. Full multi-target parity requires an honest **semantic IR** backends
-interpret, including axes such as:
-
-- errors / effects (`Res!`, throws, result types)
-- async model
-- ownership / sharing (capabilities, not forced Rust lifetimes in source)
-- concurrency bounds
-- modules, packages, visibility
-
-Each backend should declare a **capability matrix**. Unsupported constructs
-fail at **check time** with actionable diagnostics — never silent wrong
-codegen.
-
-## Intelligent Codegen (Non-Negotiable)
-
-VEIL is **not** a dumb token-mapping tool. It does not template-stamp VEIL
-keywords into target syntax. The codegen is the product's intellectual core —
-it must **understand** what the VEIL source means and produce target code that
-a skilled human would write for that meaning.
-
-### What "intelligent" means
-
-| Property | Dumb mapper | Intelligent lowering |
-|----------|-------------|---------------------|
-| Ownership | Clone everything | Borrow when provably safe, move on last use, clone only when necessary |
-| Error handling | Wrap all calls in `.unwrap()` or `?` | Propagate errors through the natural channel for the call context (closures → map_err, async → ?, infallible → no annotation) |
-| Type specificity | `impl Trait` / `_` everywhere | Concrete types when known, generic bounds when polymorphism is intentional |
-| Concurrency | `Arc<Mutex<_>>` on every shared field | Interior mutability only when mutation is required; shared references otherwise |
-| Idiom | Syntactically valid | Passes clippy without suppression; reads like hand-written code by a domain expert |
-| Layer semantics | Same struct emission regardless of layer | ValueObject → derives `Eq, Hash`, no `&mut self` methods; Entity → identity-bearing; Event → `Clone + Serialize`, immutable |
-| Expression composition | Render sub-expressions to strings then concatenate | Compose a typed expression tree, then emit; never patch rendered text after the fact |
-
-### The lowering pipeline (target architecture)
-
-```
-VEIL source (parse)
-     ↓
-  AST + built-in analysis  ←─── use_count, in_loop, in_closure,
-     ↓                          type resolution (universal, target-agnostic)
-  Layer-declared passes    ←─── type mapping, ownership, null safety,
-     ↓                          async marking — rules read analysis,
-     ↓                          annotate/transform the AST
-  Emit pass (templates)    ←─── layer templates render annotated AST
-     ↓                          to target text, reading pass annotations
-  Generated project files
-```
-
-The engine provides the pass executor, rule evaluator, and built-in analysis.
-ALL target-language intelligence lives in layers. Adding a new target = writing
-a .layer file with type mapping + ownership/safety passes + emit templates.
-
-Each pass declares rules with predicates (`when: expr.use_count > 1 &&
-!expr.type.is_copy`) and actions (`annotate: ownership = "clone"`). Passes
-compose across layers (higher priority overrides). The emit pass renders
-the annotated AST using templates that read the annotations.
-
-### Consequences for implementation
-
-1. **Type inference must cover all expression forms.** If the codegen cannot
-   determine the type of a closure, match, if-expression, binary operation,
-   range, map literal, or tuple — it cannot make intelligent ownership
-   decisions. Incomplete inference forces defensive cloning.
-
-2. **Ownership analysis must operate on structure, not text.** A system that
-   renders an expression to a Rust string and then does `.replace("?",
-   ".unwrap()")` is not performing intelligent lowering — it is patching text.
-   Ownership, borrowing, and error-handling decisions must be made on the
-   typed IR before any target text is emitted.
-
-3. **Layer semantics must flow to codegen.** A layer that declares
-   `immutable` on a construct but sees that constraint ignored in emission
-   is not providing intelligence — it is providing decoration. Constraints,
-   `emit_to` sections, and construct-level `lowers_to` declarations must
-   be consumed by the backend and must alter the generated output.
-
-4. **Hardcoded special cases are intelligence debt.** Every `if keyword ==
-   "handler"` in the codegen is a case where intelligence is faked by
-   recognition rather than derived from layer declarations. These must
-   migrate to layer-declared policies that the engine executes generically.
-
-5. **Adding a new target must not require reimplementing expression
-   lowering.** If `expr_to_rust` is 6000 lines and `expr_to_ts` is another
-   4000 lines sharing nothing, the system has no shared intelligence — it
-   has two separate dumb mappers. A shared semantic IR that targets
-   interpret is required for the multi-target story.
-
-### Quality bar
-
-Generated code must:
-
-- Pass `cargo clippy` (Rust) / `tsc --strict` (TypeScript) with zero
-  warnings or suppressions
-- Be formatted by the target's standard formatter (`rustfmt` / `prettier`)
-  without semantic diff — i.e., the codegen emits what the formatter would
-  produce
-- Contain no `todo!()`, `unreachable!()`, or `unimplemented!()` in any
-  reachable path unless the VEIL source explicitly marks that path as
-  unimplemented (escape hatch, visible as debt)
-- Use the target language's idiomatic patterns: Rust code reads like Rust
-  written by a Rust expert; TypeScript reads like TypeScript written by a
-  TypeScript expert — not like a transliteration from another language
-
-## Core Architecture
-
-VEIL has three authoring layers:
-
-1. **Core language** — fixed primitives: the 7 construct shapes, 2 statement
-   shapes, and universal expression forms (control flow, calls, match,
-   closures, await, try, casts, collections, operators, literals, …).
-2. **Abstraction layers** (`.layer` files) — teach domain- or
-   platform-specific constructs, statements, visuals, prompts, and codegen.
-3. **Application code** (`.veil` files) — written with vocabulary from
-   referenced layers.
-
-Additionally:
-
-- **`.stub` files** declare external crate/SDK APIs for type inference and
-  codegen deps (`veil stub-gen <crate>`).
-- The **viewer is the structural editor** — layer-driven palette, node graph,
-  property panels; source text remains the agent-native authoring form.
-
-### How layers work
-
-A `.layer` file defines constructs that map to core primitives:
+Optional local platform (fs+sqlite / cloud adapters) is power tooling, not a
+gate. App harnesses are VEIL-authored (`@main`); see
+[`docs/HARNESS.md`](docs/HARNESS.md). ProductHost:
+`scripts/dev-stack.sh` (`ui/` + `crates/veil-runtime`).
+
+## Laws
+
+1. **Zero domain knowledge in the engine.** Permanent. `ctx` / `agg` /
+   `dispatch` live in layers.
+2. **Agents author; humans review topology + critical bodies.** Not every
+   expression, not generated LoC by default.
+3. **Two loops, both product.** Machine: parse → check → codegen →
+   (optional) target compile. Human: an outstanding change set, closed by
+   recorded sign-off.
+4. **Expressiveness parity is semantic.** Keyword-for-keyword clones explode
+   the core; they are rejected.
+5. **Intelligent lowering, not token mapping.** Borrow when it's safe; emit
+   what a target-language expert would write. String-patching and
+   `if keyword == "handler"` are debt.
+6. **Token efficiency.** Terse is the standard. Verbose is compatibility.
+7. **Terseness never outranks diagnostics.** Sugar that silently miscompiles
+   is a bug. Strict check is the agent default.
+8. **Escape hatches are debt.** Raw blocks, untyped `Json`, stub-only calls,
+   FFI — visible, scheduled to die.
+9. **Layers own vocabulary, visuals, prompts, and pattern codegen.**
+10. **Blessed paths are not the core.** `ddd` / `di` are defaults for service
+    apps, not the only legal shape.
+11. **No silent miscompile.** Unsupported target features fail at check.
+12. **Authorship is visible.** Announce intent, then act on the real UI at a
+    speed a human can follow. No parallel invisible backend.
+13. **Outstanding changes are a product surface.** Git answers history.
+    Review state answers "has a human signed this off?"
+14. **Do not reinvent git.** Commits, branches, merge, log, and diff stay
+    git's job.
+
+## Runtime
+
+The inner agent is the only primary author inside ProductHost. The agent
+pane is the conversation. Everything else is what the human is watching.
+
+Graphics do not speed agents. Fast diagnostics and deterministic codegen
+are half the product. Review plus recorded sign-off is the other half.
+
+Humans should usually look at topology (packages, modules, groups,
+constructs, ports, wiring, expose contracts, annotations) and at critical
+bodies (guards, orchestration, adapters, other high-risk expressions).
+They should not need every expression, or the generated target, for routine
+approval. Generated code stays one click away when you distrust a lowering
+or are chasing a performance bug. Success is rarely needing it, not never.
+
+Mutations go through the same contracts the UI uses (`data-veil-agent`,
+structured edit APIs, `/api/repos`, Focus + Intent + Present). There is no
+second agent backend that changes state in the dark.
+
+When the agent fills a form or clicks a control, the UI should move the way
+a careful human would: typing, focus, button press, in-flight disable,
+progress on multi-step work. Default cadence is something a watcher can
+follow. Fast-forward exists for power users and tests.
+
+The moment the agent edits a project's files, that IDE comes forward.
+Unreviewed diffs stay visually distinct. A session often touches several
+small libraries and layers — the Projects page should show, at a glance,
+what was touched, what is outstanding, and what needs sign-off.
+
+After a coherent unit of work the agent presents the set ("created X, edited
+Y, generated Z, here's why") and asks for sign-off. Approval is a recorded
+action — button, command, or agent-mediated confirmation — suitable for
+SOC 2. Reject and partial approve leave the rest outstanding. At the end of
+a session the agent can roll up everything it touched across projects.
+
+The agent must be able to list projects, open IDEs, bounce context, run
+check/gen, open PRs, and do real work from layers and stubs — not just
+puppet the chrome.
+
+Edits go through `POST /api/edit`: update AST → re-serialize → validate →
+write. Round-trips have to be deterministic. Pretty-print churn breaks
+trust.
+
+## Language
+
+Three authoring layers:
+
+1. **Core** — 7 construct shapes (`mod`, `struct`, `enum`, `trait`, `impl`,
+   `fn`, `group`), 2 statement shapes (`call`, `if`), and the usual
+   expression forms.
+2. **Layers** (`.layer`) — domain and platform words, visuals, prompts,
+   codegen.
+3. **Application** (`.veil`) — written with the vocabulary those layers
+   taught.
+
+`.stub` files declare external crate/SDK APIs (`veil stub-gen <crate>`).
+The viewer is the structural editor (palette, graph, property panels).
+Source text stays the agent-native form.
+
+A layer maps new words onto core shapes:
 
 ```
 pkg ddd v1
@@ -359,25 +143,9 @@ pkg ddd v1
       icon "📦"
       color "#8b5cf6"
       label "Bounded Context"
-
-  construct Aggregate
-    kw agg
-    mt struct
-    visual
-      icon "🏛️"
-      color "#0891b2"
-      label "Aggregate Root"
-
-  construct Port
-    kw port
-    mt trait
-    visual
-      icon "🔌"
-      color "#059669"
-      label "Port"
 ```
 
-A `.veil` file references layers via `use`:
+Application code `use`s the layer:
 
 ```
 pkg MyApp
@@ -393,406 +161,104 @@ pkg MyApp
         find(id: UUID) -> Res!<Opt<Customer>>
 ```
 
-Opinionated stacks (e.g. DDD + Bus + CQRS in `ddd.layer`) are **blessed
-paths**, not core law. The engine stays integration-agnostic; other layers
-(plain HTTP, local libraries, UI frameworks) must remain first-class.
+`mt` may name another construct (`lead → agg → struct`). Constraints and
+statements follow the same is-a chain. A statement whose `mt` is
+`Port.method` desugars at parse to a call; the source and viewer keep the
+sugar.
 
-## The Critical Invariant
+The parser does not know what `ctx` means. The builder does not hardcode
+`"Aggregate"`. Codegen does not special-case DDD. The viewer does not
+hardcode icons. If someone ships `swiftui.layer`, the system works without
+engine or viewer patches.
 
-**The VEIL engine (lexer, parser, IR builder, check, codegen, viewer chrome)
-must contain ZERO domain-specific knowledge.** All domain and platform
-concepts come exclusively from `.layer` files loaded at runtime.
+Engine heuristics that encode policy by magic names (`dep`, field-name
+constructors, Bus-shaped routing) are invariant debt. Put the rule in a
+layer; the engine only executes it.
 
-This means:
+Presentation grammar: [`docs/PRESENTATION.md`](docs/PRESENTATION.md).
+Architecture / deploy: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
-- The parser does NOT know what `ctx`, `agg`, or `port` mean — it looks up
-  the layer schema (`mt`, `has`, …).
-- The builder does NOT hardcode subkind strings like `"Aggregate"`.
-- Codegen does NOT special-case DDD — it lowers by **shape** and executes
-  **layer-declared** templates/policies.
-- The viewer does NOT hardcode icons, colors, labels, or available
-  annotations — those arrive via `/api/palette` from layers.
+## Codegen
 
-If someone creates `crud.layer`, `ecs.layer`, or `swiftui.layer`, the system
-works **without** engine or viewer code changes.
+VEIL is not a keyword-to-syntax stamp. Lowering has to understand the
+program and emit what a skilled human would write for that meaning.
 
-### Invariant status (honest assessment)
+| | Dumb mapper | What we want |
+|--|-------------|--------------|
+| Ownership | Clone everything | Borrow when safe, move on last use |
+| Errors | `.unwrap()` or `?` on everything | The natural channel for that call site |
+| Types | `impl Trait` / `_` | Concrete when known, generic when that's the point |
+| Sharing | `Arc<Mutex<_>>` on every field | Interior mutability only when something mutates |
+| Layers | Same struct regardless of construct | Value object ≠ entity ≠ event |
+| Emit | Render strings, then patch them | Typed IR, then one emit pass |
 
-The invariant **holds across the entire pipeline** — parser, IR builder,
-viewer, AND codegen. As of the Aug 2026 refactoring:
+Decisions happen on the typed IR. If inference cannot type a closure or a
+match, it will clone defensively — that's how you get ugly output.
 
-- Zero references to axum, DomainError, Svelte, InProcessBus, saga,
-  AllowAllAuth, or any DDD keyword in the codegen engine code
-- All framework code (HTTP harness, bus routing, auth, Svelte components)
-  lives in layer templates and declare blocks
-- Error model is fully layer-declared (ddd.layer provides DomainError;
-  projects without it must provide their own or veil check refuses)
-- async/sync comes from runtime layers (tokio.layer), not engine defaults
-- The engine's fallback when no layer provides policy is minimal valid
-  output (plain fn, pub, no derives beyond what the layer declares)
+The engine may know the target language. It must not know `@dep`, `ctx`, or
+`dispatch`. Those come from layers (`emit_to`, `lowers_to`, templates).
+Adding a target should not mean a second 4k-line `expr_to_ts` that shares
+nothing with Rust.
 
-**Remaining architectural step:** The target backends (src/rust/, src/ts/)
-are still compiled Rust code in the engine. The multi-pass layer-driven
-pipeline (see Strategic Sequencing #1) will migrate these to layer-declared
-passes + emit templates, making the engine fully target-agnostic.
+Each backend should publish a capability matrix (errors, async, ownership,
+concurrency, modules). Unsupported constructs fail at check, not as wrong
+code.
 
-### Invariant hygiene
+Quality bar for generated code:
 
-Engine-level heuristics that encode policy by magic names (e.g. treating
-annotation `dep` specially, field-name smart-constructor defaults, Bus-shaped
-routing assumptions) are **invariant debt**. Prefer declaring them in
-`di.layer` / `rust.layer` (or equivalent) so the engine only *executes*
-rules. Do not grow new magic as targets and frameworks expand.
-
-## Construct Categories
-
-Every layer construct maps to exactly one core primitive via `mt`:
-
-| maps_to | Parse shape | Contains |
-|---------|-------------|----------|
-| `mod`   | Block of child constructs and groups | Other constructs, groups |
-| `struct` | Named type with fields | Fields, nested `fn` methods, named sub-blocks |
-| `enum` | Variants, optionally with transitions | Variants; `A -> B` state transitions |
-| `trait` | Interface with method signatures | Methods |
-| `impl` | Implementation binding to a trait | Method bodies |
-| `fn` | Flow/function with inputs and steps, or expression body | `input`, `step`/`par`, or raw body |
-| `group` | Visual/organizational container | Child constructs |
-
-The parser understands these **7 shapes** only. A `mt` may name another
-construct; shapes resolve transitively (see Layer Stacking). Full parity
-deepens the *semantics* of these shapes — it does not add a new shape per
-paradigm.
-
-Language reference: [`docs/LANGUAGE.md`](docs/LANGUAGE.md).  
-Architecture / deploy: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).  
-Codegen templates: [`docs/CODEGEN_TEMPLATES.md`](docs/CODEGEN_TEMPLATES.md).  
-Layer prompts for agents: [`docs/LAYER_PROMPTS.md`](docs/LAYER_PROMPTS.md).
-
-## Statement Types (inside `fn`-mapped constructs)
-
-The engine knows only **2 statement shapes**: `call` and `if`. Every domain
-verb is layer-defined and maps to one of them. Example from `ddd.layer`:
-
-- Bare invocations — `Target.method(args)`
-- `dispatch` — `maps_to Bus.dispatch`
-- `invoke` — `maps_to Bus.invoke`
-- `request` — `maps_to Bus.request`
-- `emit` — aggregate-local event collection (`maps_to call`)
-- `guard` — `maps_to if`
-
-A statement whose `mt` names `Port.method` **desugars** at parse time into a
-call on that port (`dispatch Evt{...}` → `Bus.dispatch(...)`) while source
-and viewer keep the sugar via `CallExpr.sugar`. None of these keywords are
-hardcoded in the engine.
-
-## Visual Metadata and Review Surface
-
-Each construct declares presentation in its layer:
+- `cargo clippy` / `tsc --strict` clean, no suppressions
+- Already in the shape `rustfmt` / `prettier` would produce
+- No `todo!()` / `unreachable!()` / `unimplemented!()` on reachable paths
+  unless the VEIL source marked them
+- Reads like the target, not like a transliteration
 
 ```
-visual
-  icon "📦"
-  color "#8b5cf6"
-  label "Bounded Context"
-```
-
-The viewer uses `/api/palette` for:
-
-- Node styling (color, icon)
-- Palette of available constructs/statements
-- Property labels and **layer-declared annotations**
-
-**Presentation** (views, nest rules, layouts, review lenses) is also
-layer-declared so paradigms (DDD hierarchy, Svelte route trees, FP modules)
-drive the IDE without hardcoding domain words in the viewer. Normative
-grammar: [`docs/PRESENTATION.md`](docs/PRESENTATION.md). Implementation is
-tracked as LAY-* in `stories/35-layer-presentation.md`.
-
-Edits go through structured APIs (`POST /api/edit`): update AST →
-re-serialize → validate → write → regenerate. Round-trips must stay
-deterministic; noisy pretty-print churn breaks trust for agents and humans.
-
-## Layer-Driven Codegen (Hybrid Model)
-
-| Component | Responsibility |
-|-----------|----------------|
-| `lang.rs` (engine backend) | Expressions, types, project layout, builtins |
-| `lang.layer` (emission policy) | Derives, conventions, target opinions |
-| Domain/platform layers | Pattern-specific augmentation (`@dep`, `@main`, UI emit, …) |
-
-The engine **may** know target-language reality (that is its job). It
-**must not** know what `@dep`, `ctx`, or `dispatch` mean — those come from
-layers.
-
-```
-.veil source + .layer files
-       |
-   Parse (Package AST)
-       |
-   Build IR
-       |
-   Analyze / check (diagnostics, constraints, capabilities)
-       |
-   Codegen:
-     1. lang.rs backend (core shapes → target)
-     2. Layer templates (augment)
-     3. Section composition (e.g. multiple @main contributors)
-       |
-   Output (target files + manifest.json for runtime)
-```
-
-Templates use `codegen <target>`, `match`/`where`, `emit`, `emit_to`, and
-`priority`. Prefer declarative hooks and strong builtins over turning the
-template DSL into a third programming language. Details:
-[`docs/CODEGEN_TEMPLATES.md`](docs/CODEGEN_TEMPLATES.md).
-
-### Layer codegen gap (current state)
-
-The design above is correct. The implementation is partially wired:
-
-- **`emit_to` sections** are consumed by the Rust backend —
-  `derives`, `trait_attrs`, `fn_attrs`, and constraints are extracted and
-  applied to generated structs/traits.
-- **Construct-level `lowers_to`** is consumed for Rust type/function
-  templates (`construct_lowers_to`). Statement `lowers_to` interpolates
-  through a `LayerTemplate` IR node whose bindings are lowered expressions,
-  not pre-rendered strings.
-- **Role bindings** — custom roles declared by new layers have no codegen
-  effect unless the backend has explicit handling. This is the primary
-  remaining gap for "any layer works without engine changes."
-- **Condition language** for template matching is limited to `has_role()`,
-  `has_annotation()`, and `subkind ==`. No constraint-based, type-based,
-  or compound conditions.
-
-Until role bindings are generic, **layers cannot define wholly novel
-construct shapes** without some engine recognition of roles — they can add
-vocabulary, validation, and `lowers_to`/`emit_to` to existing shapes.
-
-### Multi-target
-
-The same VEIL program can lower to multiple backends. Today Rust is primary
-and TypeScript is available; Swift/Kotlin and richer Svelte emission are
-roadmap. Idiomatic quality is pursued per target; **semantic honesty**
-(capability checks) always outranks pretty output.
-
-```
-veil gen app.veil -o ./out            # default: Rust
+veil gen app.veil -o ./out            # Rust
 veil gen app.veil -o ./out -t ts      # TypeScript
 ```
 
-Illustrative mappings (not the full semantic model):
+Layer prompts for agents: [`docs/LAYER_PROMPTS.md`](docs/LAYER_PROMPTS.md).
 
-| VEIL | Rust | TypeScript |
-|------|------|------------|
-| `Res!<T>` | `Result<T, DomainError>` | `Promise<T>` |
-| `await expr` | `expr.await` | `await expr` |
-| `expr?` | `expr?` | `await expr` (throws) |
-| `List<T>` | `Vec<T>` | `T[]` |
-| `Opt<T>` | `Option<T>` | `T \| null` |
-| struct / trait / enum | `struct` / `trait` / `enum` | interfaces / unions |
+## Now and next
 
-Target-specific artifacts (Arc, Box, lifetimes, package layout) are codegen
-concerns, not VEIL source concerns.
+The zero-domain-knowledge rule holds across parser, IR, viewer, and codegen.
+Framework and domain code (HTTP harness, bus, auth, Svelte, `DomainError`,
+tokio) lives in layers. Missing policy yields minimal valid output, not a
+hidden default stack. Top-level unit is `pkg` only — never author `sol`.
 
-## Layer Stacking
+Still compiled into the engine: the Rust and TypeScript backends. `emit_to`
+and construct `lowers_to` are consumed. Role bindings for brand-new
+construct shapes still need engine recognition. Template conditions are a
+short list (`has_role`, `has_annotation`, `subkind ==`). Rust and TypeScript
+share no lowering IR yet, so a third target would be a third implementation.
+Language primitives (List `.get` / `.len`, Json extractors, Option unwrap)
+belong in the backend because they are VEIL, not product vocabulary.
+Product/SDK names stay in `.stub` / `.layer`.
 
-Layers compose: `mt` may name a core shape or another construct. Dependencies
-use `use`; `LayerRegistry` resolves chains transitively:
+Composability proof: `examples/crm.layer` on `ddd.layer`, plus
+`examples/sales_crm.veil`, generate compiling Rust with no engine changes.
 
-```
-# crm.layer
-pkg crm v1
-  use ddd
+Next, in product order — not a sprint plan:
 
-  construct Lead
-    kw lead
-    mt agg          # lead -> agg -> struct
-```
+1. **Layer pass extensions.** Layers declare policy rules (async, derives,
+   errors, null). The engine keeps ownership, inference, and expression
+   lowering as compiled Rust. This extends `emit_to` / `lowers_to`; it does
+   not replace the backends.
+2. **Make the loops we already have actually good.** Check + deterministic
+   codegen; topology / critical-body review; visible agency and sign-off;
+   capability matrices that fail closed.
+3. **More targets** (Go, Python, Swift, Kotlin) once (1) exists. Simple
+   targets may be layer-only.
+4. **Burn escape hatches** in real trees (`examples/`, runtime).
 
-Constraints (`only Saga`, `has` allow-lists) follow the same is-a chain.
-Statements stack (`notify` → `dispatch` → `call`).
+## How we know it's working
 
-## Design Laws
-
-1. **Zero domain knowledge in the engine** — permanent.
-2. **Agents author; humans review topology + critical bodies.**
-3. **Dual loops** — machine check and human structure are both product
-   requirements. Sign-off is the human half for any mutation that affects
-   the system of record.
-4. **Expressiveness parity** — semantic, not keyword cloning.
-5. **Intelligent lowering, not dumb mapping** — codegen must understand
-   intent and produce code a target-language expert would write. Brute-force
-   clone, string-interpolation emission, and hardcoded special cases are
-   technical debt, not acceptable steady-state.
-6. **Token efficiency** — terse forms are the standard; verbose forms are
-   compatibility only.
-7. **Terseness never outranks diagnostics** — bare-field inference and sugar
-   must not produce silent wrongness; strict check is the agent default.
-8. **Escape hatches are debt** — visible in review/diagnostics; burn down
-   over time.
-9. **Layers own vocabulary, visuals, prompts, and pattern codegen.**
-10. **Blessed paths ≠ core** — `ddd`/`di` are defaults for service apps, not
-   the only legal architecture.
-11. **No silent miscompile** — unsupported target features fail at check.
-12. **Agents author; the runtime makes authorship visible and reviewable.**
-    No invisible parallel mutation path. Announce intent, then act on the
-    living canvas at human-parseable speed.
-13. **Outstanding changes are a product surface**, not an afterthought of
-    `git status`. Git is history; sign-off is review state.
-14. **Leverage git; do not reinvent it.** Commits, branches, merge, log,
-    and diff are git’s job. Product energy goes to visibility, multi-project
-    awareness, and recorded human sign-off — not a second VCS.
-
-## File Structure
-
-```
-docs/
-  LANGUAGE.md            — Complete language reference
-  ARCHITECTURE.md        — Packages, CQRS, Bus, manifest, deploy
-  CODEGEN_TEMPLATES.md   — Template DSL and hybrid codegen
-  LAYER_PROMPTS.md       — How to write layer prompt sections for agents
-
-examples/                — Layers, apps, stubs (composability proofs)
-layers/                  — System layers (base, ddd, di, rust, svelte5, …)
-stories/                 — Living backlog (dual-loop, invariant debt, runtime, parity)
-
-crates/
-  veil-parser/           — Lexer + parser
-  veil-ir/               — AST, IR, builder, serializer, validator, layers, stubs
-  veil-codegen/          — Multi-target generation (rust, typescript, templates)
-  veil-cli/              — lex, parse, check, gen, emit, stub-gen, serve
-  veil-server/           — Editor/API + ProductHost IDE kernel
-  veil-runtime/          — ProductHost binary (platform HTTP + git origin)
-
-ui/                      — ProductHost SPA (projects, review/sign-off, in-shell IDE)
-```
-
-## Current State
-
-The zero-domain-knowledge invariant **holds across the entire pipeline**:
-parser, IR builder, viewer, AND codegen. The engine has zero references to
-axum, DomainError, Svelte, bus routing, saga, or any other domain/framework
-concept. All target-specific and domain-specific code lives in layers.
-
-**Codegen architecture (current):** Target-specific backends (src/rust/,
-src/ts/) with structural IRs (RustExpr, TsExpr), ownership analysis, and
-layer-driven policy (emit_to, lowers_to, construct templates). This works
-but requires engine-side code per target.
-
-**Codegen architecture (next):** Multi-pass layer-driven pipeline. Layers
-declare passes (type mapping, ownership, null safety) with rules that read
-engine-provided analysis. Engine has zero target knowledge. See
-`veil-codegen-multipass-layer-driven` spec. Migration: ~20-25 sessions.
-
-**Template system:** Conditionals, iteration over children with role
-filtering, field introspection, nested resolution, annotation access. Layers
-can generate any framework-specific code (axum harness, Svelte components)
-through templates alone.
-
-**Targets:** Rust (primary, structural IR + ownership + clippy-clean output),
-TypeScript (structural IR, full expression coverage), HTML5 and CSS (emit
-functions). All targets have snapshot tests.
-
-**Quality bar:** Zero clippy warnings on engine. Generated Rust passes clippy.
-Fail-closed (compile_error!, never todo!). Snapshot tests lock output.
-All workspace tests pass (zero failures).
-
-**File types:** top-level unit is `pkg` only. Never author `sol`.
-Deployment topology is manifest + runtime, not a separate “solution” kind.
-
-Implementation map (summary):
-
-- `LayerRegistry` — parse layers, transitive `mt`, constructs/statements/
-  visuals/annotations/prompts/stubs; engine vocabulary is 7 shapes + 2
-  statement shapes only.
-- Lexer — layer words are `Ident`; only core keywords are reserved. `step` /
-  `par` are contextual, not reserved.
-- Parser — one function per core shape; named sub-blocks from `has`;
-  layer statements → `ActionExpr` with Port.method desugar; rich enums,
-  patterns, match guards.
-- AST — generic `Construct` (shape + subkind); ~34 expression variants;
-  patterns; optional type annotations; generics on constructs.
-- Check/validate — generic constraint grammar; expand toward types,
-  unresolved calls, and target capabilities (agent loop).
-- Codegen — shape-only switches; real behavior (not empty stubs); layer
-  templates augment; `manifest.json` for runtime wiring.
-- Viewer — layer-driven palette and styles; structured edit API; dual-mode
-  chrome. Invest next in topology/critical-body **review** quality.
-
-### Notable codegen behaviors (keep invariant pressure high)
-
-- **`@dep` routing** — fields annotated `dep` (layer-defined) collect into a
-  generated `Deps` struct; calls route through deps. Prefer making this
-  fully layer-policy-driven over engine magic.
-- **Smart constructors** — defaults from types/names (`Opt` → `None`,
-  timestamps, scalars, `id`). Treat name heuristics as policy debt to move
-  into layers where possible.
-- **JSON message Bus** — cross-context payloads as `Json` so crates do not
-  share domain types; `veil_shared` holds Bus/error shared surface when
-  using that pattern.
-- **Sagas in the layer** — `runtime` bindings + `declare`d coordinators in
-  VEIL; engine has zero saga control-flow knowledge.
-- **Layer-declared code** — `declare` blocks inject real shared functions/
-  traits (e.g. saga runner) authored in VEIL.
-- **Composability proof** — `examples/crm.layer` on `ddd.layer` and
-  `examples/sales_crm.veil` generate compiling Rust with no engine changes.
-
-### Codegen architecture debt (resolve before multi-target)
-
-- **Expression emission is IR-based** — `expr_to_rust` is
-  `emit(apply_ownership(lower_to_rust(expr)))`. There is no `Raw`/`Statement`
-  escape hatch. Match/if/for/while/assign/closure/calls lower to structured
-  `RustExpr` nodes. `emit` is the only stage that produces target text.
-  Async/fallible call finish is `(Type, method)` stub metadata applied as
-  `Await`/`Try`/`MapErr` nodes — not concatenated `.await`/`.map_err` suffixes
-  and not hardcoded method names (`send`, `put_item`, …).
-- **Per-target reimplementation** — Rust and TypeScript share zero lowering
-  infrastructure. TypeScript is still in development. Adding a third target
-  means writing a third standalone implementation until a shared semantic IR
-  exists.
-- **Language-primitive special cases remain** — List `.get`/`.len`, Json
-  extractors, Option unwrap, etc. live in the Rust backend because they are
-  VEIL language, not product vocabulary. Product/SDK names must stay in
-  `.stub` / `.layer` files.
-
-## Strategic Sequencing
-
-Not a sprint plan — product order of operations:
-
-1. **Layer pass extension system** — build a pass executor that lets layers
-   hook into codegen (pre-passes and post-passes) without replacing the
-   engine's core backends. Layers declare rules for policy decisions
-   (async/sync, derives, error strategy, null safety). Engine keeps core
-   algorithms (ownership, type inference, expression lowering) as compiled
-   Rust. This formalizes what emit_to/lowers_to already do, and enables
-   layers to influence codegen in ways we can't predict yet.
-2. **Dual-loop excellence on the current surface** — world-class `check` +
-   deterministic codegen; topology and critical-body review UX; **visible
-   agency** (human-speed simulation, IDE auto-open, multi-project indicators)
-   and first-class outstanding-change **sign-off**; multi-target with honest
-   capabilities.
-3. **Target expansion** — Go, Python, Swift, Kotlin targets. Each requires
-   a compact engine backend (~1000-2000 lines for core lowering) plus layer
-   files for policy. Simpler targets (HTML, CSS) may be expressible entirely
-   in layer passes without an engine backend.
-4. **Escape-hatch debt burn-down** — measure and reduce raw/stub/untyped
-   surface in real trees (`examples/`, `runtime/`).
-
-## Success Measures
-
-- Agent tokens (or steps) per feature vs raw target languages
-- Human time-to-approve a structural change without opening generated LoC
-- Share of reviews completed at topology + critical bodies only
-- Time for a human to understand “what just happened” after an agent turn
-  (target: **seconds**, not minutes of investigation)
-- Percentage of agent-driven changes signed off **without** the human opening
-  raw generated files or git blame
-- Presence of clear outstanding-change indicators on the Projects page after
-  any multi-project session
-- Agent can complete a realistic multi-project coding session while the human
-  watches forms fill, the IDE open, diffs appear, and the sign-off prompt
-  surface — without leaving the runtime UX or digging
-- Agent fix-cycle time under `veil check` / compile feedback
-- Compile/success rate of agent-authored VEIL
-- Escape-hatch surface area trend (should fall over time)
-- Target capability violations caught at check (not in production)
+- Agent tokens (or steps) per feature vs writing the target language
+- Human time to approve a structural change without opening generated LoC
+- Time to understand "what just happened" after an agent turn — seconds,
+  not a git archaeology session
+- Share of agent changes signed off without opening generated files or blame
+- Outstanding-change indicators on Projects after a multi-project session
+- Fix-cycle time under `veil check` / compile
+- Escape-hatch surface area (should fall)
+- Capability violations caught at check, not in production

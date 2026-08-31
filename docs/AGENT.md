@@ -48,6 +48,7 @@ to attach `wiki_*` Rig tools for long-term VEIL platform knowledge.
 | `select_file` | Switch active file | File picker |
 | `create_file` | New `.veil` / `.layer` | **+** in breadcrumb |
 | `write_source` | Replace active file body (smoke-gated) | `POST /api/source` |
+| `reference_roots` / `reference_list` / `reference_read` / `reference_grep` | Read-only operator-chosen local trees (conversion source) | Config → Reference trees / `VEIL_REFERENCE_DIRS` |
 | `dev_status` | Dual-loop targets / ports / errors | Dev toolbar |
 | `dev_logs` | Gen/check/smoke log ring | Dev logs |
 | `smoke_status` | Last smoke/check excerpt | — |
