@@ -1,4 +1,4 @@
-//! Durable coding sessions: local git checkout + S3 origin + DDB META.
+//! Durable coding sessions: local git checkout + git origin (S3 or GitHub) + DDB META.
 //!
 //! See `docs/DURABLE_SESSIONS.md`.
 //!
@@ -10,13 +10,13 @@ mod ddb;
 mod workspace;
 
 pub use ddb::{
-    append_turn, delete_session_meta, get_session_commit, get_session_meta, list_session_commits,
-    list_sessions_for_user, list_turns, merge_session_focus_intents, put_session_commit,
-    put_session_meta, touch_session, HostCheckSnapshot, SessionCommit, SessionMeta, SessionTurn,
+    HostCheckSnapshot, SessionCommit, SessionMeta, SessionTurn, append_turn, delete_session_meta,
+    get_session_commit, get_session_meta, list_session_commits, list_sessions_for_user, list_turns,
+    merge_session_focus_intents, put_session_commit, put_session_meta, touch_session,
 };
 pub use workspace::{
-    materialize_policy, path_jail, resolve_under_root, MaterializePolicy, WorkspaceFs,
-    WorkspaceFsImpl,
+    MaterializePolicy, WorkspaceFs, WorkspaceFsImpl, materialize_policy, path_jail,
+    resolve_under_root,
 };
 
 use std::collections::HashMap;
@@ -24,8 +24,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use crate::provider::s3_workspace::{
-    ide_source_mode, materialize_repo, resolve_project_identity, resolve_repo_id, IdeSourceMode,
-    ProjectIdentity, S3WorkspaceProvider,
+    IdeSourceMode, ProjectIdentity, S3WorkspaceProvider, ide_source_mode, materialize_repo,
+    resolve_project_identity, resolve_repo_id,
 };
 use uuid::Uuid;
 
@@ -149,11 +149,8 @@ impl SessionManager {
             MaterializePolicy::SyncIncremental,
             Some(&base),
         )?;
-        if crate::git_origin::origin_enabled()
-            && draft_mode
-            && branch_name != base
-        {
-            crate::git_origin::GitOrigin::new(&repo_id)
+        if crate::git_origin::origin_enabled() && draft_mode && branch_name != base {
+            crate::git_origin::GitOrigin::for_repo(&repo_id)
                 .create_branch(&work_dir, &branch_name)?;
         }
 
@@ -244,11 +241,7 @@ impl SessionManager {
 
     /// Preferred session for a project (feature branch or explicit switch), if any.
     pub fn active_for_project(&self, slug: &str) -> Option<String> {
-        self.active_by_project
-            .lock()
-            .unwrap()
-            .get(slug)
-            .cloned()
+        self.active_by_project.lock().unwrap().get(slug).cloned()
     }
 
     /// Clear preferred session (e.g. after switch back to main sticky).
@@ -302,9 +295,10 @@ impl SessionManager {
         }
         // DDB recent non-draft for **current** repo only (match by repo_id, not string slug)
         if let Ok(list) = list_sessions_for_user(&user) {
-            if let Some(m) = list.into_iter().find(|m| {
-                !m.draft_mode && m.repo_id == ident.repo_id
-            }) {
+            if let Some(m) = list
+                .into_iter()
+                .find(|m| !m.draft_mode && m.repo_id == ident.repo_id)
+            {
                 let h = self.attach(&m.session_id)?;
                 write_sticky_aliases(&user, &ident, &m.session_id);
                 self.set_active_for_identity(&ident, &h.session_id());
@@ -333,8 +327,7 @@ impl SessionManager {
             let mut map = self.handles.lock().unwrap();
             map.retain(|_, h| {
                 let m = h.meta.lock().unwrap();
-                let claims_product =
-                    m.slug == ident.slug || m.slug == slug || m.repo_id == slug;
+                let claims_product = m.slug == ident.slug || m.slug == slug || m.repo_id == slug;
                 if claims_product {
                     m.repo_id == want
                 } else {
@@ -368,7 +361,10 @@ impl SessionManager {
         }
         let meta = get_session_meta(session_id)?;
         if meta.user_id != current_user_id()
-            && std::env::var("VEIL_SESSION_ALLOW_CROSS_USER").ok().as_deref() != Some("1")
+            && std::env::var("VEIL_SESSION_ALLOW_CROSS_USER")
+                .ok()
+                .as_deref()
+                != Some("1")
         {
             // Local dev often shares one user; still allow same machine
             tracing::warn!(
@@ -390,8 +386,7 @@ impl SessionManager {
             &work_dir,
             MaterializePolicy::SyncIncremental,
             Some(&attach_branch),
-        )
-        {
+        ) {
             // Only hard-fail if workdir is empty; otherwise serve last local copy.
             if !work_dir.join("veil.toml").is_file() && !has_veil_file(&work_dir) {
                 return Err(e);
@@ -535,10 +530,7 @@ impl SessionManager {
                 .filter(|h| {
                     let m = h.meta.lock().unwrap();
                     m.user_id == user
-                        && want_repo
-                            .as_ref()
-                            .map(|r| &m.repo_id == r)
-                            .unwrap_or(false)
+                        && want_repo.as_ref().map(|r| &m.repo_id == r).unwrap_or(false)
                 })
                 .cloned()
                 .collect();
@@ -701,14 +693,12 @@ impl SessionManager {
             // Drop warm handle so next attach reloads from disk after sync.
             self.drop_handle(&sid);
             let work_path = PathBuf::from(&work);
-            if let Err(e) =
-                materialize_repo_to(
-                    repo_id,
-                    &work_path,
-                    MaterializePolicy::SyncIncremental,
-                    Some("main"),
-                )
-            {
+            if let Err(e) = materialize_repo_to(
+                repo_id,
+                &work_path,
+                MaterializePolicy::SyncIncremental,
+                Some("main"),
+            ) {
                 tracing::warn!(
                     session_id = %sid,
                     %repo_id,
@@ -774,7 +764,7 @@ fn materialize_repo_to(
     branch: Option<&str>,
 ) -> Result<(), String> {
     if crate::git_origin::origin_enabled() {
-        let origin = crate::git_origin::GitOrigin::new(repo_id);
+        let origin = crate::git_origin::GitOrigin::for_repo(repo_id);
         let br = branch.unwrap_or("main");
         let mode = match policy {
             MaterializePolicy::SyncDelete => crate::git_origin::CheckoutMode::ResetHard,
@@ -878,7 +868,11 @@ fn identity_keys(raw: &str, ident: Option<&ProjectIdentity>) -> Vec<String> {
 /// Unknown / deleted products only match an exact slug or repo-id string.
 /// They must **not** accept another product's sticky session — that was the
 /// Sign-off → Open IDE 400 (`session slug mismatch`: `lumen-desk` vs `agent-core`).
-pub fn session_belongs_to_project(session_slug: &str, session_repo_id: &str, project: &str) -> bool {
+pub fn session_belongs_to_project(
+    session_slug: &str,
+    session_repo_id: &str,
+    project: &str,
+) -> bool {
     let project = project.trim();
     if project.is_empty() {
         return false;
@@ -907,7 +901,11 @@ mod belong_tests {
         assert!(session_belongs_to_project(GONE, REPO, GONE));
         assert!(session_belongs_to_project(GONE, REPO, REPO));
         assert!(!session_belongs_to_project("agent-core", REPO, GONE));
-        assert!(!session_belongs_to_project("agent-core", "repo-a", "zz-mp-other-product"));
+        assert!(!session_belongs_to_project(
+            "agent-core",
+            "repo-a",
+            "zz-mp-other-product"
+        ));
         assert!(!session_belongs_to_project("agent-core", "repo-a", ""));
     }
 }
@@ -1005,11 +1003,13 @@ pub fn spawn_session_reaper() {
         }
         std::thread::Builder::new()
             .name("veil-session-reaper".into())
-            .spawn(|| loop {
-                std::thread::sleep(std::time::Duration::from_secs(300));
-                let n = reap_idle_handles(SessionManager::global());
-                if n > 0 {
-                    tracing::info!(reaped = n, "session reaper tick");
+            .spawn(|| {
+                loop {
+                    std::thread::sleep(std::time::Duration::from_secs(300));
+                    let n = reap_idle_handles(SessionManager::global());
+                    if n > 0 {
+                        tracing::info!(reaped = n, "session reaper tick");
+                    }
                 }
             })
             .ok();
@@ -1197,7 +1197,7 @@ impl SessionHandle {
         )
     }
 
-    /// **commit**: native `git commit` + push branch to S3 origin.
+    /// **commit**: native `git commit` + push branch to origin.
     /// Autosaves continue; this is an explicit checkpoint.
     /// Refuses when there is nothing uncommitted (coding gate).
     pub fn commit(&self, message: &str) -> Result<SessionCommit, String> {
@@ -1219,58 +1219,57 @@ impl SessionHandle {
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| m.branch.clone());
 
-        let (commit_id, snapshot_prefix, files, parent) =
-            if crate::git_origin::origin_enabled() {
-                let origin = crate::git_origin::GitOrigin::new(&m.repo_id);
-                let info = origin.commit_and_push(&self.work_dir, message, &branch)?;
-                let prefix = format!(
-                    "git/{}/refs/heads/{}/{}.bundle",
-                    m.repo_id, info.branch, info.sha
-                );
-                (info.sha, prefix, info.files, info.parent)
-            } else {
-                let commit_id = Uuid::new_v4().to_string();
-                let short = &commit_id[..8.min(commit_id.len())];
-                let snapshot_prefix =
-                    format!("repos/{}/commits/{}/{}/", m.repo_id, m.session_id, short);
-                let bucket = std::env::var("BUCKET")
-                    .or_else(|_| std::env::var("VEIL_S3_BUCKET"))
-                    .unwrap_or_else(|_| "veil-runtime-dev".into());
-                let dest = format!("s3://{bucket}/{snapshot_prefix}");
-                let mut cmd = std::process::Command::new("aws");
-                if let Ok(p) = std::env::var("AWS_PROFILE") {
-                    cmd.env("AWS_PROFILE", p);
-                }
-                let out = cmd
-                    .args([
-                        "s3",
-                        "sync",
-                        &self.work_dir.to_string_lossy(),
-                        &dest,
-                        "--exclude",
-                        ".veil-session.json",
-                        "--exclude",
-                        ".git/*",
-                        "--exclude",
-                        "target/*",
-                        "--exclude",
-                        "generated/*",
-                    ])
-                    .output()
-                    .map_err(|e| format!("aws s3 sync commit: {e}"))?;
-                if !out.status.success() {
-                    return Err(format!(
-                        "commit snapshot failed: {}",
-                        String::from_utf8_lossy(&out.stderr)
-                    ));
-                }
-                (
-                    commit_id,
-                    snapshot_prefix,
-                    list_work_files(&self.work_dir),
-                    m.head_commit.clone(),
-                )
-            };
+        let (commit_id, snapshot_prefix, files, parent) = if crate::git_origin::origin_enabled() {
+            let origin = crate::git_origin::GitOrigin::for_repo(&m.repo_id);
+            let info = origin.commit_and_push(&self.work_dir, message, &branch)?;
+            let prefix = format!(
+                "git/{}/refs/heads/{}/{}.bundle",
+                m.repo_id, info.branch, info.sha
+            );
+            (info.sha, prefix, info.files, info.parent)
+        } else {
+            let commit_id = Uuid::new_v4().to_string();
+            let short = &commit_id[..8.min(commit_id.len())];
+            let snapshot_prefix =
+                format!("repos/{}/commits/{}/{}/", m.repo_id, m.session_id, short);
+            let bucket = std::env::var("BUCKET")
+                .or_else(|_| std::env::var("VEIL_S3_BUCKET"))
+                .unwrap_or_else(|_| "veil-runtime-dev".into());
+            let dest = format!("s3://{bucket}/{snapshot_prefix}");
+            let mut cmd = std::process::Command::new("aws");
+            if let Ok(p) = std::env::var("AWS_PROFILE") {
+                cmd.env("AWS_PROFILE", p);
+            }
+            let out = cmd
+                .args([
+                    "s3",
+                    "sync",
+                    &self.work_dir.to_string_lossy(),
+                    &dest,
+                    "--exclude",
+                    ".veil-session.json",
+                    "--exclude",
+                    ".git/*",
+                    "--exclude",
+                    "target/*",
+                    "--exclude",
+                    "generated/*",
+                ])
+                .output()
+                .map_err(|e| format!("aws s3 sync commit: {e}"))?;
+            if !out.status.success() {
+                return Err(format!(
+                    "commit snapshot failed: {}",
+                    String::from_utf8_lossy(&out.stderr)
+                ));
+            }
+            (
+                commit_id,
+                snapshot_prefix,
+                list_work_files(&self.work_dir),
+                m.head_commit.clone(),
+            )
+        };
 
         let now = chrono_now();
         let commit = SessionCommit {
@@ -1313,13 +1312,11 @@ impl SessionHandle {
             return Err("branch name required".into());
         }
         if branch == "main" || branch == "master" {
-            return Err(
-                "refuse publish to main/master — open a PR and merge via PR Wizard".into(),
-            );
+            return Err("refuse publish to main/master — open a PR and merge via PR Wizard".into());
         }
         let m = self.meta.lock().unwrap().clone();
         if crate::git_origin::origin_enabled() {
-            let origin = crate::git_origin::GitOrigin::new(&m.repo_id);
+            let origin = crate::git_origin::GitOrigin::for_repo(&m.repo_id);
             if self.work_dir.join(".git").is_dir() {
                 let _ = origin.create_branch(&self.work_dir, branch);
             }
@@ -1444,17 +1441,14 @@ impl SessionHandle {
         if !m.draft_mode {
             return Err("already on base (mainline) session — nothing to merge".into());
         }
-        let base = m
-            .base_branch
-            .clone()
-            .unwrap_or_else(default_branch);
+        let base = m.base_branch.clone().unwrap_or_else(default_branch);
         let source = m
             .branch_name
             .clone()
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| format!("work/{}", &m.session_id[..8.min(m.session_id.len())]));
         let dest_prefix = if crate::git_origin::origin_enabled() {
-            let origin = crate::git_origin::GitOrigin::new(&m.repo_id);
+            let origin = crate::git_origin::GitOrigin::for_repo(&m.repo_id);
             origin.merge_and_push(&self.work_dir, &source, &base)?;
             format!("git/{}/refs/heads/{}/", m.repo_id, base)
         } else {
@@ -1495,9 +1489,7 @@ impl SessionHandle {
         };
         // Mainline sessions still hold pre-merge scaffold in their workdirs.
         // Rematerialize so IDE open shows the merged product tree.
-        if let Err(e) =
-            SessionManager::global().refresh_mainline_after_merge(&m.slug, &m.repo_id)
-        {
+        if let Err(e) = SessionManager::global().refresh_mainline_after_merge(&m.slug, &m.repo_id) {
             tracing::warn!(error = %e, slug = %m.slug, "post-merge mainline refresh failed");
         }
         Ok(serde_json::json!({
@@ -1526,7 +1518,7 @@ impl SessionHandle {
             return Ok(vec![]);
         }
         let repo = self.meta.lock().unwrap().repo_id.clone();
-        crate::git_origin::GitOrigin::new(repo).log(&self.work_dir, n)
+        crate::git_origin::GitOrigin::for_repo(repo).log(&self.work_dir, n)
     }
 
     pub fn git_status_files(&self) -> Vec<crate::git_origin::StatusFile> {
@@ -1658,23 +1650,25 @@ fn schedule_meta_flush(meta: SessionMeta) {
         drop(g);
         let _ = std::thread::Builder::new()
             .name("veil-session-meta-flush".into())
-            .spawn(|| loop {
-                std::thread::sleep(Duration::from_secs(5));
-                let to_write = {
-                    let mut g = match slot.lock() {
-                        Ok(g) => g,
-                        Err(_) => continue,
+            .spawn(|| {
+                loop {
+                    std::thread::sleep(Duration::from_secs(5));
+                    let to_write = {
+                        let mut g = match slot.lock() {
+                            Ok(g) => g,
+                            Err(_) => continue,
+                        };
+                        // Flush at most every 15s unless process is idle-ish
+                        if g.last_flush.elapsed() < Duration::from_secs(15) {
+                            continue;
+                        }
+                        g.pending.take()
                     };
-                    // Flush at most every 15s unless process is idle-ish
-                    if g.last_flush.elapsed() < Duration::from_secs(15) {
-                        continue;
-                    }
-                    g.pending.take()
-                };
-                if let Some(m) = to_write {
-                    if put_session_meta(&m).is_ok() {
-                        if let Ok(mut g) = slot.lock() {
-                            g.last_flush = Instant::now();
+                    if let Some(m) = to_write {
+                        if put_session_meta(&m).is_ok() {
+                            if let Ok(mut g) = slot.lock() {
+                                g.last_flush = Instant::now();
+                            }
                         }
                     }
                 }

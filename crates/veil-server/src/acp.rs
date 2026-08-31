@@ -5,8 +5,10 @@
 //! - `VEIL_ACP_COMMAND` (default `kiro-cli`)
 //! - `VEIL_ACP_ARGS` (default `acp`; set `acp --trust-all-tools` explicitly if needed)
 //! - `VEIL_ACP_CWD` — disk-mode fallback only. **Ignored when
-//!   `VEIL_SOURCE_MODE` is s3/prefer_s3** so Kiro cannot grep staged
+//!   `VEIL_SOURCE_MODE` is s3/prefer_s3/local** so Kiro cannot grep staged
 //!   checkouts under `$TMP/veil-ws` / `$TMP/veil-s3-ws`.
+//! - `VEIL_REFERENCE_DIRS` — optional colon-separated local trees the agent
+//!   may **read** via MCP `reference_*` (not ACP fs).
 //! - `VEIL_ACP_AGENT` — Kiro agent name (default: `veil` when
 //!   `~/.kiro/agents/veil.json` exists; see `config/kiro-agent-veil.json`)
 //! - `VEIL_ACP_TIMEOUT_SECS` (default 300)
@@ -17,11 +19,11 @@
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// Result of one ACP prompt turn.
 #[derive(Debug, Clone)]
@@ -63,10 +65,7 @@ impl AcpProcess {
     fn spawn() -> Result<Self, String> {
         let cmd = std::env::var("VEIL_ACP_COMMAND").unwrap_or_else(|_| "kiro-cli".into());
         let args_raw = std::env::var("VEIL_ACP_ARGS").unwrap_or_else(|_| "acp".into());
-        let mut args: Vec<String> = args_raw
-            .split_whitespace()
-            .map(|s| s.to_string())
-            .collect();
+        let mut args: Vec<String> = args_raw.split_whitespace().map(|s| s.to_string()).collect();
         if args.is_empty() {
             args.push("acp".into());
         }
@@ -170,12 +169,7 @@ impl AcpProcess {
         }
     }
 
-    fn request(
-        &mut self,
-        method: &str,
-        params: Value,
-        timeout: Duration,
-    ) -> Result<Value, String> {
+    fn request(&mut self, method: &str, params: Value, timeout: Duration) -> Result<Value, String> {
         self.request_streaming(method, params, timeout, None)
     }
 
@@ -202,8 +196,8 @@ impl AcpProcess {
         loop {
             let line = self.read_line_timeout(deadline)?;
             deadline = Instant::now() + timeout;
-            let msg: Value = serde_json::from_str(&line)
-                .map_err(|e| format!("ACP JSON parse: {e}: {line}"))?;
+            let msg: Value =
+                serde_json::from_str(&line).map_err(|e| format!("ACP JSON parse: {e}: {line}"))?;
 
             // Streamed session updates (collect text)
             if let Some(method) = msg.get("method").and_then(|m| m.as_str()) {
@@ -248,28 +242,17 @@ impl AcpProcess {
                 if let Some(err) = msg.get("error") {
                     return Err(format!("ACP {method} error: {err}"));
                 }
-                let mut result = msg
-                    .get("result")
-                    .cloned()
-                    .unwrap_or(Value::Null);
+                let mut result = msg.get("result").cloned().unwrap_or(Value::Null);
                 // Attach collected stream text for prompt calls
                 if method == "session/prompt" {
                     if let Value::Object(ref mut map) = result {
                         if !text_chunks.is_empty() {
-                            map.insert(
-                                "_veil_text".into(),
-                                Value::String(text_chunks.join("")),
-                            );
+                            map.insert("_veil_text".into(), Value::String(text_chunks.join("")));
                         }
                         if !tool_hints.is_empty() {
                             map.insert(
                                 "_veil_tools".into(),
-                                Value::Array(
-                                    tool_hints
-                                        .into_iter()
-                                        .map(Value::String)
-                                        .collect(),
-                                ),
+                                Value::Array(tool_hints.into_iter().map(Value::String).collect()),
                             );
                         }
                     }
@@ -321,7 +304,6 @@ impl AcpProcess {
         self.session_id = Some(sid.clone());
         Ok(sid)
     }
-
 
     fn prompt_streaming(
         &mut self,
@@ -475,11 +457,7 @@ fn product_host_port() -> u16 {
     std::env::var("VEIL_PORT")
         .ok()
         .and_then(|s| s.parse().ok())
-        .or_else(|| {
-            std::env::var("PORT")
-                .ok()
-                .and_then(|s| s.parse().ok())
-        })
+        .or_else(|| std::env::var("PORT").ok().and_then(|s| s.parse().ok()))
         .unwrap_or(8080)
 }
 
@@ -573,6 +551,13 @@ fn veil_ide_tool_names() -> Vec<&'static str> {
         "open_dashboard",
         "open_config",
         "get_config",
+        "get_git_status",
+        "get_origin",
+        "bind_origin",
+        "reference_roots",
+        "reference_list",
+        "reference_read",
+        "reference_grep",
         "get_mission",
         "update_mission",
         "get_current_context",
@@ -599,7 +584,9 @@ fn acp_host_method_refusal(method: &str) -> String {
         return format!(
             "VEIL host does not expose the product checkout over ACP {method}. \
              Use veil-ide-tools MCP (read_source, write_source, stub_search, stub_get, \
-             stub_install, ws_*). Do not grep/sed/cat $TMP/veil-ws or $TMP/veil-s3-ws."
+             stub_install, ws_*, reference_roots / reference_list / reference_read / reference_grep). \
+             Do not grep/sed/cat $TMP/veil-ws or $TMP/veil-s3-ws. Operator local code is read-only \
+             via reference_*; product VEIL is write_source."
         );
     }
     format!("method not supported by VEIL host: {method}")
@@ -623,6 +610,7 @@ fn ensure_acp_sandbox() -> PathBuf {
             readme,
             "VEIL ACP sandbox. Product source is not here.\n\
              Use veil-ide-tools MCP: read_source, write_source, stub_search, stub_get.\n\
+             Operator local code (conversion): reference_roots / reference_read (read-only).\n\
              Never inspect $TMP/veil-ws or $TMP/veil-s3-ws.\n",
         );
     }
@@ -681,10 +669,7 @@ fn write_workspace_mcp_json(session_cwd: &str) {
             .entry("mcpServers".to_string())
             .or_insert_with(|| json!({}));
         if let Some(map) = servers.as_object_mut() {
-            map.insert(
-                "veil-ide-tools".into(),
-                veil_ide_mcp_server_entry(&mcp_url),
-            );
+            map.insert("veil-ide-tools".into(), veil_ide_mcp_server_entry(&mcp_url));
         }
     }
     if let Ok(s) = serde_json::to_string_pretty(&doc) {
@@ -813,9 +798,7 @@ fn prompt_acp_streaming_media_locked(
     on_chunk: &mut dyn FnMut(&str),
 ) -> Result<AcpTurnResult, String> {
     let timeout = Duration::from_secs(timeout_secs());
-    let mut guard = ACP
-        .lock()
-        .map_err(|e| format!("ACP lock poisoned: {e}"))?;
+    let mut guard = ACP.lock().map_err(|e| format!("ACP lock poisoned: {e}"))?;
     if guard.is_none() {
         let cwd = resolve_acp_cwd();
         write_workspace_mcp_json(&cwd);
@@ -850,8 +833,12 @@ pub fn acp_enabled() -> bool {
 /// Kiro's default (often `auto` from `~/.kiro` settings) is used when we omit
 /// `--model`. Never pass VEIL placeholders (`kiro`, `acp`, ollama model names).
 fn resolve_acp_model_arg() -> Option<String> {
-    let explicit = std::env::var("VEIL_ACP_MODEL").ok().filter(|s| !s.trim().is_empty());
-    let from_name = std::env::var("VEIL_MODEL_NAME").ok().filter(|s| !s.trim().is_empty());
+    let explicit = std::env::var("VEIL_ACP_MODEL")
+        .ok()
+        .filter(|s| !s.trim().is_empty());
+    let from_name = std::env::var("VEIL_MODEL_NAME")
+        .ok()
+        .filter(|s| !s.trim().is_empty());
     let candidate = explicit.or(from_name)?;
     if is_placeholder_model(&candidate) {
         return None;
@@ -994,8 +981,14 @@ mod tests {
         let dir = ensure_acp_sandbox();
         let s = dir.to_string_lossy();
         assert!(s.contains("veil-acp-cwd"), "sandbox={s}");
-        assert!(!s.contains("veil-ws/"), "sandbox must not be session checkout: {s}");
-        assert!(!s.contains("veil-s3-ws"), "sandbox must not be S3 materialize: {s}");
+        assert!(
+            !s.contains("veil-ws/"),
+            "sandbox must not be session checkout: {s}"
+        );
+        assert!(
+            !s.contains("veil-s3-ws"),
+            "sandbox must not be S3 materialize: {s}"
+        );
         assert!(dir.join("README.txt").is_file());
         assert!(!dir.join("veil.toml").is_file());
         assert!(!dir.join("main.veil").is_file());
@@ -1006,6 +999,7 @@ mod tests {
         let fs = acp_host_method_refusal("fs/readTextFile");
         assert!(fs.contains("veil-ide-tools"), "{fs}");
         assert!(fs.contains("stub_search"), "{fs}");
+        assert!(fs.contains("reference_"), "{fs}");
         let term = acp_host_method_refusal("terminal/create");
         assert!(term.contains("Do not grep/sed"), "{term}");
         let other = acp_host_method_refusal("session/foo");

@@ -58,7 +58,12 @@ async fn resolve_storage_deps() -> storage::application::Deps {
 
 async fn list_repos(State(st): State<StorageState>) -> Result<Json<Value>, StatusCode> {
     match storage::application::list_repos(&st.deps).await {
-        Ok(repos) => Ok(Json(json!(repos))),
+        Ok(repos) => {
+            for r in &repos {
+                let _ = crate::origin_resolve::git_origin_for(r);
+            }
+            Ok(Json(json!(repos)))
+        }
         Err(e) => Err(domain_status(e)),
     }
 }
@@ -68,14 +73,81 @@ struct CreateRepoBody {
     name: String,
     #[serde(default)]
     description: Option<String>,
+    /// Per-project git origin (`kind` git|s3, `provider`, `repo`/`owner`+`name`, `create`).
+    #[serde(default)]
+    origin: Option<Value>,
+}
+
+fn origin_binding_from_remote(
+    cfg: &veil_server::git_origin::RemoteConfig,
+) -> storage::domain::types::OriginBinding {
+    use storage::domain::types::GitProvider as BindProvider;
+    use veil_server::git_origin::GitProvider;
+    storage::domain::types::OriginBinding::Git {
+        provider: match cfg.provider {
+            GitProvider::GitHub => BindProvider::Github,
+            GitProvider::Bitbucket => BindProvider::Bitbucket,
+        },
+        repo: cfg.repo.clone(),
+        subpath: cfg.subpath.clone(),
+        branch: Some(cfg.branch.clone()),
+    }
 }
 
 async fn create_repo(
     State(st): State<StorageState>,
     Json(body): Json<CreateRepoBody>,
 ) -> Result<Json<Value>, StatusCode> {
-    match storage::application::create_repo(&st.deps, body.name, body.description).await {
-        Ok(repo) => Ok(Json(json!(repo))),
+    match storage::application::create_repo(&st.deps, body.name.clone(), body.description.clone())
+        .await
+    {
+        Ok(mut repo) => {
+            let slug = repo.slug.clone();
+            let spec = veil_server::git_provider::OriginRequest::from_value(
+                body.origin.as_ref(),
+                &slug,
+            )
+            .map_err(|_| StatusCode::BAD_REQUEST)?;
+            if spec.wants_git() {
+                let rid = repo.id.value.clone();
+                let desc = body.description.clone();
+                let provisioned = tokio::task::spawn_blocking(move || {
+                    veil_server::git_provider::provision_origin(
+                        &rid,
+                        &slug,
+                        desc.as_deref(),
+                        &spec,
+                    )
+                })
+                .await
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+                match provisioned {
+                    Ok(cfg) => {
+                        let binding = origin_binding_from_remote(&cfg);
+                        match storage::application::set_repo_origin(
+                            &st.deps,
+                            repo.id.value.clone(),
+                            Some(binding),
+                        )
+                        .await
+                        {
+                            Ok(updated) => repo = updated,
+                            Err(e) => {
+                                tracing::error!(error = %e, "set_repo_origin after provision failed");
+                                return Err(StatusCode::BAD_GATEWAY);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!(error = %e, slug = %repo.slug, "git origin provision failed");
+                        return Err(StatusCode::BAD_GATEWAY);
+                    }
+                }
+            } else {
+                crate::origin_resolve::git_origin_for(&repo);
+            }
+            Ok(Json(json!(repo)))
+        }
         Err(e) => Err(domain_status(e)),
     }
 }
@@ -86,7 +158,10 @@ async fn get_repo(
 ) -> Result<Json<Value>, StatusCode> {
     // Accept repo UUID or slug (agent open_project / open_ide use slugs).
     match storage::application::resolve_repo(&st.deps, &id).await {
-        Ok(repo) => Ok(Json(json!(repo))),
+        Ok(repo) => {
+            let _ = crate::origin_resolve::git_origin_for(&repo);
+            Ok(Json(json!(repo)))
+        }
         Err(e) => Err(domain_status(e)),
     }
 }
@@ -557,6 +632,7 @@ async fn bind_repo_origin(
         reachable = Some(origin.exists());
     }
 
+    let _ = crate::origin_resolve::git_origin_for(&repo);
     Ok(Json(json!({
         "ok": true,
         "repo_id": repo.id.value,
@@ -564,6 +640,14 @@ async fn bind_repo_origin(
         "origin": repo.origin,
         "remote_reachable": reachable,
     })))
+}
+
+/// GET /api/git/status — GitHub connection (no secrets) for Config + create.
+async fn git_status() -> Json<Value> {
+    let body = tokio::task::spawn_blocking(veil_server::git_provider::github_status_json)
+        .await
+        .unwrap_or_else(|e| json!({ "connected": false, "error": format!("join: {e}") }));
+    Json(body)
 }
 
 #[derive(Deserialize)]
@@ -1394,7 +1478,7 @@ so a `cr/…` branch is created and the session is published, then Merge."
                 return Ok(Json(v));
             }
             if veil_server::git_origin::origin_enabled() {
-                let origin = veil_server::git_origin::GitOrigin::new(pr.repo_id.to_string());
+                let origin = veil_server::git_origin::GitOrigin::for_repo(pr.repo_id.to_string());
                 if origin.exists() {
                     let tmp = std::env::temp_dir().join(format!("veil-git-merge-{}", pr.repo_id));
                     let _ = std::fs::remove_dir_all(&tmp);
@@ -1882,7 +1966,7 @@ async fn compute_branch_structural_diff(
             let base_b = base_branch.to_string();
             let head_b = head_branch.to_string();
             match tokio::task::spawn_blocking(move || {
-                let origin = veil_server::git_origin::GitOrigin::new(&rid_b);
+                let origin = veil_server::git_origin::GitOrigin::for_repo(&rid_b);
                 if !origin.exists() {
                     return None;
                 }
@@ -2503,6 +2587,9 @@ struct DeployState {
 }
 
 async fn deploy_deps(bus: Arc<dyn veil_shared::Bus + Send + Sync>) -> deploy::application::Deps {
+    if veil_server::platform_local() {
+        return crate::local_ports::local_deploy_deps(bus);
+    }
     let config = aws_config::load_defaults(aws_config::BehaviorVersion::latest()).await;
     let ddb = aws_sdk_dynamodb::Client::new(&config);
     let s3 = aws_sdk_s3::Client::new(&config);
@@ -3877,8 +3964,70 @@ struct ArtifactRegistryState {
     auth: Arc<dyn crate::auth_provider::AuthProviderBinding>,
 }
 
-// ─── Function Invoke (Phase 3) ──────────────────────────────────────────────
+// ─── Compile-on-save (workflow → cdylib artifact) ───────────────────────────
 
+#[derive(Deserialize)]
+struct CompileWorkflowBody {
+    /// Artifact id for the compiled workflow (e.g. "wf:tenant/onboarding").
+    workflow_id: String,
+    /// Absolute path to the workflow's primary `.veil` package on disk. The
+    /// save handler writes the source before calling this; the path must live
+    /// under the runtime's working tree.
+    veil_source_path: String,
+}
+
+/// Codegen + `cargo build --release` a saved workflow to a cdylib, content-hash
+/// the `.so`, upload it, and register a Pinned `Cdylib`/`Ffi` artifact version.
+///
+/// Any transpile or compile error fails the request (HTTP 422) so the builder
+/// surfaces it — a workflow version is only runnable after a green compile.
+async fn compile_workflow_handler(
+    State(st): State<ArtifactRegistryState>,
+    Json(body): Json<CompileWorkflowBody>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let source = std::path::PathBuf::from(&body.veil_source_path);
+    if !source.is_file() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": format!("veil source not found: {}", body.veil_source_path) })),
+        ));
+    }
+    // Scratch build dir under temp, namespaced by workflow id.
+    let work_dir = std::env::temp_dir()
+        .join("veil-workflow-compile")
+        .join(body.workflow_id.replace([':', '/'], "_"));
+
+    match crate::compile_workflow::compile_and_register(
+        &st.store,
+        &body.workflow_id,
+        &source,
+        &work_dir,
+    )
+    .await
+    {
+        Ok(c) => Ok(Json(json!({
+            "ok": true,
+            "workflow_id": c.id,
+            "version": c.version,
+            "content_hash": c.content_hash,
+            "blob_key": c.blob_key,
+        }))),
+        Err(e) => {
+            tracing::error!(workflow_id = %body.workflow_id, error = %e, "compile-on-save failed");
+            // Transpile/compile failures are client-actionable (bad workflow);
+            // registry/io failures are server-side.
+            let status = match e {
+                crate::compile_workflow::CompileError::Transpile(_)
+                | crate::compile_workflow::CompileError::Compile(_)
+                | crate::compile_workflow::CompileError::NoArtifact(_) => StatusCode::UNPROCESSABLE_ENTITY,
+                _ => StatusCode::INTERNAL_SERVER_ERROR,
+            };
+            Err((status, Json(json!({ "error": e.to_string() }))))
+        }
+    }
+}
+
+// ─── Function Invoke (Phase 3) ──────────────────────────────────────────────
 #[derive(Clone)]
 struct FunctionInvokeState {
     registry: Arc<crate::function_invoke::FunctionRegistry>,
@@ -4586,6 +4735,7 @@ pub async fn build_platform_router(
             "/api/repos/{id}/origin",
             get(get_repo_origin).post(bind_repo_origin),
         )
+        .route("/api/git/status", get(git_status))
         .route("/api/read-file", post(read_file_api))
         .route("/api/write-file", post(write_file_api))
         .route("/api/list-files", post(list_files_api))
@@ -4751,6 +4901,11 @@ pub async fn build_platform_router(
         .route(
             "/api/contributions/{app_id}/{contribution_id}",
             patch(patch_contribution).delete(delete_contribution),
+        )
+        // Compile-on-save: codegen + build a saved workflow to a cdylib artifact.
+        .route(
+            "/api/workflows/compile",
+            post(compile_workflow_handler),
         )
         .with_state(art_reg)
         .layer(build_artifact_cors_layer());

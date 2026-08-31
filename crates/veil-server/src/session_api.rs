@@ -1,18 +1,18 @@
 //! HTTP API for durable coding sessions and workspace tools.
 
 use axum::extract::{Path, Query, State};
-use axum::http::{header, StatusCode};
+use axum::http::{StatusCode, header};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
-use serde_json::json;
+use serde_json::{Value, json};
 
-use crate::session::{
-    append_turn, current_user_id, delete_session_meta, list_session_commits, list_sessions_for_user,
-    list_turns, sessions_enabled, SessionManager, SessionTurn, WorkspaceFs,
-};
 use crate::provider::hub::MultiProjectProvider;
+use crate::session::{
+    SessionManager, SessionTurn, WorkspaceFs, append_turn, current_user_id, delete_session_meta,
+    list_session_commits, list_sessions_for_user, list_turns, sessions_enabled,
+};
 use std::sync::Arc;
 
 pub fn session_routes() -> Router<Arc<MultiProjectProvider>> {
@@ -32,10 +32,7 @@ pub fn session_routes() -> Router<Arc<MultiProjectProvider>> {
         .route("/api/sessions/{id}/diff", get(session_git_diff))
         .route("/api/sessions/{id}/merge", post(merge_session))
         .route("/api/sessions/{id}/publish-branch", post(publish_branch))
-        .route(
-            "/api/sessions/{id}/active-change",
-            post(set_active_pr),
-        )
+        .route("/api/sessions/{id}/active-change", post(set_active_pr))
         // Workspace tools (also exposed via MCP)
         .route("/api/sessions/{id}/ws/list", post(ws_list))
         .route("/api/sessions/{id}/ws/read", post(ws_read))
@@ -46,7 +43,10 @@ pub fn session_routes() -> Router<Arc<MultiProjectProvider>> {
         // Intent Present commit targets (Agent → UX → Server product path)
         .route("/api/ux/create_project", post(ux_create_project))
         .route("/api/ux/create_pr", post(ux_create_pr))
-        .route("/api/ux/intent_log", post(ux_intent_log).get(ux_intent_log_list))
+        .route(
+            "/api/ux/intent_log",
+            post(ux_intent_log).get(ux_intent_log_list),
+        )
         .route("/api/ux/intent_ack", post(ux_intent_ack))
         .route("/api/ux/intent_ack/{id}", get(ux_intent_ack_get))
         .route("/api/ux/sign_off", post(ux_sign_off))
@@ -470,7 +470,10 @@ async fn ws_list(Path(id): Path<String>, Json(body): Json<ListBody>) -> axum::re
         Ok(h) => h,
         Err(e) => return err_resp(StatusCode::NOT_FOUND, e),
     };
-    match h.fs.list(body.path.as_deref().unwrap_or(""), body.max.unwrap_or(500)) {
+    match h
+        .fs
+        .list(body.path.as_deref().unwrap_or(""), body.max.unwrap_or(500))
+    {
         Ok(files) => json_ok(json!({ "files": files })),
         Err(e) => err_resp(StatusCode::BAD_REQUEST, e),
     }
@@ -507,7 +510,10 @@ async fn ws_write(Path(id): Path<String>, Json(body): Json<WriteBody>) -> axum::
         Ok(h) => h,
         Err(e) => return err_resp(StatusCode::NOT_FOUND, e),
     };
-    match h.fs.write(&body.path, &body.content, body.if_match.as_deref()) {
+    match h
+        .fs
+        .write(&body.path, &body.content, body.if_match.as_deref())
+    {
         Ok(r) => {
             let rev = h.bump_revision(&body.path, r.etag.clone());
             crate::revision::bus().publish(r.bytes, &body.path, "ws_write");
@@ -584,10 +590,11 @@ async fn ws_grep(Path(id): Path<String>, Json(body): Json<GrepBody>) -> axum::re
         Ok(h) => h,
         Err(e) => return err_resp(StatusCode::NOT_FOUND, e),
     };
-    match h
-        .fs
-        .grep(&body.pattern, body.path.as_deref(), body.max_matches.unwrap_or(50))
-    {
+    match h.fs.grep(
+        &body.pattern,
+        body.path.as_deref(),
+        body.max_matches.unwrap_or(50),
+    ) {
         Ok(hits) => json_ok(json!({ "hits": hits })),
         Err(e) => err_resp(StatusCode::BAD_REQUEST, e),
     }
@@ -632,7 +639,10 @@ pub async fn post_autosave(
         .and_then(|v| v.to_str().ok())
     {
         if let Ok(h) = SessionManager::global().attach(sid) {
-            return match h.fs.write(&body.file, &body.content, body.if_match.as_deref()) {
+            return match h
+                .fs
+                .write(&body.file, &body.content, body.if_match.as_deref())
+            {
                 Ok(r) => {
                     let rev = h.bump_revision(&body.file, r.etag.clone());
                     crate::revision::bus().publish(r.bytes, &body.file, "autosave");
@@ -668,6 +678,16 @@ struct UxCreateProjectBody {
     #[serde(default)]
     description: Option<String>,
     #[serde(default)]
+    origin: Option<Value>,
+    #[serde(default)]
+    git_provider: Option<String>,
+    #[serde(default)]
+    git_owner: Option<String>,
+    #[serde(default)]
+    git_repo: Option<String>,
+    #[serde(default)]
+    git_mode: Option<String>,
+    #[serde(default)]
     open: Option<bool>,
     #[serde(default)]
     open_ide: Option<bool>,
@@ -675,8 +695,31 @@ struct UxCreateProjectBody {
 
 /// Domain create after Present choreography — same as agent create_project domain.
 async fn ux_create_project(Json(body): Json<UxCreateProjectBody>) -> axum::response::Response {
-    match crate::platform_tools::create_project_domain(&body.name, body.description.as_deref())
-        .await
+    let origin = body.origin.clone().or_else(|| {
+        if body.git_provider.is_none() && body.git_owner.is_none() && body.git_repo.is_none() {
+            return None;
+        }
+        let mut o = json!({ "kind": "git" });
+        if let Some(p) = &body.git_provider {
+            o["provider"] = json!(p);
+        }
+        if let Some(ow) = &body.git_owner {
+            o["owner"] = json!(ow);
+        }
+        if let Some(r) = &body.git_repo {
+            o["repo"] = json!(r);
+        }
+        if let Some(m) = &body.git_mode {
+            o["create"] = json!(m != "bind");
+        }
+        Some(o)
+    });
+    match crate::platform_tools::create_project_domain(
+        &body.name,
+        body.description.as_deref(),
+        origin,
+    )
+    .await
     {
         Ok(mut v) => {
             let ok = v.get("ok").and_then(|o| o.as_bool()).unwrap_or(false);
@@ -886,11 +929,7 @@ struct EditsQuery {
 async fn review_edits(Query(q): Query<EditsQuery>) -> axum::response::Response {
     let slug = q.slug.filter(|s| !s.is_empty());
     let turn = q.turn.filter(|s| !s.is_empty());
-    let edits = crate::review::list_edits(
-        slug.as_deref(),
-        turn.as_deref(),
-        q.limit.unwrap_or(200),
-    );
+    let edits = crate::review::list_edits(slug.as_deref(), turn.as_deref(), q.limit.unwrap_or(200));
     json_ok(json!({
         "ok": true,
         "count": edits.len(),
@@ -898,7 +937,8 @@ async fn review_edits(Query(q): Query<EditsQuery>) -> axum::response::Response {
     }))
 }
 
-async fn review_summary() -> axum::response::Response {    let mut by: Vec<_> = crate::review::summary_by_slug().into_values().collect();
+async fn review_summary() -> axum::response::Response {
+    let mut by: Vec<_> = crate::review::summary_by_slug().into_values().collect();
     by.sort_by(|a, b| b.outstanding.cmp(&a.outstanding));
     json_ok(json!({
         "ok": true,

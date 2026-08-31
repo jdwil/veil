@@ -9,11 +9,11 @@
 
 use std::sync::Arc;
 
+use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::Json;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::agent_runtime_tools;
 use crate::provider::SourceProvider;
@@ -73,9 +73,7 @@ async fn dispatch_runtime_tool(
             let name = arguments.get("name").and_then(|v| v.as_str());
             agent_runtime_tools::tool_dev_restart(project_root, name, project_name)
         }
-        "smoke_status" => {
-            agent_runtime_tools::tool_smoke_status(project_root, project_name)
-        }
+        "smoke_status" => agent_runtime_tools::tool_smoke_status(project_root, project_name),
         other => Err(format!("unknown runtime tool: {other}")),
     }
 }
@@ -518,9 +516,11 @@ fn mcp_tools() -> Vec<Value> {
     ];
     // Platform UX (create_project, SDLC, deploy, nav) — full product surface
     tools.extend(crate::platform_tools::tool_definitions());
+    // Operator-chosen local trees (read-only conversion source)
+    tools.extend(crate::reference_fs::tool_definitions());
     // Mind Palace wiki tools (when MIND_PALACE=1 + AWS configured)
     if crate::mind_palace_tools::enabled() {
-    tools.extend([
+        tools.extend([
         json!({
             "name": "wiki_search",
             "description": "Semantic search across Mind Palace wiki pages. Call this before answering VEIL platform/language questions.",
@@ -639,15 +639,9 @@ fn mcp_tools() -> Vec<Value> {
 }
 
 /// Handle a single MCP JSON-RPC request and return the response.
-async fn handle_mcp_request<P: SourceProvider>(
-    provider: &Arc<P>,
-    request: &Value,
-) -> Value {
+async fn handle_mcp_request<P: SourceProvider>(provider: &Arc<P>, request: &Value) -> Value {
     let id = request.get("id").cloned().unwrap_or(Value::Null);
-    let method = request
-        .get("method")
-        .and_then(|m| m.as_str())
-        .unwrap_or("");
+    let method = request.get("method").and_then(|m| m.as_str()).unwrap_or("");
     let params = request.get("params").cloned().unwrap_or(json!({}));
 
     match method {
@@ -677,14 +671,8 @@ async fn handle_mcp_request<P: SourceProvider>(
         }),
 
         "tools/call" => {
-            let tool_name = params
-                .get("name")
-                .and_then(|n| n.as_str())
-                .unwrap_or("");
-            let arguments = params
-                .get("arguments")
-                .cloned()
-                .unwrap_or(json!({}));
+            let tool_name = params.get("name").and_then(|n| n.as_str()).unwrap_or("");
+            let arguments = params.get("arguments").cloned().unwrap_or(json!({}));
 
             let result = dispatch_tool(provider, tool_name, &arguments).await;
             match result {
@@ -730,11 +718,8 @@ async fn with_bound_teaching<P: SourceProvider>(provider: &P, body: String) -> S
     let source = provider.read_source("").await.unwrap_or_default();
     let registry = provider.registry();
     let root = provider.project_root();
-    let teaching = crate::agent_context::assemble_bound_package_teaching(
-        &source,
-        &registry,
-        root.as_deref(),
-    );
+    let teaching =
+        crate::agent_context::assemble_bound_package_teaching(&source, &registry, root.as_deref());
     format!("{body}\n\n---\n{teaching}")
 }
 
@@ -744,6 +729,11 @@ async fn dispatch_tool<P: SourceProvider>(
     tool_name: &str,
     arguments: &Value,
 ) -> Result<String, String> {
+    // Read-only operator local trees (no project required).
+    if crate::reference_fs::is_reference_tool(tool_name) {
+        return crate::reference_fs::dispatch(tool_name, arguments);
+    }
+
     // Platform UX tools (no project required) — agent controls the runtime dashboard.
     if is_platform_ux_tool(tool_name) {
         let result = crate::platform_tools::dispatch(tool_name, arguments).await?;
@@ -758,9 +748,7 @@ async fn dispatch_tool<P: SourceProvider>(
                 | "rename_project"
                 | "update_project"
         ) {
-            if let Some(slug) =
-                crate::agent_scope::slug_from_tool(tool_name, arguments, &result)
-            {
+            if let Some(slug) = crate::agent_scope::slug_from_tool(tool_name, arguments, &result) {
                 match crate::agent_scope::ensure_bound(&slug, Some(provider.as_ref())) {
                     Ok(info) => {
                         // Merge bind info into tool result for the model
@@ -786,14 +774,13 @@ async fn dispatch_tool<P: SourceProvider>(
         .try_with(|n| n.clone())
         .ok();
     if scoped.is_none() {
-        let fallback = crate::acp::get_acp_project()
-            .or_else(|| {
-                arguments
-                    .get("project")
-                    .or_else(|| arguments.get("project_id"))
-                    .and_then(|v| v.as_str())
-                    .and_then(crate::agent_scope::normalize_slug)
-            });
+        let fallback = crate::acp::get_acp_project().or_else(|| {
+            arguments
+                .get("project")
+                .or_else(|| arguments.get("project_id"))
+                .and_then(|v| v.as_str())
+                .and_then(crate::agent_scope::normalize_slug)
+        });
         if let Some(name) = fallback {
             // Hot bind only — full prepare_project rematerializes S3 and
             // historically deadlocked ACP via reset_acp mid-turn.
@@ -966,16 +953,15 @@ async fn dispatch_tool_scoped<P: SourceProvider>(
         );
     }
 
-    let source = provider.read_source("").await.map_err(|e| format!("read_source: {e}"))?;
+    let source = provider
+        .read_source("")
+        .await
+        .map_err(|e| format!("read_source: {e}"))?;
     let registry = provider.registry();
 
     match tool_name {
         "veil_check" => {
-            let check = rig_tools::run_check_kind(
-                &source,
-                &registry,
-                Some(provider.file_kind("")),
-            );
+            let check = rig_tools::run_check_kind(&source, &registry, Some(provider.file_kind("")));
             let project = crate::provider::hub::CURRENT_PROJECT
                 .try_with(|n| n.clone())
                 .ok()
@@ -1140,11 +1126,7 @@ async fn dispatch_tool_scoped<P: SourceProvider>(
                     }
                 };
             }
-            let check = rig_tools::run_check_kind(
-                content,
-                &registry,
-                Some(provider.file_kind("")),
-            );
+            let check = rig_tools::run_check_kind(content, &registry, Some(provider.file_kind("")));
             // MultiProjectProvider::write_source records revision/uncommitted.
             // Surface status so the model is nudged to session_commit (History tab).
             let project = crate::provider::hub::CURRENT_PROJECT
@@ -1185,9 +1167,10 @@ async fn dispatch_tool_scoped<P: SourceProvider>(
                 )
             };
             let slug = project.clone().unwrap_or_default();
-            let rationale = rats.get("*").cloned().or_else(|| {
-                rats.values().next().cloned()
-            });
+            let rationale = rats
+                .get("*")
+                .cloned()
+                .or_else(|| rats.values().next().cloned());
             let outstanding = if !slug.is_empty() {
                 Some(crate::review::record_file_edit(
                     &slug,
@@ -1356,21 +1339,15 @@ async fn dispatch_tool_scoped<P: SourceProvider>(
                 .get("name")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| "create_file requires 'name' argument".to_string())?;
-            let kind = arguments
-                .get("kind")
-                .and_then(|v| v.as_str());
+            let kind = arguments.get("kind").and_then(|v| v.as_str());
             let content = arguments
                 .get("content")
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string());
-            let created = crate::file_ops::create_file_in_project(
-                provider.as_ref(),
-                name,
-                kind,
-                content,
-            )
-            .await
-            .map_err(|e| e.message().to_string())?;
+            let created =
+                crate::file_ops::create_file_in_project(provider.as_ref(), name, kind, content)
+                    .await
+                    .map_err(|e| e.message().to_string())?;
             let slug = crate::coding_gates::current_project_slug()
                 .or_else(|| {
                     crate::provider::hub::CURRENT_PROJECT
@@ -1552,10 +1529,12 @@ async fn dispatch_session_git_tool<P: SourceProvider>(
                 .get("slug")
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string())
-                .or_else(|| crate::provider::hub::CURRENT_PROJECT.try_with(|n| n.clone()).ok())
-                .ok_or_else(|| {
-                    "create_branch needs project scope or slug argument".to_string()
-                })?;
+                .or_else(|| {
+                    crate::provider::hub::CURRENT_PROJECT
+                        .try_with(|n| n.clone())
+                        .ok()
+                })
+                .ok_or_else(|| "create_branch needs project scope or slug argument".to_string())?;
             let base = arguments.get("base_branch").and_then(|v| v.as_str());
             let h = mgr.create_branch(&slug, base, true, Some(branch_name))?;
             mgr.set_active_for_project(&slug, &h.session_id());
@@ -1643,17 +1622,19 @@ async fn dispatch_session_git_tool<P: SourceProvider>(
                 .get("slug")
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string())
-                .or_else(|| crate::provider::hub::CURRENT_PROJECT.try_with(|n| n.clone()).ok())
+                .or_else(|| {
+                    crate::provider::hub::CURRENT_PROJECT
+                        .try_with(|n| n.clone())
+                        .ok()
+                })
                 .ok_or_else(|| "switch_main needs project scope or slug".to_string())?;
             // Drop preferred feature branch + any warm mainline handle so cold
             // attach re-syncs S3 (picks up merges).
             mgr.clear_active_for_project(&slug);
-            if let Ok(list) = crate::session::list_sessions_for_user(&crate::session::current_user_id())
+            if let Ok(list) =
+                crate::session::list_sessions_for_user(&crate::session::current_user_id())
             {
-                for m in list
-                    .into_iter()
-                    .filter(|m| m.slug == slug && !m.draft_mode)
-                {
+                for m in list.into_iter().filter(|m| m.slug == slug && !m.draft_mode) {
                     mgr.drop_handle(&m.session_id);
                 }
             }
@@ -1679,17 +1660,13 @@ async fn dispatch_ws_tool(tool_name: &str, arguments: &Value) -> Result<String, 
     let h = resolve_session_for_ws(arguments).await?;
     match tool_name {
         "ws_list" => {
-            let path = arguments
-                .get("path")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let max = arguments
-                .get("max")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(500) as usize;
+            let path = arguments.get("path").and_then(|v| v.as_str()).unwrap_or("");
+            let max = arguments.get("max").and_then(|v| v.as_u64()).unwrap_or(500) as usize;
             let files = h.fs.list(path, max)?;
-            Ok(serde_json::to_string_pretty(&serde_json::json!({ "files": files }))
-                .unwrap_or_default())
+            Ok(
+                serde_json::to_string_pretty(&serde_json::json!({ "files": files }))
+                    .unwrap_or_default(),
+            )
         }
         "ws_read" => {
             let path = arguments

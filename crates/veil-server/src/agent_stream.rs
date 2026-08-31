@@ -18,7 +18,7 @@ use std::time::Duration;
 use serde_json::json;
 use tokio::sync::mpsc;
 
-use crate::agent::{run_turn, AgentMessage, AgentToolCall, AgentTurnRequest, AgentTurnResponse};
+use crate::agent::{AgentMessage, AgentToolCall, AgentTurnRequest, AgentTurnResponse, run_turn};
 use crate::model::ModelConfig;
 use crate::provider::SourceProvider;
 
@@ -31,9 +31,7 @@ const TYPE_BATCH: usize = 48;
 pub type StreamTx = mpsc::Sender<(String, String)>;
 
 async fn emit(tx: &StreamTx, event: &str, data: serde_json::Value) {
-    let _ = tx
-        .send((event.to_string(), data.to_string()))
-        .await;
+    let _ = tx.send((event.to_string(), data.to_string())).await;
 }
 
 /// Live model path: one WS frame per ACP delta (no artificial delay).
@@ -74,7 +72,10 @@ async fn emit_typed(tx: &StreamTx, text: &str) {
 
 /// Emit a chunk as either a tool event or **live** text (ACP path).
 async fn emit_chunk_or_tool(tx: &StreamTx, chunk: &str) {
-    if let Some(name) = chunk.strip_prefix("\x01TOOL:").and_then(|s| s.strip_suffix('\x01')) {
+    if let Some(name) = chunk
+        .strip_prefix("\x01TOOL:")
+        .and_then(|s| s.strip_suffix('\x01'))
+    {
         emit(tx, "tool", json!({ "name": name, "detail": "running" })).await;
     } else {
         emit_live(tx, chunk).await;
@@ -181,7 +182,7 @@ pub async fn run_turn_stream<P: SourceProvider>(
                         if let Some(s) = slug {
                             created_slug = Some(s.clone());
                             prefix_notes.push(format!(
-                                "HOST already ran create_project for `{s}` (DDB+S3). UX Present will animate create form then open IDE. Do NOT re-create, curl /api/repos, or mkdir disk hub. Continue with write_source/create_file only. Product annotations go in layers/*.layer via `ann` — not a platform gap."
+                                "HOST already ran create_project for `{s}` (catalog + git origin). UX Present will animate create form then open IDE. Do NOT re-create, curl /api/repos, or mkdir disk hub. Continue with write_source/create_file only. Product annotations go in layers/*.layer via `ann` — not a platform gap."
                             ));
                         }
                         // Let the browser finish Present before ACP floods write_source
@@ -204,7 +205,8 @@ pub async fn run_turn_stream<P: SourceProvider>(
                                 match crate::focus::wait_intent_ack(iid, 14_000).await {
                                     Ok(_) => {
                                         prefix_notes.push(
-                                            "UX Present ACK received — safe to write_source.".into(),
+                                            "UX Present ACK received — safe to write_source."
+                                                .into(),
                                         );
                                         let _ = emit(
                                             &tx,
@@ -231,14 +233,8 @@ pub async fn run_turn_stream<P: SourceProvider>(
             if step.tool == "rename_project" || step.tool == "update_project" {
                 if let Ok(v) = serde_json::from_str::<serde_json::Value>(&detail) {
                     if v.get("ok").and_then(|o| o.as_bool()) == Some(true) {
-                        let name = v
-                            .get("name")
-                            .and_then(|s| s.as_str())
-                            .unwrap_or("?");
-                        let slug = v
-                            .get("slug")
-                            .and_then(|s| s.as_str())
-                            .unwrap_or("?");
+                        let name = v.get("name").and_then(|s| s.as_str()).unwrap_or("?");
+                        let slug = v.get("slug").and_then(|s| s.as_str()).unwrap_or("?");
                         prefix_notes.push(format!(
                             "HOST already ran rename_project → `{name}` (slug `{slug}`). Do NOT curl/PATCH /api/repos or Bitbucket. Confirm to the user; do not retry."
                         ));
@@ -348,17 +344,11 @@ async fn stream_acp_turn<P: SourceProvider>(
     turn_id: &str,
 ) -> Result<(), String> {
     let loaded = provider.list_files().await;
-    let source = provider
-        .read_source("")
-        .await
-        .map_err(|e| e.to_string())?;
+    let source = provider.read_source("").await.map_err(|e| e.to_string())?;
     let registry = provider.registry();
     let project_root = provider.project_root();
-    let preamble_pack = crate::agent_context::assemble_preamble(
-        &source,
-        &registry,
-        project_root.as_deref(),
-    );
+    let preamble_pack =
+        crate::agent_context::assemble_preamble(&source, &registry, project_root.as_deref());
     let active_name = loaded
         .iter()
         .find(|f| f.active)
@@ -616,24 +606,14 @@ async fn stream_acp_turn<P: SourceProvider>(
             },
         );
     }
-    emit(
-        tx,
-        "done",
-        serde_json::to_value(&resp).unwrap_or(json!({})),
-    )
-    .await;
+    emit(tx, "done", serde_json::to_value(&resp).unwrap_or(json!({}))).await;
     Ok(())
 }
 
 async fn stream_response_typed(tx: &StreamTx, resp: AgentTurnResponse) {
     // Tools first so SPA navigation + tool chips fire before the essay text.
     for t in &resp.tool_calls {
-        emit(
-            tx,
-            "tool",
-            json!({ "name": t.name, "detail": t.detail }),
-        )
-        .await;
+        emit(tx, "tool", json!({ "name": t.name, "detail": t.detail })).await;
     }
     let text = resp
         .messages
@@ -654,12 +634,7 @@ async fn stream_response_typed(tx: &StreamTx, resp: AgentTurnResponse) {
         resp.source_changed,
     )
     .await;
-    emit(
-        tx,
-        "done",
-        serde_json::to_value(&resp).unwrap_or(json!({})),
-    )
-    .await;
+    emit(tx, "done", serde_json::to_value(&resp).unwrap_or(json!({}))).await;
 }
 
 fn chrono_id() -> String {

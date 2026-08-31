@@ -6,33 +6,31 @@
 use std::sync::Arc;
 
 use axum::{
-    Router,
+    Json, Router,
     extract::{Path, Query, State, WebSocketUpgrade},
-    http::{header, Request, StatusCode},
+    http::{Request, StatusCode, header},
     middleware::{self, Next},
     response::IntoResponse,
     routing::{get, post},
-    Json,
 };
 use tower_http::cors::CorsLayer;
 
 use crate::protocol::{CheckRequest, CheckResponse, EditRequest, EditResponse};
-use crate::provider::hub::{
-    MultiProjectProvider, OpenErrorKind, ProjectsHub, CURRENT_PROJECT,
-};
+use crate::provider::hub::{CURRENT_PROJECT, MultiProjectProvider, OpenErrorKind, ProjectsHub};
 use crate::provider::{FileKind, SourceProvider};
 
 // ─── Transient annotation cache (UX-030) ──────────────────────────────────
 // Stores resolved annotations from the most recent POST /api/edit batch.
 // GET /api/diff correlates diff items with this cache by (path, change_kind).
-use std::sync::Mutex;
 use std::collections::HashMap;
+use std::sync::Mutex;
 
 /// Key for annotation cache: (construct path, diff kind like "added"/"body_changed").
 type AnnotationCacheKey = (String, String);
 
-static ANNOTATION_CACHE: std::sync::LazyLock<Mutex<HashMap<AnnotationCacheKey, veil_ir::EditAnnotation>>> =
-    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+static ANNOTATION_CACHE: std::sync::LazyLock<
+    Mutex<HashMap<AnnotationCacheKey, veil_ir::EditAnnotation>>,
+> = std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Per-construct short intents from write_source.rationales / edit annotations.
 /// Keyed by construct name (case-sensitive preferred; lookup also tries ignore-case).
@@ -86,9 +84,9 @@ pub fn record_rationales(map: HashMap<String, String>) {
         return;
     }
     // Durable: active project session (survives process restart via DDB session META).
-    if let Some(h) = crate::coding_gates::project_session(
-        crate::coding_gates::current_project_slug().as_deref(),
-    ) {
+    if let Some(h) =
+        crate::coding_gates::project_session(crate::coding_gates::current_project_slug().as_deref())
+    {
         let _ = h.merge_rationales(&clean);
     }
 }
@@ -118,12 +116,13 @@ fn record_rationales_memory_only(map: HashMap<String, String>) {
                     "body_changed",
                     "annotations_changed",
                 ] {
-                    ac.entry((k.clone(), kind.to_string()))
-                        .or_insert_with(|| veil_ir::EditAnnotation {
+                    ac.entry((k.clone(), kind.to_string())).or_insert_with(|| {
+                        veil_ir::EditAnnotation {
                             intent: Some(v.clone()),
                             category: None,
                             criticality: None,
-                        });
+                        }
+                    });
                 }
             }
         }
@@ -188,7 +187,10 @@ pub fn ide_routes<P: SourceProvider + 'static>() -> Router<Arc<P>> {
         .route("/chat", get(ws_aether_chat_route::<P>))
         .route("/agent/tools", get(get_agent_tools))
         .route("/mcp", post(crate::mcp::post_mcp::<P>))
-        .route("/dev/targets", get(crate::devloop_api::get_dev_targets::<P>))
+        .route(
+            "/dev/targets",
+            get(crate::devloop_api::get_dev_targets::<P>),
+        )
         .route("/dev/start", post(crate::devloop_api::post_dev_start::<P>))
         .route("/dev/stop", post(crate::devloop_api::post_dev_stop::<P>))
         .route("/dev/logs", get(crate::devloop_api::get_dev_logs::<P>))
@@ -250,14 +252,10 @@ pub fn build_router<P: SourceProvider + 'static>(provider: P) -> Router {
     let state = Arc::new(provider);
     // Same DevLoop extension as multi-project — without it `/dev/*` 500s and the
     // IDE launcher (DevToolbar) hides itself.
-    let dev_loops: crate::devloop_api::DevLoopState =
-        crate::devloop::SharedDevLoops::default();
+    let dev_loops: crate::devloop_api::DevLoopState = crate::devloop::SharedDevLoops::default();
     crate::devloop::set_global_dev_loops(dev_loops.clone());
     let router = hub_routes::<Arc<P>>()
-        .nest(
-            "/api",
-            ide_routes::<P>().layer(axum::Extension(dev_loops)),
-        )
+        .nest("/api", ide_routes::<P>().layer(axum::Extension(dev_loops)))
         .layer(CorsLayer::permissive())
         .with_state(state);
     with_auth(router)
@@ -275,8 +273,7 @@ pub fn build_multi_router(hub: ProjectsHub) -> Router {
     crate::chat_log::init_logger();
     crate::session::spawn_session_reaper();
     let multi = Arc::new(MultiProjectProvider::new(hub));
-    let dev_loops: crate::devloop_api::DevLoopState =
-        crate::devloop::SharedDevLoops::default();
+    let dev_loops: crate::devloop_api::DevLoopState = crate::devloop::SharedDevLoops::default();
     crate::devloop::set_global_dev_loops(dev_loops.clone());
     let ide = ide_routes::<MultiProjectProvider>()
         .layer(axum::Extension(dev_loops.clone()))
@@ -288,7 +285,10 @@ pub fn build_multi_router(hub: ProjectsHub) -> Router {
     // Hub-level agent + MCP for the runtime shell (same-origin ProductHost).
     // Platform UX tools (navigate_to, list_prs, …) do not require a project.
     let hub_agent = Router::new()
-        .route("/agent/chat", get(ws_aether_chat_route::<MultiProjectProvider>))
+        .route(
+            "/agent/chat",
+            get(ws_aether_chat_route::<MultiProjectProvider>),
+        )
         .route("/chat", get(ws_aether_chat_route::<MultiProjectProvider>))
         .route("/agent/status", get(get_agent_status))
         .route("/mcp", post(crate::mcp::post_mcp::<MultiProjectProvider>))
@@ -326,10 +326,7 @@ pub fn build_multi_router(hub: ProjectsHub) -> Router {
     with_auth(router)
 }
 
-fn session_handle_belongs(
-    h: &crate::session::SessionHandle,
-    project: &str,
-) -> bool {
+fn session_handle_belongs(h: &crate::session::SessionHandle, project: &str) -> bool {
     let m = h.snapshot_meta();
     crate::session::session_belongs_to_project(&m.slug, &m.repo_id, project)
 }
@@ -455,7 +452,9 @@ async fn project_scope_middleware(
                     );
                 } else {
                     // Pin under both route key and canonical slug so hub lookups hit.
-                    multi.hub().bind_session_provider(&project, h.provider.clone());
+                    multi
+                        .hub()
+                        .bind_session_provider(&project, h.provider.clone());
                     if h.slug() != project {
                         multi
                             .hub()
@@ -535,7 +534,10 @@ type SharedProvider<P> = Arc<P>;
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
 
-fn parse_source(source: &str, registry: &veil_ir::LayerRegistry) -> Result<veil_ir::Solution, String> {
+fn parse_source(
+    source: &str,
+    registry: &veil_ir::LayerRegistry,
+) -> Result<veil_ir::Solution, String> {
     parse_source_at(source, registry, None)
 }
 
@@ -588,8 +590,12 @@ fn parse_source_at(
             }
         }
     }
-    veil_parser::parse_with_registry(&tokens, registry.clone())
-        .map_err(|errs| errs.iter().map(|e| e.to_string()).collect::<Vec<_>>().join("; "))
+    veil_parser::parse_with_registry(&tokens, registry.clone()).map_err(|errs| {
+        errs.iter()
+            .map(|e| e.to_string())
+            .collect::<Vec<_>>()
+            .join("; ")
+    })
 }
 
 fn json_response(body: String) -> impl IntoResponse {
@@ -598,7 +604,9 @@ fn json_response(body: String) -> impl IntoResponse {
 
 // ─── GET Handlers ──────────────────────────────────────────────────────────
 
-async fn get_ir<P: SourceProvider>(State(state): State<SharedProvider<P>>) -> axum::response::Response {
+async fn get_ir<P: SourceProvider>(
+    State(state): State<SharedProvider<P>>,
+) -> axum::response::Response {
     let source = match state.read_source("").await {
         Ok(s) => s,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
@@ -637,11 +645,7 @@ async fn get_ir<P: SourceProvider>(State(state): State<SharedProvider<P>>) -> ax
         }
         FileKind::Package => {
             let leaf = active_file_path(state.as_ref()).await;
-            let sol = match parse_source_at(
-                &source,
-                &state.registry(),
-                leaf.as_deref(),
-            ) {
+            let sol = match parse_source_at(&source, &state.registry(), leaf.as_deref()) {
                 Ok(s) => s,
                 Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
             };
@@ -686,10 +690,7 @@ async fn get_source<P: SourceProvider>(
     State(state): State<SharedProvider<P>>,
     Query(q): Query<SourceQuery>,
 ) -> axum::response::Response {
-    let file = q
-        .file
-        .or(q.path)
-        .unwrap_or_default();
+    let file = q.file.or(q.path).unwrap_or_default();
     match state.read_source(&file).await {
         Ok(source) => ([(header::CONTENT_TYPE, "text/plain")], source).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
@@ -727,42 +728,43 @@ async fn post_source<P: SourceProvider>(
         FileKind::Layer => {
             let name = layer_name_from_files(state.as_ref()).await;
             let diags = veil_ir::check_layer(&body, &name);
-            if diags.iter().any(|d| matches!(d.severity, veil_ir::Severity::Error)) {
+            if diags
+                .iter()
+                .any(|d| matches!(d.severity, veil_ir::Severity::Error))
+            {
                 let msg = diags
                     .iter()
                     .filter(|d| matches!(d.severity, veil_ir::Severity::Error))
                     .map(veil_ir::format_diagnostic_line)
                     .collect::<Vec<_>>()
                     .join("; ");
-                return (StatusCode::BAD_REQUEST, format!("layer validation failed: {msg}"))
+                return (
+                    StatusCode::BAD_REQUEST,
+                    format!("layer validation failed: {msg}"),
+                )
                     .into_response();
             }
         }
         FileKind::Stub => {}
-        FileKind::Package => {
-            match parse_source(&body, &state.registry()) {
-                Ok(sol) => {
-                    let check = veil_ir::check_solution(&sol, &state.registry());
-                    if check.has_errors() {
-                        let msg = check
-                            .diagnostics
-                            .iter()
-                            .filter(|d| matches!(d.severity, veil_ir::Severity::Error))
-                            .map(veil_ir::format_diagnostic_line)
-                            .collect::<Vec<_>>()
-                            .join("; ");
-                        return (
-                            StatusCode::BAD_REQUEST,
-                            format!("validation failed: {msg}"),
-                        )
-                            .into_response();
-                    }
-                }
-                Err(e) => {
-                    return (StatusCode::BAD_REQUEST, format!("parse error: {e}")).into_response();
+        FileKind::Package => match parse_source(&body, &state.registry()) {
+            Ok(sol) => {
+                let check = veil_ir::check_solution(&sol, &state.registry());
+                if check.has_errors() {
+                    let msg = check
+                        .diagnostics
+                        .iter()
+                        .filter(|d| matches!(d.severity, veil_ir::Severity::Error))
+                        .map(veil_ir::format_diagnostic_line)
+                        .collect::<Vec<_>>()
+                        .join("; ");
+                    return (StatusCode::BAD_REQUEST, format!("validation failed: {msg}"))
+                        .into_response();
                 }
             }
-        }
+            Err(e) => {
+                return (StatusCode::BAD_REQUEST, format!("parse error: {e}")).into_response();
+            }
+        },
     }
     match state.write_source("", &body).await {
         Ok(()) => {
@@ -789,7 +791,9 @@ async fn post_source<P: SourceProvider>(
 }
 
 /// UX-021: structural IR diff of active file vs git HEAD (when available).
-async fn get_diff<P: SourceProvider>(State(state): State<SharedProvider<P>>) -> axum::response::Response {
+async fn get_diff<P: SourceProvider>(
+    State(state): State<SharedProvider<P>>,
+) -> axum::response::Response {
     let head_src = match state.read_source("").await {
         Ok(s) => s,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
@@ -868,7 +872,9 @@ async fn get_diff<P: SourceProvider>(State(state): State<SharedProvider<P>>) -> 
                     (name.clone(), "annotations_changed".to_string())
                 }
             };
-            let mut ann = cache.as_ref().and_then(|c| c.get(&(name.clone(), kind)).cloned());
+            let mut ann = cache
+                .as_ref()
+                .and_then(|c| c.get(&(name.clone(), kind)).cloned());
             if ann.is_none() {
                 if let Some(c) = cache.as_ref() {
                     ann = c
@@ -930,7 +936,10 @@ async fn get_diff<P: SourceProvider>(State(state): State<SharedProvider<P>>) -> 
             obj.insert("session_id".into(), serde_json::json!(session_id));
             if let Ok(h) = crate::session::SessionManager::global().attach(&session_id) {
                 obj.insert("git_patch".into(), serde_json::json!(h.git_working_diff()));
-                obj.insert("git_status".into(), serde_json::to_value(h.git_status_files()).unwrap_or_default());
+                obj.insert(
+                    "git_status".into(),
+                    serde_json::to_value(h.git_status_files()).unwrap_or_default(),
+                );
                 obj.insert("via".into(), serde_json::json!("git"));
             }
         }
@@ -949,7 +958,9 @@ async fn get_diff<P: SourceProvider>(State(state): State<SharedProvider<P>>) -> 
     }
 }
 
-async fn get_generated<P: SourceProvider>(State(state): State<SharedProvider<P>>) -> axum::response::Response {
+async fn get_generated<P: SourceProvider>(
+    State(state): State<SharedProvider<P>>,
+) -> axum::response::Response {
     if !matches!(state.file_kind(""), FileKind::Package) {
         // Layers/stubs do not codegen
         return json_response("{}".into()).into_response();
@@ -963,7 +974,9 @@ async fn get_generated<P: SourceProvider>(State(state): State<SharedProvider<P>>
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     };
     let project = veil_codegen::generate(&sol, &state.registry());
-    let files_map: std::collections::HashMap<String, String> = project.files.iter()
+    let files_map: std::collections::HashMap<String, String> = project
+        .files
+        .iter()
         .map(|f| (f.path.clone(), f.content.clone()))
         .collect();
     match serde_json::to_string(&files_map) {
@@ -987,13 +1000,11 @@ async fn get_palette<P: SourceProvider>(
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_ascii_lowercase());
     let reaction_ctx = crate::file_ops::is_reaction_ide_context(state.project_root().as_deref());
-    let only_layer = layer_hdr.or_else(|| {
-        match mode.as_deref() {
-            Some("reaction") => Some("reaction".into()),
-            Some("flow") => Some("reaction".into()),
-            _ if reaction_ctx => Some("reaction".into()),
-            _ => None,
-        }
+    let only_layer = layer_hdr.or_else(|| match mode.as_deref() {
+        Some("reaction") => Some("reaction".into()),
+        Some("flow") => Some("reaction".into()),
+        _ if reaction_ctx => Some("reaction".into()),
+        _ => None,
     });
     if let Some(layer) = only_layer {
         palette.retain(|e| e.entry_type == "construct" && e.layer.eq_ignore_ascii_case(&layer));
@@ -1080,7 +1091,9 @@ async fn get_context<P: SourceProvider>(
     }
 }
 
-async fn get_stubs<P: SourceProvider>(State(state): State<SharedProvider<P>>) -> axum::response::Response {
+async fn get_stubs<P: SourceProvider>(
+    State(state): State<SharedProvider<P>>,
+) -> axum::response::Response {
     // Loaded registry stubs (active package) + catalog summary for tooling.
     crate::stub_ops::ensure_platform_stub_cache();
     let root = state.project_root();
@@ -1228,19 +1241,34 @@ async fn get_callables<P: SourceProvider>(
             }
         }
         // Skip layer-provided infrastructure (Bus, etc.)
-        if node.metadata.annotations.iter().any(|a| a == "layer-provided") {
+        if node
+            .metadata
+            .annotations
+            .iter()
+            .any(|a| a == "layer-provided")
+        {
             continue;
         }
         // Skip generic traits (methods have <T> or unresolved type params).
         // Concrete monomorphized repos have real types in their signatures.
-        let methods: Vec<serde_json::Value> = graph.nodes.iter()
-            .filter(|m| m.metadata.parent == Some(node.id) && m.kind == veil_ir::NodeKind::InterfaceMethod)
+        let methods: Vec<serde_json::Value> = graph
+            .nodes
+            .iter()
+            .filter(|m| {
+                m.metadata.parent == Some(node.id) && m.kind == veil_ir::NodeKind::InterfaceMethod
+            })
             .map(|m| {
-                let params = m.metadata.properties.iter()
+                let params = m
+                    .metadata
+                    .properties
+                    .iter()
                     .find(|(k, _)| k == "params")
                     .map(|(_, v)| v.as_str())
                     .unwrap_or("");
-                let returns = m.metadata.properties.iter()
+                let returns = m
+                    .metadata
+                    .properties
+                    .iter()
                     .find(|(k, _)| k == "returns")
                     .map(|(_, v)| v.as_str())
                     .unwrap_or("");
@@ -1256,8 +1284,12 @@ async fn get_callables<P: SourceProvider>(
             let params = m["params"].as_str().unwrap_or("");
             let returns = m["returns"].as_str().unwrap_or("");
             let has_t = |s: &str| -> bool {
-                s.contains("<T>") || s.contains("Opt<T>") || s.contains("List<T>")
-                    || s.ends_with(": T)") || s.contains(": T,") || s == "T"
+                s.contains("<T>")
+                    || s.contains("Opt<T>")
+                    || s.contains("List<T>")
+                    || s.ends_with(": T)")
+                    || s.contains(": T,")
+                    || s == "T"
             };
             has_t(params) || has_t(returns)
         });
@@ -1278,9 +1310,10 @@ async fn get_callables<P: SourceProvider>(
             // Check if target is a Generic referencing a known interface
             if let veil_ir::ast::TypeExpr::Generic(base_name, type_args) = target {
                 // Find the generic interface in the graph
-                let generic_node = graph.nodes.iter().find(|n| {
-                    n.kind == veil_ir::NodeKind::Interface && n.name == *base_name
-                });
+                let generic_node = graph
+                    .nodes
+                    .iter()
+                    .find(|n| n.kind == veil_ir::NodeKind::Interface && n.name == *base_name);
                 if let Some(generic) = generic_node {
                     // Apply name filter
                     if let Some(ref filter) = query.filter_by {
@@ -1297,14 +1330,25 @@ async fn get_callables<P: SourceProvider>(
                         "T".to_string()
                     };
                     // Collect methods with T substituted
-                    let methods: Vec<serde_json::Value> = graph.nodes.iter()
-                        .filter(|m| m.metadata.parent == Some(generic.id) && m.kind == veil_ir::NodeKind::InterfaceMethod)
+                    let methods: Vec<serde_json::Value> = graph
+                        .nodes
+                        .iter()
+                        .filter(|m| {
+                            m.metadata.parent == Some(generic.id)
+                                && m.kind == veil_ir::NodeKind::InterfaceMethod
+                        })
                         .map(|m| {
-                            let raw_params = m.metadata.properties.iter()
+                            let raw_params = m
+                                .metadata
+                                .properties
+                                .iter()
                                 .find(|(k, _)| k == "params")
                                 .map(|(_, v)| v.as_str())
                                 .unwrap_or("");
-                            let raw_returns = m.metadata.properties.iter()
+                            let raw_returns = m
+                                .metadata
+                                .properties
+                                .iter()
                                 .find(|(k, _)| k == "returns")
                                 .map(|(_, v)| v.as_str())
                                 .unwrap_or("");
@@ -1312,8 +1356,8 @@ async fn get_callables<P: SourceProvider>(
                             // Patterns: ": T)", ": T,", "<T>", "Opt<T>", "List<T>"
                             let sub = |s: &str| -> String {
                                 s.replace("<T>", &format!("<{}>", type_arg_str))
-                                 .replace(": T)", &format!(": {})", type_arg_str))
-                                 .replace(": T,", &format!(": {},", type_arg_str))
+                                    .replace(": T)", &format!(": {})", type_arg_str))
+                                    .replace(": T,", &format!(": {},", type_arg_str))
                             };
                             serde_json::json!({
                                 "name": m.name,
@@ -1361,16 +1405,17 @@ fn run_check(
     deny_escape_hatches: bool,
     target_debt: bool,
 ) -> Result<CheckResponse, String> {
-    let codegen_target = veil_codegen::CodegenTarget::from_str(target_str).ok_or_else(|| {
-        format!("unknown target '{}'; use rust or typescript", target_str)
-    })?;
+    let codegen_target = veil_codegen::CodegenTarget::from_str(target_str)
+        .ok_or_else(|| format!("unknown target '{}'; use rust or typescript", target_str))?;
 
     let mut result = veil_ir::check_solution(sol, registry);
-    result.diagnostics.extend(veil_codegen::check_target_capabilities(
-        sol,
-        registry,
-        codegen_target,
-    ));
+    result
+        .diagnostics
+        .extend(veil_codegen::check_target_capabilities(
+            sol,
+            registry,
+            codegen_target,
+        ));
     if target_debt && codegen_target == veil_codegen::CodegenTarget::Rust {
         result
             .diagnostics
@@ -1498,8 +1543,7 @@ async fn run_check_for_provider<P: SourceProvider>(
 
     let sol = parse_source(&source, &state.registry())
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("parse failed: {}", e)))?;
-    run_check(&sol, &state.registry(), target, deny, debt)
-        .map_err(|e| (StatusCode::BAD_REQUEST, e))
+    run_check(&sol, &state.registry(), target, deny, debt).map_err(|e| (StatusCode::BAD_REQUEST, e))
 }
 
 async fn get_layer_dependents<P: SourceProvider>(
@@ -1558,7 +1602,8 @@ async fn post_layer_edit<P: SourceProvider>(
     if let Err(e) = state.write_source("", &new_src).await {
         return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response();
     }
-    let graph = veil_ir::build_layer_ir(&new_src, &name).unwrap_or_else(|_| veil_ir::IrGraph::new());
+    let graph =
+        veil_ir::build_layer_ir(&new_src, &name).unwrap_or_else(|_| veil_ir::IrGraph::new());
     let response = EditResponse {
         source: new_src,
         ir: serde_json::to_value(&graph).unwrap_or(serde_json::Value::Null),
@@ -1588,15 +1633,16 @@ async fn post_layer_scaffold<P: SourceProvider>(
     let dir = req.dir.as_deref().unwrap_or("layers");
     let path = std::path::Path::new(dir).join(format!("{name}.layer"));
     if path.exists() {
-        return (StatusCode::CONFLICT, format!("{} already exists", path.display()))
+        return (
+            StatusCode::CONFLICT,
+            format!("{} already exists", path.display()),
+        )
             .into_response();
     }
     if let Err(e) = std::fs::create_dir_all(dir) {
         return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
     }
-    let desc = req
-        .desc
-        .unwrap_or_else(|| format!("{name} team DSL"));
+    let desc = req.desc.unwrap_or_else(|| format!("{name} team DSL"));
     let content = format!(
         "pkg {name} v1\n  desc \"{desc}\"\n  author \"VEIL\"\n\n  construct Example\n    kw example\n    mt struct\n    desc \"Starter construct — rename me\"\n    visual\n      icon \"📦\"\n      color \"#6366f1\"\n      label \"Example\"\n    group domain\n\n  prompt\n    You are authoring packages that use the `{name}` layer.\n    Prefer layer keywords; keep platform packages as dependencies.\n"
     );
@@ -1621,7 +1667,9 @@ async fn post_layer_scaffold<P: SourceProvider>(
     }
 }
 
-async fn get_files<P: SourceProvider>(State(state): State<SharedProvider<P>>) -> axum::response::Response {
+async fn get_files<P: SourceProvider>(
+    State(state): State<SharedProvider<P>>,
+) -> axum::response::Response {
     let files = state.list_files().await;
     match serde_json::to_string(&files) {
         Ok(json) => json_response(json).into_response(),
@@ -1739,7 +1787,7 @@ async fn get_active_project<P: SourceProvider>(
 /// When `VEIL_SOURCE_MODE=s3|prefer_s3`, lists DDB META / S3 repos (production-like).
 /// Disk hub is used only for `disk` mode (and as prefer_s3 merge for missing remote).
 async fn get_projects() -> axum::response::Response {
-    use crate::provider::s3_workspace::{ide_source_mode, list_s3_projects, IdeSourceMode};
+    use crate::provider::s3_workspace::{IdeSourceMode, ide_source_mode, list_s3_projects};
 
     let dir = crate::config::resolve_projects_dir();
     let mode = ide_source_mode();
@@ -1774,6 +1822,12 @@ async fn get_projects() -> axum::response::Response {
             Ok(p) => p,
             Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
         },
+        IdeSourceMode::Local => {
+            match crate::provider::s3_workspace::list_local_catalog_projects() {
+                Ok(p) => p,
+                Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+            }
+        }
     };
     match serde_json::to_string(&serde_json::json!({
         "projects_dir": dir.to_string_lossy(),
@@ -1782,6 +1836,7 @@ async fn get_projects() -> axum::response::Response {
             IdeSourceMode::S3 => "s3",
             IdeSourceMode::PreferS3 => "prefer_s3",
             IdeSourceMode::Disk => "disk",
+            IdeSourceMode::Local => "local",
         },
         "projects": projects,
     })) {
@@ -1801,7 +1856,7 @@ struct CreateProjectRequest {
 ///   `POST /api/repos` then S3 scaffold (agent `create_project` does both).
 /// - `prefer_s3` / `disk`: scaffold under projects hub (legacy).
 async fn post_create_project(Json(req): Json<CreateProjectRequest>) -> axum::response::Response {
-    use crate::provider::s3_workspace::{allow_disk_project_create, ide_source_mode, IdeSourceMode};
+    use crate::provider::s3_workspace::{allow_disk_project_create, ide_source_mode};
     if !allow_disk_project_create() {
         return (
             StatusCode::UNPROCESSABLE_ENTITY,
@@ -1822,7 +1877,11 @@ async fn post_create_project(Json(req): Json<CreateProjectRequest>) -> axum::res
     };
     match crate::project_layout::create_project(&dir, req.name.trim()) {
         Ok(info) => match serde_json::to_string(&info) {
-            Ok(json) => (StatusCode::CREATED, [(header::CONTENT_TYPE, "application/json")], json)
+            Ok(json) => (
+                StatusCode::CREATED,
+                [(header::CONTENT_TYPE, "application/json")],
+                json,
+            )
                 .into_response(),
             Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
         },
@@ -1850,6 +1909,8 @@ async fn get_config() -> axum::response::Response {
         "configured": cfg.configured,
         "config_path": crate::config::config_path().to_string_lossy(),
         "veil_home": crate::config::veil_home_dir().to_string_lossy(),
+        "reference_dirs": cfg.reference_dirs.iter().map(|e| e.to_line()).collect::<Vec<_>>(),
+        "reference_roots": crate::reference_fs::public_roots_json(),
     });
     match serde_json::to_string(&body) {
         Ok(json) => json_response(json).into_response(),
@@ -1862,6 +1923,8 @@ struct ConfigPatchBody {
     projects_dir: Option<String>,
     show_core_layers: Option<bool>,
     layers_dir: Option<String>,
+    /// One path per entry (`/abs/path` or `name=/abs/path`). Empty array clears.
+    reference_dirs: Option<Vec<String>>,
 }
 
 /// CAP-007: PATCH /api/config — update allowlisted keys only.
@@ -1876,6 +1939,8 @@ async fn patch_config(Json(body): Json<ConfigPatchBody>) -> axum::response::Resp
                 "show_core_layers": cfg.show_core_layers,
                 "configured": cfg.configured,
                 "config_path": crate::config::config_path().to_string_lossy(),
+                "reference_dirs": cfg.reference_dirs.iter().map(|e| e.to_line()).collect::<Vec<_>>(),
+                "reference_roots": crate::reference_fs::public_roots_json(),
             });
             match serde_json::to_string(&body) {
                 Ok(json) => json_response(json).into_response(),
@@ -1899,7 +1964,18 @@ fn apply_config_patch(body: ConfigPatchBody) -> Result<crate::config::VeilConfig
             save_config(&cfg)?;
         }
         if let Some(layers) = body.layers_dir {
-            cfg.layers_dir = if layers.is_empty() { None } else { Some(layers) };
+            cfg.layers_dir = if layers.is_empty() {
+                None
+            } else {
+                Some(layers)
+            };
+            save_config(&cfg)?;
+        }
+        if let Some(refs) = body.reference_dirs {
+            cfg.reference_dirs = refs
+                .iter()
+                .filter_map(|s| crate::config::ReferenceDirEntry::from_line(s))
+                .collect();
             save_config(&cfg)?;
         }
         return Ok(cfg);
@@ -1912,11 +1988,22 @@ fn apply_config_patch(body: ConfigPatchBody) -> Result<crate::config::VeilConfig
         changed = true;
     }
     if let Some(layers) = body.layers_dir {
-        cfg.layers_dir = if layers.is_empty() { None } else { Some(layers) };
+        cfg.layers_dir = if layers.is_empty() {
+            None
+        } else {
+            Some(layers)
+        };
+        changed = true;
+    }
+    if let Some(refs) = body.reference_dirs {
+        cfg.reference_dirs = refs
+            .iter()
+            .filter_map(|s| crate::config::ReferenceDirEntry::from_line(s))
+            .collect();
         changed = true;
     }
     if !changed {
-        return Err("no allowlisted fields in PATCH body (projects_dir, show_core_layers, layers_dir)".into());
+        return Err("no allowlisted fields in PATCH body (projects_dir, show_core_layers, layers_dir, reference_dirs)".into());
     }
     cfg.configured = true;
     save_config(&cfg)?;
@@ -1971,7 +2058,13 @@ async fn post_edit<P: SourceProvider>(
 
     let mut sol = match parse_source(&source, &state.registry()) {
         Ok(s) => s,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("parse failed: {}", e)).into_response(),
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("parse failed: {}", e),
+            )
+                .into_response();
+        }
     };
 
     if let Err(e) = veil_parser::apply_edits(&mut sol, &req.edits, &state.registry()) {
@@ -1995,7 +2088,13 @@ async fn post_edit<P: SourceProvider>(
 
     let reparsed = match parse_source(&new_source, &state.registry()) {
         Ok(s) => s,
-        Err(e) => return (StatusCode::BAD_REQUEST, format!("edit produced invalid source: {}", e)).into_response(),
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                format!("edit produced invalid source: {}", e),
+            )
+                .into_response();
+        }
     };
     let check_resp = match run_check(&reparsed, &state.registry(), "rust", false, false) {
         Ok(r) => r,
@@ -2009,7 +2108,11 @@ async fn post_edit<P: SourceProvider>(
             .map(veil_ir::format_diagnostic_line)
             .collect::<Vec<_>>()
             .join("; ");
-        return (StatusCode::BAD_REQUEST, format!("validation failed: {}", msg)).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            format!("validation failed: {}", msg),
+        )
+            .into_response();
     }
 
     if let Err(e) = state.write_source("", &new_source).await {
@@ -2018,7 +2121,9 @@ async fn post_edit<P: SourceProvider>(
 
     let graph = veil_ir::build_ir_with_registry(&reparsed, Some(&state.registry()));
     let project = veil_codegen::generate(&reparsed, &state.registry());
-    let generated: std::collections::HashMap<String, String> = project.files.iter()
+    let generated: std::collections::HashMap<String, String> = project
+        .files
+        .iter()
         .map(|f| (f.path.clone(), f.content.clone()))
         .collect();
 
@@ -2027,7 +2132,9 @@ async fn post_edit<P: SourceProvider>(
         let presentation = veil_ir::presentation_from_registry(&state.registry());
         let mut resolved = Vec::with_capacity(req.edits.len());
         for (i, op) in req.edits.iter().enumerate() {
-            let provided = req.annotations.as_ref()
+            let provided = req
+                .annotations
+                .as_ref()
                 .and_then(|a| a.get(i))
                 .and_then(|a| a.as_ref());
 
@@ -2050,23 +2157,48 @@ async fn post_edit<P: SourceProvider>(
             if let Some(ann) = resolved_annotations.get(i) {
                 // Key by the target node's name + op kind for diff matching.
                 let node = match op {
-                    veil_ir::EditOp::Rename { span_start, name, .. } => Some((*span_start, name.clone(), "renamed")),
+                    veil_ir::EditOp::Rename {
+                        span_start, name, ..
+                    } => Some((*span_start, name.clone(), "renamed")),
                     veil_ir::EditOp::SetAnnotations { span_start, .. } => {
-                        let n = graph.nodes.iter().find(|n| n.span.start == *span_start).map(|n| n.name.clone()).unwrap_or_default();
+                        let n = graph
+                            .nodes
+                            .iter()
+                            .find(|n| n.span.start == *span_start)
+                            .map(|n| n.name.clone())
+                            .unwrap_or_default();
                         Some((*span_start, n, "annotations_changed"))
                     }
-                    veil_ir::EditOp::SetFields { span_start, .. } | veil_ir::EditOp::SetMethods { span_start, .. } => {
-                        let n = graph.nodes.iter().find(|n| n.span.start == *span_start).map(|n| n.name.clone()).unwrap_or_default();
+                    veil_ir::EditOp::SetFields { span_start, .. }
+                    | veil_ir::EditOp::SetMethods { span_start, .. } => {
+                        let n = graph
+                            .nodes
+                            .iter()
+                            .find(|n| n.span.start == *span_start)
+                            .map(|n| n.name.clone())
+                            .unwrap_or_default();
                         Some((*span_start, n, "signature_changed"))
                     }
                     veil_ir::EditOp::SetBody { span_start, .. } => {
-                        let n = graph.nodes.iter().find(|n| n.span.start == *span_start).map(|n| n.name.clone()).unwrap_or_default();
+                        let n = graph
+                            .nodes
+                            .iter()
+                            .find(|n| n.span.start == *span_start)
+                            .map(|n| n.name.clone())
+                            .unwrap_or_default();
                         Some((*span_start, n, "body_changed"))
                     }
-                    veil_ir::EditOp::CreateConstruct { name, .. } => Some((0, name.clone(), "added")),
+                    veil_ir::EditOp::CreateConstruct { name, .. } => {
+                        Some((0, name.clone(), "added"))
+                    }
                     veil_ir::EditOp::CreateStep { name, .. } => Some((0, name.clone(), "added")),
                     veil_ir::EditOp::DeleteConstruct { span_start } => {
-                        let n = graph.nodes.iter().find(|n| n.span.start == *span_start).map(|n| n.name.clone()).unwrap_or_default();
+                        let n = graph
+                            .nodes
+                            .iter()
+                            .find(|n| n.span.start == *span_start)
+                            .map(|n| n.name.clone())
+                            .unwrap_or_default();
                         Some((*span_start, n, "removed"))
                     }
                 };
@@ -2135,9 +2267,9 @@ fn persist_edit_records<P: SourceProvider>(
     let base_diff = parse_source(base_source, &state.registry())
         .ok()
         .map(|s| veil_ir::build_ir_with_registry(&s, Some(&state.registry())));
-    let struct_delta = base_diff.as_ref().map(|base| {
-        veil_ir::structural_diff(base, graph, "before", "after")
-    });
+    let struct_delta = base_diff
+        .as_ref()
+        .map(|base| veil_ir::structural_diff(base, graph, "before", "after"));
 
     let node_by_span = |span: usize| -> Option<&veil_ir::IrNode> {
         graph.nodes.iter().find(|n| n.span.start == span)
@@ -2223,7 +2355,9 @@ fn diff_item_touches(item: &veil_ir::DiffItem, name: &str) -> bool {
         | DiffItem::SignatureChanged { name: n, .. }
         | DiffItem::BodyChanged { name: n, .. }
         | DiffItem::AnnotationsChanged { name: n, .. } => n == name,
-        DiffItem::Renamed { from_name, to_name, .. } => from_name == name || to_name == name,
+        DiffItem::Renamed {
+            from_name, to_name, ..
+        } => from_name == name || to_name == name,
     }
 }
 
@@ -2340,7 +2474,11 @@ async fn post_agent_turn_stream<P: SourceProvider>(
     });
 
     Sse::new(stream)
-        .keep_alive(KeepAlive::new().interval(Duration::from_secs(15)).text("ping"))
+        .keep_alive(
+            KeepAlive::new()
+                .interval(Duration::from_secs(15))
+                .text("ping"),
+        )
         .into_response()
 }
 
@@ -2618,6 +2756,10 @@ async fn get_events<P: SourceProvider>(
     }));
 
     Sse::new(stream)
-        .keep_alive(KeepAlive::new().interval(Duration::from_secs(15)).text("ping"))
+        .keep_alive(
+            KeepAlive::new()
+                .interval(Duration::from_secs(15))
+                .text("ping"),
+        )
         .into_response()
 }

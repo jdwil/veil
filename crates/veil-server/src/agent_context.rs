@@ -11,8 +11,8 @@ use std::path::Path;
 
 use std::collections::HashSet;
 
-use veil_ir::layer::{palette_from_registry, LayerRegistry, PaletteEntry};
-use veil_ir::{build_ir_with_registry, check_solution, build_context_pack, ContextQuery};
+use veil_ir::layer::{LayerRegistry, PaletteEntry, palette_from_registry};
+use veil_ir::{ContextQuery, build_context_pack, build_ir_with_registry, check_solution};
 
 use crate::project_layout::read_mission_for_agent;
 
@@ -90,7 +90,7 @@ You are the VEIL IDE built-in agent (Rig tools).
   1. Resolve open unmerged PR by scope (auto / Present modal / new) — never reuse Merged PRs
   2. Multi-step? `create_branch` — do **not** thrash main
   3. `veil_check` baseline — trust **host_check** / HOST_CHECK_SEVERITY (not self-report)
-  4. One diagnostic class → write_source → veil_check → **`session_commit`** (host rejects empty commits)
+  4. One diagnostic class → write_source → veil_check → **`session_commit`** (commit + push origin; host rejects empty commits)
   5. Same-turn: fix new diags you introduced before claiming done
   6. Task complete: `run_coding_plan` `coding.finish_task` or create_pr+submit_pr — **open PR**, do not merge
   7. **FORBIDDEN:** `merge_branch` / `merge_pr` unless operator explicitly says merge
@@ -102,7 +102,7 @@ You are the VEIL IDE built-in agent (Rig tools).
 - read_source — active .veil text (truncated)
 - rename_construct — structured rename
 - write_source — full-file write (smoke-gated). Pass **rationales**: `{ "ConstructName": "one-line why" }` so the PR Wizard shows intent next to each structural change. Always follow with veil_check (fix new diags same turn) then session_commit.
-- **session_status / create_branch / session_commit / list_commits / switch_main** — real git work line (origin on S3). `session_commit` = `git commit` + push. `merge_branch` only on explicit operator request.
+- **session_status / create_branch / session_commit / list_commits / switch_main** — real git work line (GitHub or S3 origin). `session_commit` = `git commit` + push. `merge_branch` only on explicit operator request.
 - **resolve_coding_target / run_coding_plan** — host resolve open PRs + named plans (fix_diagnostics / slice / finish_task)
 - **create_pr / submit_pr** — open/submit a **pull request** when a task is complete (reuses bound PR; default landing path)
 - dev_status / dev_logs / smoke_status — dual-loop state and gen/check logs
@@ -112,22 +112,22 @@ You are the VEIL IDE built-in agent (Rig tools).
 - stub_list / stub_search / stub_get / stub_gen / stub_install — external crate .stub catalog (stub = contract; never invent call names)
 
 ## Platform UX (full product surface)
-- **create_project({name, description?})** — create a NEW product project (same as UI /projects/new). Only use when the user explicitly asks to CREATE a new project that doesn't exist yet. If told to OPEN or WORK ON an existing project, use `open_project` instead — NEVER create a duplicate. Check `list_projects` first if unsure.
+- **create_project({name, description?, origin_provider?, origin_owner?, origin_repo?, origin_create?})** — NEW project only. Each project has its own git origin (GitHub `jdwil/…` or `veil/…`, or Bitbucket). Default owner is VEIL_GITHUB_OWNER. `get_git_status` lists orgs. Existing project: `bind_origin`, never create_project again.
 - **rename_project({name, project?, new_slug?})** / **update_project** — rename display name (keep slug unless new_slug). ALWAYS use when the user asks to rename a project. NEVER curl/PATCH `/api/repos` or Bitbucket.
 - list_projects / get_project / delete_project / open_project / open_ide / navigate_to
 - list_prs / create_pr({title, description with rationales,...}) / get_pr / submit_pr / add_comment / get_pr_diff
 - approve_pr / request_pr_changes / merge_pr — **human review gates**; agents use only when the operator explicitly asks
 - list_deploy_environments / deploy_status / plan_provision / provision_project / get_provision_job
-- search_registry / list_registry_layers / list_registry_stubs / get_config / get_mission / update_mission
+- search_registry / list_registry_layers / list_registry_stubs / get_config / get_git_status / get_origin / bind_origin / get_mission / update_mission
+- **reference_roots / reference_list / reference_read / reference_grep** — READ ONLY operator-chosen local trees (`VEIL_REFERENCE_DIRS` / Config). Conversion source, not the product. Never write those trees.
 
-## Remote source (VEIL_SOURCE_MODE=s3) — MANDATORY
-- Source of truth is **git origin on S3** (`git/{repo_id}/…` bundles) + DDB META. Checkout cache: `repos/{id}/{branch}/`. Not `VEIL_PROJECTS_DIR`, not monorepo paths, not `~/dev/veil-projects`.
-- A coding session is a **local git checkout**. Two sessions do not share a working tree. Flow: `create_branch` → write → `veil_check` → `session_commit` (real commit + push) → `create_pr`.
-- **create_project** (for NEW projects only) → DDB + S3 scaffold + initial commit on origin. For EXISTING projects, use **open_project** → **open_ide** → **write_source**.
-- **NEVER** call create_project for a project that already exists. Use `list_projects` to check first.
-- **NEVER** `mkdir` / shell-write / raw filesystem under projects hub when remote. Session workdir is host-managed.
-- **NEVER** `grep` / `sed` / `cat` / `rg` the host `$TMP/veil-ws` or `$TMP/veil-s3-ws` trees (or any absolute `/tmp` path the host may have logged). Stubs via `stub_search` / `stub_get` only.
-- If create_project fails, report the error; do not "fix" by writing local disk trees.
+## Remote source — MANDATORY
+- Product source lives on **that project's git origin** (GitHub or Bitbucket, any org). Catalog is local/DDB META. Not `VEIL_PROJECTS_DIR`, not this monorepo.
+- A coding session is a **host-managed git checkout**. Two sessions do not share a working tree. Flow: `create_branch` → `write_source` → `veil_check` → `session_commit` (commit + push origin) → `create_pr`.
+- **create_project** (NEW products only) seeds origin. EXISTING products: `open_project` → `open_ide` → `write_source`.
+- **NEVER** call create_project for a project that already exists. `list_projects` first.
+- **NEVER** `mkdir` / shell-write / `grep` / `sed` / `cat` / `rg` the monorepo, the projects hub, `$TMP/veil-ws`, `$TMP/veil-s3-ws`, `$HOME`, or `/tmp`. Product files only via `list_files` / `read_source` / `write_source` / `create_file`. Stubs via `stub_search` / `stub_get` only. Existing local code the operator listed: `reference_*` (read-only), then `write_source` into the VEIL product.
+- If create_project fails, report the error; do not "fix" by writing trees on the operator's machine.
 
 ## Visible UX — MANDATORY (operator is watching)
 - Product actions MUST be **MCP tool calls** (`create_project`, `navigate_to`, `open_ide`, `list_prs`, …).
@@ -205,14 +205,14 @@ You are the VEIL IDE built-in agent. You have VEIL IDE tools available via MCP.
 - **Closed loop:** smoke → list_routes → dev_restart → http_request (/health then real route). No success claim without http_request.
 - Frontend: relative /api + Vite proxy.
 - **Bang contract (ACS-010 portable):** find! → Opt<T> (Res try only). Soft .is_some after ! OK. Need T: require find! or .unwrap(). docs/BANG_CONTRACT.md
-- **Git sessions (agent commits; human merges):** `session_status` → multi-step? `create_branch` → veil_check baseline → one class → write → veil_check (fix new diags same turn) → `session_commit` (real git commit + push to S3 origin) → when task done **`create_pr` + `submit_pr`**. **NEVER** `merge_branch` / `merge_pr` unless the operator explicitly asks to merge. Include per-slice rationale in the PR description.
+- **Git sessions (agent commits; human merges):** `session_status` → multi-step? `create_branch` → veil_check baseline → one class → write → veil_check (fix new diags same turn) → `session_commit` (commit + push origin) → when task done **`create_pr` + `submit_pr`**. **NEVER** `merge_branch` / `merge_pr` unless the operator explicitly asks to merge. Include per-slice rationale in the PR description.
 
 ## Available MCP Tools
 - veil_check — dual-loop check pipeline (required after edits; fix regressions same turn)
 - veil_outline — IR topology
 - read_source / write_source — active file (write is smoke-gated; on failure file restored + compile errors returned)
 - rename_construct / list_files / select_file / create_file
-- session_status / create_branch / session_commit / list_commits / switch_main — real git (S3 origin)
+- session_status / create_branch / session_commit / list_commits / switch_main — real git (project origin)
 - merge_branch — **operator-only landing**; never auto-merge after a task
 - create_pr / submit_pr — default end of agent task (open PR for human review)
 - dev_status — dual-loop targets, ports, last_error
@@ -224,15 +224,18 @@ You are the VEIL IDE built-in agent. You have VEIL IDE tools available via MCP.
 - dev_restart(name?) — reload cargo run after good smoke
 - stub_list / stub_search / stub_get / stub_gen / stub_install — external crate stubs (never invent aws_sns / http.post; call stub types via @field)
 - **Platform UX (required for product ops — never say these are missing):**
-  - create_project({name}) — create product project (UI /projects/new). After it returns ok, write files immediately.
+  - create_project({name, origin_provider?, origin_owner?, origin_repo?}) — new product; per-project git origin
+  - get_git_status / get_origin / bind_origin — inspect and set git host+owner for a project
   - rename_project({name, project?}) / update_project — rename a product. NEVER PATCH /api/repos or Bitbucket.
   - list_projects / open_project / open_ide / navigate_to
   - list_prs / create_pr / get_pr / submit_pr / add_comment
   - list_outstanding / request_sign_off — present the change set; never sign_off yourself
   - approve_pr / merge_pr / provision_project — human Review → Approve is the gate; tools error if unsigned
   - provision_project / deploy_status / search_registry / get_config / get_mission
-- **Remote (VEIL_SOURCE_MODE=s3):** create_project = DDB+S3 only. Edits via write_source/create_file/ws_* only. NEVER mkdir/write under VEIL_PROJECTS_DIR or invent local hub paths.
-- **Host checkouts are invisible:** The daemon stages S3 into `$TMP/veil-ws` / `$TMP/veil-s3-ws`. That is **not** your workspace. **FORBIDDEN:** `grep` / `sed` / `cat` / `rg` / `find` / editor tools against `/tmp`, those trees, or any absolute host path. Do not inspect or edit `.stub` files on disk.
+  - reference_roots / reference_list / reference_read / reference_grep — READ ONLY local trees the operator listed
+- **Remote source:** create_project opens catalog + that project's git origin. bind_origin to change host/org later. Edits via write_source only. NEVER mkdir/write under VEIL_PROJECTS_DIR, the monorepo, or the operator's home.
+- **Host checkouts are invisible:** The daemon stages trees under `$TMP/veil-ws` / `$TMP/veil-s3-ws`. That is **not** your workspace. **FORBIDDEN:** `grep` / `sed` / `cat` / `rg` / `find` / editor tools against `/tmp`, those trees, `$HOME`, or any absolute host path that is not a configured reference root.
+- **Operator local code (conversion, read-only):** `reference_roots` lists directories the operator configured (`VEIL_REFERENCE_DIRS` or Config → Reference trees). `reference_list` / `reference_read` / `reference_grep` on those roots only. **READ ONLY** — never write them. Convert into the bound product with `write_source` / `create_file`. If roots is empty, tell the operator to add paths; do not invent greps against `$HOME` or `/tmp`. Dropping a file on AgentDock also works for one-off docs.
 - Stubs: `stub_list` / `stub_search` / `stub_get` / `stub_install` / `stub_gen` only. `ws_grep` is for product `.veil`/`.layer` in the session, not for SDK stubs.
 - **VISIBLE UX:** Never curl ProductHost APIs. Only MCP tools. Host may pre-run create_project — continue with write_source, do not re-curl create.
 - **Focus:** Session focus (route/project/construct) is authoritative for "this component". `get_current_context` returns it. Tool `intent.present` drives visible UX choreography — do not re-create after Present.
@@ -328,7 +331,11 @@ the bound file's layer teaching (prompts, declared types, vocabulary).\n";
     let sol = match veil_parser::parse_with_registry(&tokens, registry.clone()) {
         Ok(s) => s,
         Err(errs) => {
-            let msg = errs.iter().map(|e| e.to_string()).collect::<Vec<_>>().join("; ");
+            let msg = errs
+                .iter()
+                .map(|e| e.to_string())
+                .collect::<Vec<_>>()
+                .join("; ");
             let text = format!(
                 "{tier0_text}\n\n# PARSE ERROR — package did not load\n{msg}\n\
                  Fix parse errors before relying on layer teaching context.\n"
@@ -354,8 +361,7 @@ the bound file's layer teaching (prompts, declared types, vocabulary).\n";
     let graph = build_ir_with_registry(&sol, Some(registry));
     let pack = build_context_pack(&graph, registry, &ContextQuery::default());
     let check = check_solution(&sol, registry);
-    let used_layers =
-        registry.teaching_closure(sol.uses.iter().map(|u| u.package_name.as_str()));
+    let used_layers = registry.teaching_closure(sol.uses.iter().map(|u| u.package_name.as_str()));
 
     // ── Section bodies (priority order for truncation) ───────────────────
     let mut sections_raw: Vec<(&str, String, bool)> = Vec::new();
@@ -383,11 +389,7 @@ the bound file's layer teaching (prompts, declared types, vocabulary).\n";
     // Layer-declared types first (source of truth). A later prompt that lists
     // different fields is stale — these signatures win.
     if !registry.declarations.is_empty() && !used_layers.is_empty() {
-        sections_raw.push((
-            "layer_declares",
-            format_layer_declares(registry),
-            true,
-        ));
+        sections_raw.push(("layer_declares", format_layer_declares(registry), true));
     }
 
     // Annotations + roles from loaded layers (not hardcoded product names).
@@ -438,7 +440,10 @@ the bound file's layer teaching (prompts, declared types, vocabulary).\n";
         ));
     }
     if vocab_entries.len() > 120 {
-        vocab.push_str(&format!("… +{} more constructs\n", vocab_entries.len() - 120));
+        vocab.push_str(&format!(
+            "… +{} more constructs\n",
+            vocab_entries.len() - 120
+        ));
     }
     sections_raw.push(("vocabulary", vocab, true));
 
@@ -467,7 +472,9 @@ the bound file's layer teaching (prompts, declared types, vocabulary).\n";
     if warn_n > 40 {
         diags.push_str(&format!("… +{} more warnings\n", warn_n - 40));
     }
-    diags.push_str(&format!("\nSummary: {err_n} error(s), {warn_n} warning(s)\n"));
+    diags.push_str(&format!(
+        "\nSummary: {err_n} error(s), {warn_n} warning(s)\n"
+    ));
     for h in &pack.agent_hints {
         diags.push_str(&format!("Hint: {h}\n"));
     }
@@ -508,7 +515,10 @@ the bound file's layer teaching (prompts, declared types, vocabulary).\n";
             continue;
         }
         // Partial include
-        let mut slice = body.chars().take(room.saturating_sub(80)).collect::<String>();
+        let mut slice = body
+            .chars()
+            .take(room.saturating_sub(80))
+            .collect::<String>();
         slice.push_str("\n\n…[SECTION TRUNCATED for token budget]…\n");
         included.push((name.into(), slice, critical, true));
         any_truncated = true;
@@ -524,7 +534,8 @@ the bound file's layer teaching (prompts, declared types, vocabulary).\n";
         }
     }
     // Missing any of the critical section names entirely?
-    let names: std::collections::HashSet<_> = included.iter().map(|(n, _, _, _)| n.as_str()).collect();
+    let names: std::collections::HashSet<_> =
+        included.iter().map(|(n, _, _, _)| n.as_str()).collect();
     for crit in ["tier0", "layer_prompts", "vocabulary", "diagnostics"] {
         if !names.contains(crit) {
             any_truncated = true;
@@ -791,7 +802,9 @@ mod tests {
             "stub value-type recipe missing from preamble"
         );
         assert!(
-            p.text.contains("Int.now_unix") && p.text.contains("parse_int") && p.text.contains("as_n"),
+            p.text.contains("Int.now_unix")
+                && p.text.contains("parse_int")
+                && p.text.contains("as_n"),
             "clock/parse primitives missing from preamble: {}",
             &p.text[..p.text.len().min(800)]
         );
@@ -814,6 +827,12 @@ mod tests {
                 && TIER0_ACP.contains("param names match the port")
                 && TIER0_ACP.contains("require json.field"),
             "ACP preamble missing body/test/param/json-require teaching"
+        );
+        assert!(
+            TIER0.contains("reference_read")
+                && TIER0_ACP.contains("reference_read")
+                && TIER0_ACP.contains("READ ONLY"),
+            "inner agent must be taught read-only reference_* for conversion source"
         );
         for (label, text) in [("TIER0", TIER0), ("TIER0_ACP", TIER0_ACP)] {
             for leak in [
@@ -855,10 +874,8 @@ mod tests {
 
     #[test]
     fn assembles_with_mission_when_present() {
-        let dir = std::env::temp_dir().join(format!(
-            "veil_mission_preamble_{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("veil_mission_preamble_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
@@ -917,11 +934,8 @@ mod tests {
                 .take(600)
                 .collect::<String>()
         );
-        let bound = assemble_bound_package_teaching(
-            "pkg T\n  struct Point\n    x: Int\n",
-            &reg,
-            None,
-        );
+        let bound =
+            assemble_bound_package_teaching("pkg T\n  struct Point\n    x: Int\n", &reg, None);
         assert!(
             bound.contains("ACME_PROMPT_MARK") && bound.contains("Package bound"),
             "mid-turn teaching must include implicit layer: {bound}"
@@ -956,15 +970,18 @@ mod tests {
         .unwrap();
         let unused = assemble_preamble("pkg T\n  struct Point\n    x: Int\n", &reg, None);
         assert!(
-            !unused.text.contains("LEAF_PROMPT_MARK")
-                && !unused.text.contains("ROOT_PROMPT_MARK"),
+            !unused.text.contains("LEAF_PROMPT_MARK") && !unused.text.contains("ROOT_PROMPT_MARK"),
             "unused layer prompts leaked: {}",
             &unused.text[unused.text.find("Tier 1").unwrap_or(0)..]
                 .chars()
                 .take(400)
                 .collect::<String>()
         );
-        let used = assemble_preamble("pkg T\n  use root\n  struct Point\n    x: Int\n", &reg, None);
+        let used = assemble_preamble(
+            "pkg T\n  use root\n  struct Point\n    x: Int\n",
+            &reg,
+            None,
+        );
         assert!(
             used.text.contains("ROOT_PROMPT_MARK") && used.text.contains("LEAF_PROMPT_MARK"),
             "use graph prompts missing: {}",

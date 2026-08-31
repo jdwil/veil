@@ -4,6 +4,7 @@
   import EntityIdentity from './EntityIdentity.svelte';
   import StatusPill from './StatusPill.svelte';
   import FormSection from './FormSection.svelte';
+  import FormField from './FormField.svelte';
   import DetailField from './DetailField.svelte';
   import ConfirmDialog from './ConfirmDialog.svelte';
   import DeployStream from './DeployStream.svelte';
@@ -64,6 +65,14 @@
   let deploy_streaming: boolean = $state(false);
   let deploy_stream_type: string = $state('infrastructure');
   let is_terraform: boolean = $state(false);
+  let origin_kind: string = $state('');
+  let origin_provider: string = $state('');
+  let origin_repo: string = $state('');
+  let origin_url: string = $state('');
+  let origin_editing: boolean = $state(false);
+  let origin_saving: boolean = $state(false);
+  let origin_error: string = $state('');
+  let origin_msg: string = $state('');
 
     $effect(() => { // init
       void refreshReview();
@@ -134,6 +143,7 @@
               };
               created_at = field_str(result.repo, "created_at");
               updated_at = field_str(result.repo, "updated_at");
+              apply_origin(result.repo);
               if (field_str(result.repo, "id") !== "") {
                 id = field_str(result.repo, "id");
               };
@@ -227,6 +237,59 @@
   // RepoId is serialized as { value: "uuid" }
   if (typeof v === 'object' && v.value != null) return String(v.value);
   return String(v);
+  }
+  function apply_origin(repo: any) {
+    origin_kind = '';
+    origin_provider = '';
+    origin_repo = '';
+    origin_url = '';
+    const o = repo?.origin;
+    if (!o || typeof o !== 'object') return;
+    const kind = String(o.kind || '').toLowerCase();
+    origin_kind = kind;
+    if (kind !== 'git') return;
+    origin_provider = String(o.provider || 'git').toLowerCase();
+    origin_repo = String(o.repo || '');
+    if (origin_provider === 'github' && origin_repo.includes('/')) {
+      origin_url = `https://github.com/${origin_repo}`;
+    } else if (origin_provider === 'bitbucket' && origin_repo.includes('/')) {
+      origin_url = `https://bitbucket.org/${origin_repo}`;
+    }
+  }
+  async function save_origin() {
+    if (!id) return;
+    const repo = origin_repo.trim();
+    if (!repo.includes('/')) {
+      origin_error = 'Use owner/name (e.g. jdwil/shop or veil/runtime)';
+      return;
+    }
+    origin_saving = true;
+    origin_error = '';
+    origin_msg = '';
+    try {
+      const r = await fetch(`/api/repos/${encodeURIComponent(id)}/origin`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          kind: 'git',
+          provider: origin_provider || 'github',
+          repo,
+          branch: default_branch || 'main',
+        }),
+      });
+      const text = await r.text();
+      const data = text ? JSON.parse(text) : {};
+      if (!r.ok) throw new Error(data.error || text || `HTTP ${r.status}`);
+      apply_origin({ origin: data.origin || { kind: 'git', provider: origin_provider, repo } });
+      origin_editing = false;
+      origin_msg = data.remote_reachable === false
+        ? 'Saved — remote not reachable yet (check token for that org).'
+        : 'Git origin saved.';
+    } catch (e: unknown) {
+      origin_error = e instanceof Error ? e.message : String(e);
+    } finally {
+      origin_saving = false;
+    }
   }
   function mission_template(productName: string): string {
   const n = productName || 'product';
@@ -791,7 +854,42 @@
     <DetailField label="Id" value={id} mono={true} />
     <DetailField label="Created" value={created_at} />
     <DetailField label="Updated" value={updated_at} />
+    <DetailField label="Git origin" value={origin_kind === 'git' ? `${origin_provider}:${origin_repo}` : 'not bound'} mono={true} />
   </FormSection>
+  {#if origin_editing}
+    <FormSection title="Configure git origin" columns={2}>
+      <FormField
+        id="origin_provider"
+        label="Host"
+        input_type="select"
+        bind:value={origin_provider}
+        options={[
+          { value: 'github', label: 'GitHub' },
+          { value: 'bitbucket', label: 'Bitbucket' },
+        ]}
+      />
+      <FormField
+        id="origin_repo"
+        label="owner/name"
+        bind:value={origin_repo}
+        placeholder="jdwil/shop"
+        hint="GitHub org/user or Bitbucket workspace, then /repo"
+      />
+    </FormSection>
+    {#if origin_error}<p class="dk-error">{origin_error}</p>{/if}
+    <div class="mission-actions">
+      <button type="button" class="btn-outline" disabled={origin_saving} onclick={() => { origin_editing = false; origin_error = ''; }}>Cancel</button>
+      <button type="button" class="btn-primary" disabled={origin_saving || !origin_repo.trim()} onclick={() => { void save_origin(); }}>{origin_saving ? 'Saving…' : 'Save origin'}</button>
+    </div>
+  {:else}
+    <p class="hint origin-link">
+      {#if origin_url}<a href={origin_url} target="_blank" rel="noreferrer">{origin_url}</a>{/if}
+      <button type="button" class="btn-outline origin-edit" onclick={() => { origin_editing = true; if (!origin_provider) origin_provider = 'github'; }}>
+        {origin_kind === 'git' ? 'Change git origin' : 'Bind git origin'}
+      </button>
+    </p>
+    {#if origin_msg}<p class="ok-msg">{origin_msg}</p>{/if}
+  {/if}
   <FormSection title="Description" columns={1}>
     <DetailField label="Description" value={description || '—'} />
   </FormSection>
@@ -980,6 +1078,9 @@
   padding: 0.15rem 0.55rem;
 }
 .hint { color: var(--dk-text-muted); font-size: 0.9rem; margin: 0; }
+.origin-link { margin: -0.5rem 0 1rem; display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap; }
+.origin-link a { color: inherit; }
+.origin-edit { font-size: 0.85rem; }
 .ok-msg { color: var(--dk-green, #22c55e); font-size: 0.9rem; margin: 0; }
 .err-msg { color: var(--dk-red, #ef4444); font-size: 0.9rem; margin: 0; }
 .chip--warn {

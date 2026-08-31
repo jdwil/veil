@@ -26,6 +26,67 @@ pub struct VeilConfig {
     /// True after first-run wizard completed (or config written).
     #[serde(default)]
     pub configured: bool,
+    /// Operator-chosen local trees the inner agent may *read* (not write)
+    /// while converting existing code to VEIL. Env `VEIL_REFERENCE_DIRS`
+    /// overlays the same list (colon-separated, optional `name=/path`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reference_dirs: Vec<ReferenceDirEntry>,
+}
+
+/// One allowlisted reference directory in `config.json`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum ReferenceDirEntry {
+    Path(String),
+    Named { name: String, path: String },
+}
+
+impl ReferenceDirEntry {
+    pub fn from_line(raw: &str) -> Option<Self> {
+        let s = raw.trim();
+        if s.is_empty() || s.starts_with('#') {
+            return None;
+        }
+        if let Some((name, path)) = s.split_once('=') {
+            let name = name.trim();
+            let path = path.trim();
+            if !name.is_empty()
+                && !path.is_empty()
+                && !name.contains('/')
+                && !name.contains('\\')
+                && name
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+            {
+                return Some(Self::Named {
+                    name: name.to_string(),
+                    path: path.to_string(),
+                });
+            }
+        }
+        Some(Self::Path(s.to_string()))
+    }
+
+    pub fn to_line(&self) -> String {
+        match self {
+            Self::Path(p) => p.clone(),
+            Self::Named { name, path } => format!("{name}={path}"),
+        }
+    }
+
+    pub fn to_pair(&self) -> (String, String) {
+        match self {
+            Self::Path(p) => {
+                let id = std::path::Path::new(p)
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("root")
+                    .to_string();
+                (id, p.clone())
+            }
+            Self::Named { name, path } => (name.clone(), path.clone()),
+        }
+    }
 }
 
 fn default_version() -> u32 {
@@ -44,6 +105,7 @@ impl Default for VeilConfig {
             layers_dir: None,
             show_core_layers: false,
             configured: false,
+            reference_dirs: Vec::new(),
         }
     }
 }
@@ -56,6 +118,25 @@ impl VeilConfig {
     pub fn layers_dir_path(&self) -> Option<PathBuf> {
         self.layers_dir.as_ref().map(|s| expand_user_path(s))
     }
+}
+
+/// Personal ProductHost: local catalog (no DashLX DDB/S3), GitHub for git.
+///
+/// `VEIL_PLATFORM_LOCAL=1` (or `true` / `on` / `local`).
+pub fn platform_local() -> bool {
+    matches!(
+        std::env::var("VEIL_PLATFORM_LOCAL")
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "1" | "true" | "on" | "yes" | "local"
+    )
+}
+
+/// Sidecar catalog written by ProductHost local metadata (`LocalMetadataStore`).
+pub fn local_catalog_path() -> PathBuf {
+    resolve_projects_dir().join(".veil-meta.json")
 }
 
 /// `~/.veil` (or `VEIL_DATA_DIR` when set — same root as local storage).
@@ -118,8 +199,8 @@ pub fn load_config() -> Result<Option<VeilConfig>, String> {
     if !path.is_file() {
         return Ok(None);
     }
-    let text = fs::read_to_string(&path)
-        .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+    let text =
+        fs::read_to_string(&path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
     let cfg: VeilConfig = serde_json::from_str(&text).map_err(|e| {
         format!(
             "invalid {}: {e} — fix or remove the file (veil will not overwrite it)",
@@ -146,8 +227,7 @@ pub fn save_config(cfg: &VeilConfig) -> Result<(), String> {
     let home = veil_home_dir();
     fs::create_dir_all(&home).map_err(|e| format!("cannot create {}: {e}", home.display()))?;
     let path = config_path();
-    let text =
-        serde_json::to_string_pretty(cfg).map_err(|e| format!("serialize config: {e}"))?;
+    let text = serde_json::to_string_pretty(cfg).map_err(|e| format!("serialize config: {e}"))?;
     fs::write(&path, text + "\n").map_err(|e| format!("cannot write {}: {e}", path.display()))?;
     Ok(())
 }
@@ -298,10 +378,26 @@ mod tests {
             layers_dir: None,
             show_core_layers: true,
             configured: true,
+            reference_dirs: vec![
+                ReferenceDirEntry::Path("/tmp/legacy".into()),
+                ReferenceDirEntry::Named {
+                    name: "shop".into(),
+                    path: "~/code/shop".into(),
+                },
+            ],
         };
         let s = serde_json::to_string(&cfg).unwrap();
         let back: VeilConfig = serde_json::from_str(&s).unwrap();
         assert_eq!(cfg, back);
+    }
+
+    #[test]
+    fn old_config_without_reference_dirs_defaults_empty() {
+        let back: VeilConfig = serde_json::from_str(
+            r#"{"version":1,"projects_dir":"/tmp/p","show_core_layers":false,"configured":true}"#,
+        )
+        .unwrap();
+        assert!(back.reference_dirs.is_empty());
     }
 
     #[test]

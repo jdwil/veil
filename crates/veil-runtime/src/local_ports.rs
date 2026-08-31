@@ -147,18 +147,64 @@ struct MetaDb {
     deps: Vec<DependencyEdge>,
 }
 
+fn catalog_sqlite_path(projects_dir: &Path) -> PathBuf {
+    projects_dir.join(".veil-catalog.sqlite")
+}
+
+fn load_metadb(projects_dir: &Path, json_path: &Path) -> MetaDb {
+    let sqlite = catalog_sqlite_path(projects_dir);
+    if sqlite.is_file() {
+        if let Ok(conn) = rusqlite::Connection::open(&sqlite) {
+            if let Ok(data) = conn.query_row(
+                "SELECT data FROM snapshot WHERE id = 1",
+                [],
+                |r| r.get::<_, String>(0),
+            ) {
+                if let Ok(db) = serde_json::from_str(&data) {
+                    return db;
+                }
+            }
+        }
+    }
+    if json_path.is_file() {
+        if let Ok(s) = std::fs::read_to_string(json_path) {
+            if let Ok(db) = serde_json::from_str(&s) {
+                return db;
+            }
+        }
+    }
+    MetaDb::default()
+}
+
+fn save_metadb(projects_dir: &Path, json_path: &Path, db: &MetaDb) {
+    let Ok(json) = serde_json::to_string(db) else {
+        return;
+    };
+    let _ = std::fs::create_dir_all(projects_dir);
+    if let Ok(pretty) = serde_json::to_string_pretty(db) {
+        let _ = std::fs::write(json_path, pretty);
+    }
+    let sqlite = catalog_sqlite_path(projects_dir);
+    if let Ok(conn) = rusqlite::Connection::open(&sqlite) {
+        let _ = conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS snapshot (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                data TEXT NOT NULL
+            );",
+        );
+        let _ = conn.execute(
+            "INSERT INTO snapshot (id, data) VALUES (1, ?1)
+             ON CONFLICT(id) DO UPDATE SET data = excluded.data",
+            rusqlite::params![json],
+        );
+    }
+}
+
 impl LocalMetadataStore {
     pub fn new(projects_dir: impl Into<PathBuf>) -> Self {
         let projects_dir = projects_dir.into();
         let meta_path = projects_dir.join(".veil-meta.json");
-        let inner = if meta_path.is_file() {
-            std::fs::read_to_string(&meta_path)
-                .ok()
-                .and_then(|s| serde_json::from_str(&s).ok())
-                .unwrap_or_default()
-        } else {
-            MetaDb::default()
-        };
+        let inner = load_metadb(&projects_dir, &meta_path);
         Self {
             projects_dir,
             meta_path,
@@ -167,9 +213,7 @@ impl LocalMetadataStore {
     }
 
     fn save(&self, db: &MetaDb) {
-        if let Ok(s) = serde_json::to_string_pretty(db) {
-            let _ = std::fs::write(&self.meta_path, s);
-        }
+        save_metadb(&self.projects_dir, &self.meta_path, db);
     }
 
     fn branch_key(repo_id: &RepoId, name: &str) -> String {
@@ -178,6 +222,9 @@ impl LocalMetadataStore {
 
     /// Sync hub projects into repo index (id = name for product IDE).
     fn sync_hub(&self, db: &mut MetaDb) {
+        if veil_server::platform_local() {
+            return;
+        }
         if let Ok(list) = veil_server::list_projects(&self.projects_dir) {
             for p in list {
                 let name = p.name.clone();
@@ -555,6 +602,9 @@ use change_management::adapters::{
 /// Build change_management Deps backed by DDB + S3.
 /// Uses VEIL_DDB_TABLE for all DDB repos, BUCKET for S3 git.
 pub async fn change_management_deps() -> change_management::application::Deps {
+    if veil_server::platform_local() {
+        return local_change_management_deps();
+    }
     let config = aws_config::load_defaults(aws_config::BehaviorVersion::latest()).await;
     let ddb_client = aws_sdk_dynamodb::Client::new(&config);
     let s3_client = aws_sdk_s3::Client::new(&config);
@@ -583,5 +633,444 @@ pub async fn change_management_deps() -> change_management::application::Deps {
             client: ddb_client,
             table,
         }),
+    }
+}
+
+fn local_change_management_deps() -> change_management::application::Deps {
+    let dir = crate::platform::projects_dir();
+    let store = LocalCmStore::new(&dir);
+    change_management::application::Deps {
+        git: std::sync::Arc::new(LocalGitService),
+        pr_repo: std::sync::Arc::new(store.clone()),
+        approval_repo: std::sync::Arc::new(store.clone()),
+        ci_repo: std::sync::Arc::new(store.clone()),
+        comment_repo: std::sync::Arc::new(store),
+    }
+}
+
+#[derive(Default, Clone, serde::Serialize, serde::Deserialize)]
+struct CmDb {
+    prs: HashMap<String, change_management::domain::types::PullRequest>,
+    approvals: Vec<change_management::domain::types::Approval>,
+    ci: Vec<change_management::domain::types::CiRun>,
+    comments: Vec<change_management::domain::types::ReviewComment>,
+}
+
+#[derive(Clone)]
+struct LocalCmStore {
+    path: PathBuf,
+    inner: std::sync::Arc<Mutex<CmDb>>,
+}
+
+impl LocalCmStore {
+    fn new(projects_dir: &Path) -> Self {
+        let path = projects_dir.join(".veil-cm.json");
+        let db = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default();
+        Self {
+            path,
+            inner: std::sync::Arc::new(Mutex::new(db)),
+        }
+    }
+
+    fn persist(&self, db: &CmDb) {
+        if let Ok(s) = serde_json::to_string_pretty(db) {
+            let _ = std::fs::write(&self.path, s);
+        }
+    }
+}
+
+#[async_trait]
+impl change_management::ports::PullRequestRepo for LocalCmStore {
+    async fn find(
+        &self,
+        id: uuid::Uuid,
+    ) -> Result<Option<change_management::domain::types::PullRequest>, DomainError> {
+        let db = self.inner.lock().unwrap();
+        Ok(db.prs.get(&id.to_string()).cloned())
+    }
+    async fn list_by_repo(
+        &self,
+        repo_id: uuid::Uuid,
+        status: Option<change_management::domain::types::PrStatus>,
+    ) -> Result<Vec<change_management::domain::types::PullRequest>, DomainError> {
+        let db = self.inner.lock().unwrap();
+        Ok(db
+            .prs
+            .values()
+            .filter(|p| p.repo_id == repo_id)
+            .filter(|p| status.as_ref().map(|s| &p.status == s).unwrap_or(true))
+            .cloned()
+            .collect())
+    }
+    async fn list_open(
+        &self,
+        repo_id: uuid::Uuid,
+    ) -> Result<Vec<change_management::domain::types::PullRequest>, DomainError> {
+        use change_management::domain::types::PrStatus;
+        let db = self.inner.lock().unwrap();
+        Ok(db
+            .prs
+            .values()
+            .filter(|p| p.repo_id == repo_id)
+            .filter(|p| {
+                !matches!(
+                    p.status,
+                    PrStatus::Merged | PrStatus::Rejected | PrStatus::Closed
+                )
+            })
+            .cloned()
+            .collect())
+    }
+    async fn list_all(
+        &self,
+        status: Option<change_management::domain::types::PrStatus>,
+    ) -> Result<Vec<change_management::domain::types::PullRequest>, DomainError> {
+        let db = self.inner.lock().unwrap();
+        Ok(db
+            .prs
+            .values()
+            .filter(|p| status.as_ref().map(|s| &p.status == s).unwrap_or(true))
+            .cloned()
+            .collect())
+    }
+    async fn save(
+        &self,
+        cr: change_management::domain::types::PullRequest,
+    ) -> Result<(), DomainError> {
+        let mut db = self.inner.lock().unwrap();
+        db.prs.insert(cr.id.to_string(), cr);
+        self.persist(&db);
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl change_management::ports::ApprovalRepo for LocalCmStore {
+    async fn find_for_pr(
+        &self,
+        pr_id: uuid::Uuid,
+    ) -> Result<Vec<change_management::domain::types::Approval>, DomainError> {
+        let db = self.inner.lock().unwrap();
+        Ok(db
+            .approvals
+            .iter()
+            .filter(|a| a.pr_id == pr_id)
+            .cloned()
+            .collect())
+    }
+    async fn save(
+        &self,
+        approval: change_management::domain::types::Approval,
+    ) -> Result<(), DomainError> {
+        let mut db = self.inner.lock().unwrap();
+        db.approvals.push(approval);
+        self.persist(&db);
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl change_management::ports::CiRunRepo for LocalCmStore {
+    async fn latest_for_pr(
+        &self,
+        pr_id: uuid::Uuid,
+    ) -> Result<Option<change_management::domain::types::CiRun>, DomainError> {
+        let db = self.inner.lock().unwrap();
+        Ok(db.ci.iter().filter(|c| c.pr_id == pr_id).cloned().last())
+    }
+    async fn list_for_pr(
+        &self,
+        pr_id: uuid::Uuid,
+    ) -> Result<Vec<change_management::domain::types::CiRun>, DomainError> {
+        let db = self.inner.lock().unwrap();
+        Ok(db.ci.iter().filter(|c| c.pr_id == pr_id).cloned().collect())
+    }
+    async fn save(&self, run: change_management::domain::types::CiRun) -> Result<(), DomainError> {
+        let mut db = self.inner.lock().unwrap();
+        db.ci.push(run);
+        self.persist(&db);
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl change_management::ports::CommentRepo for LocalCmStore {
+    async fn list_for_pr(
+        &self,
+        pr_id: uuid::Uuid,
+    ) -> Result<Vec<change_management::domain::types::ReviewComment>, DomainError> {
+        let db = self.inner.lock().unwrap();
+        Ok(db
+            .comments
+            .iter()
+            .filter(|c| c.pr_id == pr_id)
+            .cloned()
+            .collect())
+    }
+    async fn save(
+        &self,
+        comment: change_management::domain::types::ReviewComment,
+    ) -> Result<(), DomainError> {
+        let mut db = self.inner.lock().unwrap();
+        db.comments.push(comment);
+        self.persist(&db);
+        Ok(())
+    }
+    async fn resolve(&self, id: uuid::Uuid) -> Result<(), DomainError> {
+        let mut db = self.inner.lock().unwrap();
+        if let Some(c) = db.comments.iter_mut().find(|c| c.id == id) {
+            c.resolved = true;
+        }
+        self.persist(&db);
+        Ok(())
+    }
+}
+
+struct LocalGitService;
+
+#[async_trait]
+impl change_management::ports::GitService for LocalGitService {
+    async fn init_repo(&self, _slug: String) -> Result<(), DomainError> {
+        Ok(())
+    }
+    async fn repo_exists(&self, _slug: String) -> Result<bool, DomainError> {
+        Ok(true)
+    }
+    async fn create_branch(
+        &self,
+        _slug: String,
+        branch_name: String,
+        _from_ref: String,
+    ) -> Result<String, DomainError> {
+        Ok(branch_name)
+    }
+    async fn delete_branch(&self, _slug: String, _branch: String) -> Result<(), DomainError> {
+        Ok(())
+    }
+    async fn list_branches(&self, _slug: String) -> Result<Vec<String>, DomainError> {
+        Ok(vec!["main".into()])
+    }
+    async fn get_head(&self, _slug: String, _branch: String) -> Result<String, DomainError> {
+        Ok("HEAD".into())
+    }
+    async fn commit_file(
+        &self,
+        _slug: String,
+        _branch: String,
+        _path: String,
+        _content: String,
+        _message: String,
+        _author: String,
+    ) -> Result<String, DomainError> {
+        Ok("local".into())
+    }
+    async fn read_file(
+        &self,
+        _slug: String,
+        _branch: String,
+        _path: String,
+    ) -> Result<Option<String>, DomainError> {
+        Ok(None)
+    }
+    async fn list_files(
+        &self,
+        _slug: String,
+        _branch: String,
+    ) -> Result<Vec<String>, DomainError> {
+        Ok(vec![])
+    }
+    async fn log(
+        &self,
+        _slug: String,
+        _branch: String,
+        _limit: i64,
+    ) -> Result<serde_json::Value, DomainError> {
+        Ok(serde_json::json!([]))
+    }
+    async fn merge(
+        &self,
+        _slug: String,
+        _source: String,
+        _target: String,
+        _message: String,
+        _author: String,
+    ) -> Result<String, DomainError> {
+        Ok("local-merge".into())
+    }
+    async fn diff_files(
+        &self,
+        _slug: String,
+        _base_ref: String,
+        _head_ref: String,
+    ) -> Result<serde_json::Value, DomainError> {
+        Ok(serde_json::json!([]))
+    }
+    async fn can_merge(
+        &self,
+        _slug: String,
+        _source: String,
+        _target: String,
+    ) -> Result<serde_json::Value, DomainError> {
+        Ok(serde_json::json!({ "can_merge": true }))
+    }
+}
+
+/// Empty deploy store + stub exec so local mode never talks to DashLX AWS.
+pub fn local_deploy_deps(
+    bus: std::sync::Arc<dyn veil_shared::Bus + Send + Sync>,
+) -> deploy::application::Deps {
+    deploy::application::Deps {
+        store: std::sync::Arc::new(LocalDeployStore::default()),
+        exec: std::sync::Arc::new(LocalDeployExec),
+        executor: std::sync::Arc::new(deploy::adapters::MockActionExecutor {}),
+        bus,
+    }
+}
+
+#[derive(Default)]
+struct LocalDeployStore;
+
+#[async_trait]
+impl deploy::ports::DeploymentStateStore for LocalDeployStore {
+    async fn get_current(
+        &self,
+        _environment: String,
+        _unit_name: String,
+    ) -> Result<Option<deploy::domain::types::DeploymentState>, DomainError> {
+        Ok(None)
+    }
+    async fn save_current(
+        &self,
+        _state: deploy::domain::types::DeploymentState,
+    ) -> Result<(), DomainError> {
+        Ok(())
+    }
+    async fn save_version(
+        &self,
+        _state: deploy::domain::types::DeploymentState,
+    ) -> Result<(), DomainError> {
+        Ok(())
+    }
+    async fn get_version(
+        &self,
+        _environment: String,
+        _unit_name: String,
+        _version: i64,
+    ) -> Result<Option<deploy::domain::types::DeploymentState>, DomainError> {
+        Ok(None)
+    }
+    async fn list_versions(
+        &self,
+        _environment: String,
+        _unit_name: String,
+        _limit: i64,
+    ) -> Result<Vec<deploy::domain::types::DeploymentState>, DomainError> {
+        Ok(vec![])
+    }
+    async fn append_event(
+        &self,
+        _environment: String,
+        _unit_name: String,
+        _event: deploy::domain::types::DeployEvent,
+    ) -> Result<(), DomainError> {
+        Ok(())
+    }
+    async fn get_events(
+        &self,
+        _environment: String,
+        _unit_name: String,
+        _limit: i64,
+    ) -> Result<Vec<deploy::domain::types::DeployEvent>, DomainError> {
+        Ok(vec![])
+    }
+    async fn list_deployments(
+        &self,
+    ) -> Result<Vec<deploy::domain::types::DeploymentState>, DomainError> {
+        Ok(vec![])
+    }
+}
+
+struct LocalDeployExec;
+
+fn local_deploy_unsupported() -> Result<String, DomainError> {
+    Ok(r#"{"ok":false,"error":"local ProductHost — deploy is not connected to AWS"}"#.into())
+}
+
+#[async_trait]
+impl deploy::ports::DeployExec for LocalDeployExec {
+    async fn list_environments(&self) -> Result<String, DomainError> {
+        Ok(
+            r#"{"default":"dev","environments":[{"name":"dev","region":null,"account_id":null,"has_assume_role":false,"assume_role_arn":null,"lambda_execution_role_arn":null,"gateways":[]}],"config_path":"local"}"#
+                .into(),
+        )
+    }
+    async fn read_project_deploy(
+        &self,
+        _repo_id: String,
+        _branch: String,
+        _slug: String,
+    ) -> Result<String, DomainError> {
+        local_deploy_unsupported()
+    }
+    async fn sync_hub_to_s3(
+        &self,
+        _repo_id: String,
+        _branch: String,
+        _slug: String,
+    ) -> Result<String, DomainError> {
+        local_deploy_unsupported()
+    }
+    async fn plan_provision(
+        &self,
+        _project_slug: String,
+        _environment: String,
+    ) -> Result<String, DomainError> {
+        local_deploy_unsupported()
+    }
+    async fn plan_provision_repo(
+        &self,
+        _repo_id: String,
+        _branch: String,
+        _slug: String,
+        _environment: String,
+    ) -> Result<String, DomainError> {
+        local_deploy_unsupported()
+    }
+    async fn start_provision(
+        &self,
+        _project_slug: String,
+        _environment: String,
+    ) -> Result<String, DomainError> {
+        local_deploy_unsupported()
+    }
+    async fn start_provision_repo(
+        &self,
+        _repo_id: String,
+        _branch: String,
+        _slug: String,
+        _environment: String,
+    ) -> Result<String, DomainError> {
+        local_deploy_unsupported()
+    }
+    async fn get_provision_job(&self, _job_id: String) -> Result<String, DomainError> {
+        local_deploy_unsupported()
+    }
+    async fn provision_unit(
+        &self,
+        _project_slug: String,
+        _environment: String,
+        _unit_name: String,
+    ) -> Result<String, DomainError> {
+        local_deploy_unsupported()
+    }
+    async fn clear_unit_state(
+        &self,
+        _environment: String,
+        _unit_name: String,
+    ) -> Result<String, DomainError> {
+        local_deploy_unsupported()
     }
 }

@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 use std::sync::{OnceLock, RwLock};
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 fn latest() -> &'static RwLock<Option<Value>> {
     static LATEST: OnceLock<RwLock<Option<Value>>> = OnceLock::new();
@@ -70,7 +70,11 @@ pub fn format_focus_block(focus: &Value) -> String {
         format!("- Route: {route}"),
         format!("- Project: {}", project.unwrap_or("(none)")),
     ];
-    if let Some(f) = focus.get("file").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
+    if let Some(f) = focus
+        .get("file")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+    {
         lines.push(format!("- Active file: {f}"));
     }
     if let Some(c) = focus
@@ -112,7 +116,10 @@ pub fn format_focus_block(focus: &Value) -> String {
     {
         lines.push(format!("- Pull request: {ch}"));
     }
-    if let Some(panel) = focus.get("panel").and_then(|v| v.as_str()).filter(|s| !s.is_empty())
+    if let Some(panel) = focus
+        .get("panel")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
     {
         lines.push(format!("- Panel: {panel}"));
     }
@@ -191,6 +198,7 @@ pub enum DomainMode {
 pub fn create_project_intent(
     name: &str,
     description: Option<&str>,
+    origin: Option<&Value>,
     final_path: &str,
     open_ide: bool,
     domain_mode: DomainMode,
@@ -198,6 +206,25 @@ pub fn create_project_intent(
     let mut fields = json!({ "name": name });
     if let Some(d) = description.filter(|s| !s.is_empty()) {
         fields["description"] = json!(d);
+    }
+    if let Some(o) = origin {
+        if let Some(p) = o.get("provider").and_then(|v| v.as_str()) {
+            fields["git_provider"] = json!(p);
+        }
+        if let Some(r) = o.get("repo").and_then(|v| v.as_str()) {
+            if let Some((owner, name)) = r.split_once('/') {
+                fields["git_owner"] = json!(owner);
+                fields["git_repo"] = json!(name);
+            } else {
+                fields["git_repo"] = json!(r);
+            }
+        }
+        if let Some(ow) = o.get("owner").and_then(|v| v.as_str()) {
+            fields["git_owner"] = json!(ow);
+        }
+        if let Some(c) = o.get("create").and_then(|v| v.as_bool()) {
+            fields["git_mode"] = json!(if c { "create" } else { "bind" });
+        }
     }
     let action = if open_ide { "open-ide" } else { "goto" };
     let mut steps = vec![
@@ -272,9 +299,7 @@ pub fn create_pr_intent(
         fields["project"] = json!(p);
         fields["slug"] = json!(p);
     }
-    let mut steps = vec![
-        json!({ "kind": "goto", "path": "/pulls/new", "ms": 320 }),
-    ];
+    let mut steps = vec![json!({ "kind": "goto", "path": "/pulls/new", "ms": 320 })];
     if !fields.as_object().map(|o| o.is_empty()).unwrap_or(true) {
         steps.push(json!({
             "kind": "fill",
@@ -404,7 +429,12 @@ pub fn register_pending_intent(intent_id: &str, meta: Value) {
         g.pending_meta.insert(intent_id.to_string(), meta);
         // Cap
         if g.pending_meta.len() > 128 {
-            let keys: Vec<String> = g.pending_meta.keys().take(g.pending_meta.len() - 96).cloned().collect();
+            let keys: Vec<String> = g
+                .pending_meta
+                .keys()
+                .take(g.pending_meta.len() - 96)
+                .cloned()
+                .collect();
             for k in keys {
                 g.pending_meta.remove(&k);
             }
@@ -427,7 +457,12 @@ pub fn ack_intent(intent_id: &str, result: Value) {
         g.pending_meta.remove(intent_id);
         g.completed.insert(intent_id.to_string(), entry.clone());
         if g.completed.len() > 128 {
-            let keys: Vec<String> = g.completed.keys().take(g.completed.len() - 96).cloned().collect();
+            let keys: Vec<String> = g
+                .completed
+                .keys()
+                .take(g.completed.len() - 96)
+                .cloned()
+                .collect();
             for k in keys {
                 g.completed.remove(&k);
             }
@@ -483,17 +518,12 @@ pub async fn wait_intent_ack(intent_id: &str, timeout_ms: u64) -> Result<Value, 
     }
     let (tx, rx) = oneshot::channel();
     {
-        let mut g = ack_hub()
-            .lock()
-            .map_err(|e| format!("ack hub lock: {e}"))?;
+        let mut g = ack_hub().lock().map_err(|e| format!("ack hub lock: {e}"))?;
         // Re-check under lock
         if let Some(v) = g.completed.get(intent_id) {
             return Ok(v.clone());
         }
-        g.waiters
-            .entry(intent_id.to_string())
-            .or_default()
-            .push(tx);
+        g.waiters.entry(intent_id.to_string()).or_default().push(tx);
     }
     let timeout = std::time::Duration::from_millis(timeout_ms.max(500));
     match tokio::time::timeout(timeout, rx).await {
@@ -650,6 +680,7 @@ mod tests {
         let i = create_project_intent(
             "demo",
             Some("hi"),
+            None,
             "/projects/demo/ide",
             true,
             DomainMode::Server,
@@ -660,7 +691,11 @@ mod tests {
         assert!(steps.len() >= 4);
         assert_eq!(steps[0]["kind"], "goto");
         assert_eq!(steps[1]["kind"], "fill");
-        assert!(steps.iter().any(|s| s["kind"] == "goto" && s.get("path").is_some()));
+        assert!(
+            steps
+                .iter()
+                .any(|s| s["kind"] == "goto" && s.get("path").is_some())
+        );
         assert!(!steps.iter().any(|s| s["kind"] == "commit"));
     }
 
@@ -668,6 +703,7 @@ mod tests {
     fn create_intent_ux_clicks_submit() {
         let i = create_project_intent(
             "demo",
+            None,
             None,
             "/projects/demo/ide",
             true,

@@ -6,7 +6,7 @@
 //!
 //! Used by MCP (`mcp.rs`), host short-circuit (`agent.rs`), and Rig (`model.rs`).
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// Prefer same-origin ProductHost (VEIL_PORT / PORT); legacy veil_bin used 3000.
 pub fn runtime_base() -> String {
@@ -41,11 +41,36 @@ fn arg_bool(arguments: &Value, key: &str, default: bool) -> bool {
         .unwrap_or(default)
 }
 
-async fn http_json(
-    method: &str,
-    path: &str,
-    body: Option<Value>,
-) -> Result<(u16, Value), String> {
+/// Per-project git origin from tool args (`origin` object or flat origin_* keys).
+fn origin_arg(arguments: &Value) -> Option<Value> {
+    if let Some(o) = arguments.get("origin") {
+        if o.is_object() {
+            return Some(o.clone());
+        }
+    }
+    let provider = arg_str(arguments, &["origin_provider", "git_provider"]);
+    let repo = arg_str(arguments, &["origin_repo", "git_repo"]);
+    let owner = arg_str(arguments, &["origin_owner", "git_owner"]);
+    if provider.is_none() && repo.is_none() && owner.is_none() {
+        return None;
+    }
+    let mut o = json!({ "kind": "git" });
+    if let Some(p) = provider {
+        o["provider"] = json!(p);
+    }
+    if let Some(r) = repo {
+        o["repo"] = json!(r);
+    }
+    if let Some(ow) = owner {
+        o["owner"] = json!(ow);
+    }
+    if let Some(c) = arguments.get("origin_create").and_then(|v| v.as_bool()) {
+        o["create"] = json!(c);
+    }
+    Some(o)
+}
+
+async fn http_json(method: &str, path: &str, body: Option<Value>) -> Result<(u16, Value), String> {
     let base = runtime_base();
     let url = if path.starts_with("http://") || path.starts_with("https://") {
         path.to_string()
@@ -67,7 +92,10 @@ async fn http_json(
     if let Some(b) = body {
         req = req.json(&b);
     }
-    let resp = req.send().await.map_err(|e| format!("HTTP {method} {url}: {e}"))?;
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| format!("HTTP {method} {url}: {e}"))?;
     let status = resp.status().as_u16();
     let text = resp.text().await.unwrap_or_default();
     let val = if text.trim().is_empty() {
@@ -128,6 +156,11 @@ pub fn is_platform_tool(name: &str) -> bool {
             | "list_registry_stubs"
             | "search_registry"
             | "get_config"
+            | "get_git_status"
+            | "get_origin"
+            | "bind_origin"
+            | "set_origin"
+            | "update_origin"
             | "get_mission"
             | "update_mission"
             | "wait_intent_ack"
@@ -150,6 +183,7 @@ fn canonicalize_tool(name: &str) -> &str {
         "merge_pr" => "merge_pr",
         "get_pr_diff" => "get_pr_diff",
         "rename_project" | "update_project" => "update_project",
+        "set_origin" | "update_origin" | "bind_origin" => "bind_origin",
         other => other,
     }
 }
@@ -180,9 +214,9 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
         // ─── Projects ─────────────────────────────────────────────────────
         "list_projects" | "open_projects" => {
             let navigate = arg_bool(arguments, "navigate", true);
-            let (status, data) = http_json("GET", "/api/repos", None).await.unwrap_or_else(|e| {
-                (0, json!({ "error": e }))
-            });
+            let (status, data) = http_json("GET", "/api/repos", None)
+                .await
+                .unwrap_or_else(|e| (0, json!({ "error": e })));
             // Fallback: /api/projects (respects source mode) — never invent disk hub lists in s3
             let (status, data) = if !ok_status(status) || status == 0 {
                 match http_json("GET", "/api/projects", None).await {
@@ -200,11 +234,14 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                                 (0, json!({ "error": e }))
                             }
                         } else {
-                            (0, json!({
-                                "error": e,
-                                "source_mode": "s3",
-                                "hint": "list_projects needs GET /api/repos or /api/projects with remote store"
-                            }))
+                            (
+                                0,
+                                json!({
+                                    "error": e,
+                                    "source_mode": "s3",
+                                    "hint": "list_projects needs GET /api/repos or /api/projects with remote store"
+                                }),
+                            )
                         }
                     }
                 }
@@ -235,11 +272,8 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
             });
             if navigate {
                 out["navigation"] = json!({ "action": "goto", "path": "/projects" });
-                out["intent"] = crate::focus::page_action_intent(
-                    "list_projects",
-                    "/projects",
-                    "Open projects",
-                );
+                out["intent"] =
+                    crate::focus::page_action_intent("list_projects", "/projects", "Open projects");
                 out["execution"] = json!({ "domain": "none", "present": "goto" });
             }
             Ok(out.to_string())
@@ -249,6 +283,7 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
             let name = arg_str(arguments, &["name", "project", "slug"])
                 .ok_or_else(|| "create_project requires name".to_string())?;
             let description = arg_str(arguments, &["description", "desc"]);
+            let origin = origin_arg(arguments);
             let open = arg_bool(arguments, "open", true);
             let open_ide = arg_bool(arguments, "open_ide", false);
 
@@ -282,6 +317,7 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                 let intent = crate::focus::create_project_intent(
                     &name,
                     description.as_deref(),
+                    origin.as_ref(),
                     &path,
                     open_ide,
                     crate::focus::DomainMode::Ux,
@@ -324,7 +360,8 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
             }
 
             // ── Server domain path ──
-            let result = create_project_domain(&name, description.as_deref()).await?;
+            let result =
+                create_project_domain(&name, description.as_deref(), origin.clone()).await?;
             let status = result
                 .get("http_status")
                 .and_then(|v| v.as_u64())
@@ -346,6 +383,7 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                 Some(crate::focus::create_project_intent(
                     &slug,
                     description.as_deref(),
+                    origin.as_ref(),
                     &path,
                     open_ide,
                     crate::focus::DomainMode::Server,
@@ -365,11 +403,7 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                     .get("id")
                     .or_else(|| result.pointer("/project/id"))
                     .and_then(|v| v.as_str());
-                let _ = crate::review::record_project_created(
-                    &slug,
-                    Some(&name),
-                    repo_id,
-                );
+                let _ = crate::review::record_project_created(&slug, Some(&name), repo_id);
             }
             let mut out = result;
             out["navigation"] = json!({ "action": action, "path": path, "project": slug });
@@ -381,7 +415,8 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
             });
             if let Some(s) = out.get("summary").and_then(|v| v.as_str()) {
                 if ok_status(status) && !s.contains("UX") {
-                    out["summary"] = json!(format!("{s}; UX will present create form choreography"));
+                    out["summary"] =
+                        json!(format!("{s}; UX will present create form choreography"));
                 }
             }
             Ok(out.to_string())
@@ -390,8 +425,12 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
         "get_project" => {
             let id = arg_str(arguments, &["project", "slug", "id", "name"])
                 .ok_or_else(|| "get_project requires project/slug/id".to_string())?;
-            let (status, data) = http_json("GET", &format!("/api/repos/{}", urlencoding_path(&id)), None)
-                .await?;
+            let (status, data) = http_json(
+                "GET",
+                &format!("/api/repos/{}", urlencoding_path(&id)),
+                None,
+            )
+            .await?;
             Ok(json!({
                 "ok": ok_status(status),
                 "http_status": status,
@@ -418,11 +457,8 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
             let new_slug = arg_str(arguments, &["new_slug"]);
             let description = arg_str(arguments, &["description", "desc"]);
             let clear_description = arg_bool(arguments, "clear_description", false);
-            if name.is_none() && new_slug.is_none() && description.is_none() && !clear_description
-            {
-                return Err(
-                    "update_project requires name, new_slug, and/or description".into(),
-                );
+            if name.is_none() && new_slug.is_none() && description.is_none() && !clear_description {
+                return Err("update_project requires name, new_slug, and/or description".into());
             }
             let mut body = json!({});
             if let Some(ref n) = name {
@@ -490,8 +526,12 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
         "delete_project" => {
             let id = arg_str(arguments, &["project", "slug", "id", "name"])
                 .ok_or_else(|| "delete_project requires project/slug/id".to_string())?;
-            let (status, data) =
-                http_json("DELETE", &format!("/api/repos/{}", urlencoding_path(&id)), None).await?;
+            let (status, data) = http_json(
+                "DELETE",
+                &format!("/api/repos/{}", urlencoding_path(&id)),
+                None,
+            )
+            .await?;
             Ok(json!({
                 "ok": ok_status(status),
                 "http_status": status,
@@ -507,7 +547,8 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
         }
 
         "open_project" | "open_ide" | "switch_project" => {
-            let project = arg_str(arguments, &["project", "slug", "id", "name"]).unwrap_or_default();
+            let project =
+                arg_str(arguments, &["project", "slug", "id", "name"]).unwrap_or_default();
             if project.is_empty() {
                 return Ok(json!({
                     "ok": true,
@@ -534,21 +575,13 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
             };
             let (summary, file_count) = match &bind {
                 Ok(info) => {
-                    let n = info
-                        .get("file_count")
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or(0);
+                    let n = info.get("file_count").and_then(|v| v.as_u64()).unwrap_or(0);
                     (
-                        format!(
-                            "Open {slug} in IDE — bound session, {n} file(s) on disk/S3"
-                        ),
+                        format!("Open {slug} in IDE — bound session, {n} file(s) on disk/S3"),
                         n,
                     )
                 }
-                Err(e) => (
-                    format!("Open {slug} (nav only; bind failed: {e})"),
-                    0u64,
-                ),
+                Err(e) => (format!("Open {slug} (nav only; bind failed: {e})"), 0u64),
             };
             let intent = crate::focus::navigate_intent(&path, Some(&slug));
             let mut out = json!({
@@ -570,9 +603,8 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
 
         // ─── Coding orchestrator plans (step runner) ─────────────────────
         "run_coding_plan" => {
-            let plan_name = arg_str(arguments, &["plan", "name", "id"]).unwrap_or_else(|| {
-                "coding.fix_diagnostics".into()
-            });
+            let plan_name = arg_str(arguments, &["plan", "name", "id"])
+                .unwrap_or_else(|| "coding.fix_diagnostics".into());
             let plan_id = crate::coding_orchestrator::PlanId::parse(&plan_name).ok_or_else(|| {
                 format!(
                     "unknown plan `{plan_name}` — use coding.slice | coding.fix_diagnostics | coding.finish_task"
@@ -583,31 +615,31 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                 .to_lowercase();
             let request = arg_str(arguments, &["request", "task", "message", "query"])
                 .unwrap_or_else(|| "".into());
-            let project = arg_str(arguments, &["slug", "project"]).or_else(|| {
-                crate::coding_gates::current_project_slug()
-            });
+            let project = arg_str(arguments, &["slug", "project"])
+                .or_else(|| crate::coding_gates::current_project_slug());
 
             // status — inspect cursor without advancing
             if action == "status" {
-                return Ok(match crate::coding_orchestrator::get_run(project.as_deref(), plan_id)
-                {
-                    Some(run) => json!({
-                        "ok": true,
-                        "plan": plan_id.as_str(),
-                        "action": "status",
-                        "run": crate::coding_orchestrator::run_status_json(&run),
-                        "next": crate::coding_orchestrator::next_action_json(&run),
-                    })
-                    .to_string(),
-                    None => json!({
-                        "ok": true,
-                        "plan": plan_id.as_str(),
-                        "action": "status",
-                        "run": null,
-                        "summary": "No active run — call action=start",
-                    })
-                    .to_string(),
-                });
+                return Ok(
+                    match crate::coding_orchestrator::get_run(project.as_deref(), plan_id) {
+                        Some(run) => json!({
+                            "ok": true,
+                            "plan": plan_id.as_str(),
+                            "action": "status",
+                            "run": crate::coding_orchestrator::run_status_json(&run),
+                            "next": crate::coding_orchestrator::next_action_json(&run),
+                        })
+                        .to_string(),
+                        None => json!({
+                            "ok": true,
+                            "plan": plan_id.as_str(),
+                            "action": "status",
+                            "run": null,
+                            "summary": "No active run — call action=start",
+                        })
+                        .to_string(),
+                    },
+                );
             }
 
             // next — agent completed current step; advance and return next action
@@ -682,10 +714,7 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                 "request": request,
                 "project": project,
             });
-            let resolve_raw = if matches!(
-                plan_id,
-                crate::coding_orchestrator::PlanId::FinishTask
-            ) {
+            let resolve_raw = if matches!(plan_id, crate::coding_orchestrator::PlanId::FinishTask) {
                 if request.trim().is_empty() {
                     json!({
                         "ok": true,
@@ -703,8 +732,8 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                     .await
                     .unwrap_or_else(|e| json!({ "ok": false, "error": e }).to_string())
             };
-            let resolve_val: Value =
-                serde_json::from_str(&resolve_raw).unwrap_or_else(|_| json!({ "raw": resolve_raw }));
+            let resolve_val: Value = serde_json::from_str(&resolve_raw)
+                .unwrap_or_else(|_| json!({ "raw": resolve_raw }));
 
             if resolve_val.get("decision").and_then(|v| v.as_str()) == Some("needs_choice") {
                 return Ok(json!({
@@ -836,9 +865,8 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
         "resolve_coding_target" => {
             let request = arg_str(arguments, &["request", "task", "query", "message"])
                 .unwrap_or_else(|| "".into());
-            let project = arg_str(arguments, &["slug", "project"]).or_else(|| {
-                crate::coding_gates::current_project_slug()
-            });
+            let project = arg_str(arguments, &["slug", "project"])
+                .or_else(|| crate::coding_gates::current_project_slug());
             // Explicit operator/agent choice (after modal ACK or tool arg)
             if let Some(choice) = arg_str(arguments, &["choice", "pr_id", "pr_id"]) {
                 if choice == "__new__" || choice.eq_ignore_ascii_case("new") {
@@ -882,14 +910,11 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                 }
                 _ => "/api/pull_requests".to_string(),
             };
-            let (_status, data) = http_json("GET", &path, None).await.unwrap_or_else(|e| {
-                (0, json!({ "error": e, "pull_requests": [] }))
-            });
-            let mut candidates = crate::coding_resolve::candidates_from_list(
-                &data,
-                project.as_deref(),
-                &request,
-            );
+            let (_status, data) = http_json("GET", &path, None)
+                .await
+                .unwrap_or_else(|e| (0, json!({ "error": e, "pull_requests": [] })));
+            let mut candidates =
+                crate::coding_resolve::candidates_from_list(&data, project.as_deref(), &request);
             // Prefer session's already-bound PR when still open
             if let Some(ref slug) = project {
                 if let Some(h) = crate::coding_gates::project_session(Some(slug)) {
@@ -997,9 +1022,9 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                 Some(s) => format!("/api/pull_requests?status={}", s),
                 None => "/api/pull_requests".to_string(),
             };
-            let (status, data) = http_json("GET", &path, None).await.unwrap_or_else(|e| {
-                (0, json!({ "error": e }))
-            });
+            let (status, data) = http_json("GET", &path, None)
+                .await
+                .unwrap_or_else(|e| (0, json!({ "error": e })));
             let mut out = json!({
                 "ok": ok_status(status) || status == 0 && data.get("error").is_none(),
                 "summary": "Listed pull requests (SDLC)",
@@ -1010,11 +1035,8 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
             });
             if navigate {
                 out["navigation"] = json!({ "action": "goto", "path": "/pulls" });
-                out["intent"] = crate::focus::page_action_intent(
-                    "list_prs",
-                    "/pulls",
-                    "Open pull requests",
-                );
+                out["intent"] =
+                    crate::focus::page_action_intent("list_prs", "/pulls", "Open pull requests");
                 out["execution"] = json!({ "domain": "none", "present": "goto" });
             }
             // ok even if API empty — navigation still useful
@@ -1044,9 +1066,8 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
 
             // Reuse **open** PR bound on session (never Merged / Closed).
             if !force_new {
-                let project = arg_str(arguments, &["slug", "project", "repo", "repo_id"]).or_else(
-                    crate::coding_gates::current_project_slug,
-                );
+                let project = arg_str(arguments, &["slug", "project", "repo", "repo_id"])
+                    .or_else(crate::coding_gates::current_project_slug);
                 if let Some(ref slug) = project {
                     if let Some(h) = crate::coding_gates::project_session(Some(slug)) {
                         if let Some(aid) = h
@@ -1056,8 +1077,9 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                             .filter(|s| !s.is_empty())
                         {
                             let path = format!("/api/pull_requests/{}", urlencoding_path(&aid));
-                            let (st, data) =
-                                http_json("GET", &path, None).await.unwrap_or((0, json!({})));
+                            let (st, data) = http_json("GET", &path, None)
+                                .await
+                                .unwrap_or((0, json!({})));
                             let status = data
                                 .pointer("/pull_request/status")
                                 .or_else(|| data.get("status"))
@@ -1139,25 +1161,26 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                 }
 
                 // Prefer coding-session branch when agent omits source_branch.
-                let source_branch = arg_str(arguments, &["source_branch", "branch"]).or_else(|| {
-                    let slug = project.as_deref().unwrap_or("");
-                    if slug.is_empty() {
-                        return None;
-                    }
-                    crate::session::SessionManager::global()
-                        .resolve_for_project(slug)
-                        .ok()
-                        .and_then(|h| {
-                            let m = h.snapshot_meta();
-                            m.branch_name.clone().or_else(|| {
-                                if m.draft_mode {
-                                    Some("work".into())
-                                } else {
-                                    None
-                                }
+                let source_branch =
+                    arg_str(arguments, &["source_branch", "branch"]).or_else(|| {
+                        let slug = project.as_deref().unwrap_or("");
+                        if slug.is_empty() {
+                            return None;
+                        }
+                        crate::session::SessionManager::global()
+                            .resolve_for_project(slug)
+                            .ok()
+                            .and_then(|h| {
+                                let m = h.snapshot_meta();
+                                m.branch_name.clone().or_else(|| {
+                                    if m.draft_mode {
+                                        Some("work".into())
+                                    } else {
+                                        None
+                                    }
+                                })
                             })
-                        })
-                });
+                    });
                 let mut desc = description.clone().unwrap_or_default();
                 if let Some(slug) = &project {
                     if !desc.to_lowercase().contains("project:") {
@@ -1214,8 +1237,7 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                     "author": arg_str(arguments, &["author"]).unwrap_or_else(|| "agent".into()),
                     "source_branch": source_branch,
                 });
-                let (status, data) =
-                    http_json("POST", "/api/pull_requests", Some(body)).await?;
+                let (status, data) = http_json("POST", "/api/pull_requests", Some(body)).await?;
                 let pr_id = data
                     .pointer("/pull_request/id")
                     .or_else(|| data.get("id"))
@@ -1225,7 +1247,8 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                 // Publish session worktree onto PR source_branch so structural diff sees edits.
                 let mut publish = json!(null);
                 if ok_status(status) && !pr_id.is_empty() {
-                    if let (Some(slug), Some(branch)) = (project.as_deref(), source_branch.as_deref())
+                    if let (Some(slug), Some(branch)) =
+                        (project.as_deref(), source_branch.as_deref())
                     {
                         match crate::pr_writeback::publish_session_for_change(slug, branch, &pr_id)
                         {
@@ -1272,7 +1295,11 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                         let _ = crate::review::record_pr(
                             slug,
                             &title,
-                            if pr_id.is_empty() { None } else { Some(pr_id.as_str()) },
+                            if pr_id.is_empty() {
+                                None
+                            } else {
+                                Some(pr_id.as_str())
+                            },
                         );
                     }
                 }
@@ -1316,11 +1343,7 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                             let m = h.snapshot_meta();
                             m.branch_name.clone().or_else(|| {
                                 let b = m.branch.clone();
-                                if b.is_empty() {
-                                    None
-                                } else {
-                                    Some(b)
-                                }
+                                if b.is_empty() { None } else { Some(b) }
                             })
                         })
                 });
@@ -1379,8 +1402,7 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                     body["project"] = json!(slug);
                     body["slug"] = json!(slug);
                 }
-                let (status, data) =
-                    http_json("POST", "/api/pull_requests", Some(body)).await?;
+                let (status, data) = http_json("POST", "/api/pull_requests", Some(body)).await?;
                 let path = if ok_status(status) {
                     data.get("pull_request")
                         .and_then(|c| c.get("id"))
@@ -1425,9 +1447,12 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
         "get_pr" => {
             let id = arg_str(arguments, &["id", "pr_id", "pull_request_id"])
                 .ok_or_else(|| "get_pr requires id".to_string())?;
-            let (status, data) =
-                http_json("GET", &format!("/api/pull_requests/{}", urlencoding_path(&id)), None)
-                    .await?;
+            let (status, data) = http_json(
+                "GET",
+                &format!("/api/pull_requests/{}", urlencoding_path(&id)),
+                None,
+            )
+            .await?;
             Ok(json!({
                 "ok": ok_status(status),
                 "http_status": status,
@@ -1497,7 +1522,10 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
             let mut summary = format!(
                 "Submitted pull request {id} for review — open IDE PR Wizard (Review). Do not merge_branch."
             );
-            if gate_notes.iter().any(|n| n.contains("MUST_ACKNOWLEDGE_ERRORS")) {
+            if gate_notes
+                .iter()
+                .any(|n| n.contains("MUST_ACKNOWLEDGE_ERRORS"))
+            {
                 summary.push_str(
                     " HOST still reports Errors on the working set — do not claim clean check.",
                 );
@@ -1514,7 +1542,8 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                 ..Default::default()
             })
             .len();
-            let sign_intent = crate::review::request_sign_off_intent(sign_slug.as_deref(), sign_count);
+            let sign_intent =
+                crate::review::request_sign_off_intent(sign_slug.as_deref(), sign_count);
             let review_path = sign_slug
                 .as_deref()
                 .map(|s| format!("/review/{s}"))
@@ -1573,7 +1602,10 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
             });
             let (status, data) = http_json(
                 "POST",
-                &format!("/api/pull_requests/{}/request-changes", urlencoding_path(&id)),
+                &format!(
+                    "/api/pull_requests/{}/request-changes",
+                    urlencoding_path(&id)
+                ),
                 Some(body),
             )
             .await?;
@@ -1729,10 +1761,10 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
         "plan_provision" => {
             let project_slug = arg_str(arguments, &["project_slug", "project", "slug", "name"])
                 .ok_or_else(|| "plan_provision requires project_slug".to_string())?;
-            let environment = arg_str(arguments, &["environment", "env"])
-                .unwrap_or_else(|| "dev".into());
-            let repo_id = arg_str(arguments, &["repo_id", "repo"])
-                .unwrap_or_else(|| project_slug.clone());
+            let environment =
+                arg_str(arguments, &["environment", "env"]).unwrap_or_else(|| "dev".into());
+            let repo_id =
+                arg_str(arguments, &["repo_id", "repo"]).unwrap_or_else(|| project_slug.clone());
             let body = json!({
                 "project_slug": project_slug,
                 "environment": environment,
@@ -1768,10 +1800,10 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                 })
                 .to_string());
             }
-            let environment = arg_str(arguments, &["environment", "env"])
-                .unwrap_or_else(|| "dev".into());
-            let repo_id = arg_str(arguments, &["repo_id", "repo"])
-                .unwrap_or_else(|| project_slug.clone());
+            let environment =
+                arg_str(arguments, &["environment", "env"]).unwrap_or_else(|| "dev".into());
+            let repo_id =
+                arg_str(arguments, &["repo_id", "repo"]).unwrap_or_else(|| project_slug.clone());
             let body = json!({
                 "project_slug": project_slug,
                 "environment": environment,
@@ -1912,27 +1944,161 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
         }
 
         "get_config" => {
-            let (status, data) = http_json("GET", "/api/config", None).await.unwrap_or_else(|e| {
-                let cfg = crate::config::load_config_or_default();
-                (
-                    200,
-                    json!({
-                        "version": cfg.version,
-                        "projects_dir": cfg.projects_dir_path().to_string_lossy(),
-                        "error_fallback": e,
-                    }),
-                )
-            });
+            let (status, data) = http_json("GET", "/api/config", None)
+                .await
+                .unwrap_or_else(|e| {
+                    let cfg = crate::config::load_config_or_default();
+                    (
+                        200,
+                        json!({
+                            "version": cfg.version,
+                            "projects_dir": cfg.projects_dir_path().to_string_lossy(),
+                            "reference_roots": crate::reference_fs::public_roots_json(),
+                            "error_fallback": e,
+                        }),
+                    )
+                });
             let intent =
                 crate::focus::page_action_intent("get_config", "/config", "Runtime config");
+            let git = http_json("GET", "/api/git/status", None)
+                .await
+                .ok()
+                .filter(|(s, _)| ok_status(*s))
+                .map(|(_, v)| v);
             Ok(json!({
                 "ok": ok_status(status),
                 "http_status": status,
                 "summary": "Runtime config",
                 "config": data,
+                "git": git,
                 "navigation": { "action": "goto", "path": "/config" },
                 "intent": intent,
                 "execution": { "domain": "none", "present": "goto" }
+            })
+            .to_string())
+        }
+
+        "get_git_status" => {
+            let (status, data) = http_json("GET", "/api/git/status", None).await?;
+            Ok(json!({
+                "ok": ok_status(status),
+                "http_status": status,
+                "summary": "Git provider status (no secrets)",
+                "git": data,
+            })
+            .to_string())
+        }
+
+        "get_origin" => {
+            let id = arg_str(arguments, &["project", "slug", "id", "name"])
+                .or_else(|| crate::coding_gates::current_project_slug())
+                .ok_or_else(|| "get_origin requires project/slug/id".to_string())?;
+            let (status, data) = http_json(
+                "GET",
+                &format!("/api/repos/{}/origin", urlencoding_path(&id)),
+                None,
+            )
+            .await?;
+            Ok(json!({
+                "ok": ok_status(status),
+                "http_status": status,
+                "summary": format!("Git origin for `{id}`"),
+                "origin": data,
+                "navigation": { "action": "goto", "path": format!("/projects/{id}"), "project": id }
+            })
+            .to_string())
+        }
+
+        "bind_origin" => {
+            let id = arg_str(arguments, &["project", "slug", "id", "name"])
+                .or_else(|| crate::coding_gates::current_project_slug())
+                .ok_or_else(|| "bind_origin requires project/slug/id".to_string())?;
+            let origin = origin_arg(arguments).ok_or_else(|| {
+                "bind_origin requires origin_provider + origin_repo (or origin_owner + name), or origin:{}"
+                    .to_string()
+            })?;
+            let create = origin
+                .get("create")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            // Persist binding on the catalog record.
+            let mut body = origin.clone();
+            if body.get("kind").is_none() {
+                body["kind"] = json!("git");
+            }
+            if body
+                .get("repo")
+                .and_then(|v| v.as_str())
+                .map(|s| !s.contains('/'))
+                .unwrap_or(true)
+            {
+                if let Some(owner) = body.get("owner").and_then(|v| v.as_str()) {
+                    let name = body
+                        .get("repo")
+                        .and_then(|v| v.as_str())
+                        .or_else(|| body.get("name").and_then(|v| v.as_str()))
+                        .unwrap_or(&id);
+                    body["repo"] = json!(format!("{owner}/{name}"));
+                }
+            }
+            if create {
+                // Create the remote if missing, then bind.
+                let (st, repo) = http_json(
+                    "GET",
+                    &format!("/api/repos/{}", urlencoding_path(&id)),
+                    None,
+                )
+                .await?;
+                if !ok_status(st) {
+                    return Ok(json!({
+                        "ok": false,
+                        "http_status": st,
+                        "summary": format!("bind_origin: project `{id}` not found"),
+                        "project": repo,
+                    })
+                    .to_string());
+                }
+                let rid = repo
+                    .pointer("/id/value")
+                    .or_else(|| repo.get("id"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(&id)
+                    .to_string();
+                let slug = repo
+                    .get("slug")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(&id)
+                    .to_string();
+                let spec = crate::git_provider::OriginRequest::from_value(Some(&origin), &slug)
+                    .map_err(|e| e)?;
+                let rid2 = rid.clone();
+                let slug2 = slug.clone();
+                let provisioned = tokio::task::spawn_blocking(move || {
+                    crate::git_provider::provision_origin(&rid2, &slug2, None, &spec)
+                })
+                .await
+                .map_err(|e| format!("join: {e}"))?;
+                if let Err(e) = provisioned {
+                    return Ok(json!({
+                        "ok": false,
+                        "summary": format!("bind_origin: failed to provision remote: {e}"),
+                        "error": e,
+                    })
+                    .to_string());
+                }
+            }
+            let (status, data) = http_json(
+                "POST",
+                &format!("/api/repos/{}/origin", urlencoding_path(&id)),
+                Some(body),
+            )
+            .await?;
+            Ok(json!({
+                "ok": ok_status(status),
+                "http_status": status,
+                "summary": format!("Git origin for `{id}`"),
+                "origin": data,
+                "navigation": { "action": "goto", "path": format!("/projects/{id}"), "project": id }
             })
             .to_string())
         }
@@ -1990,9 +2156,7 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
 
         "get_current_context" => {
             // Prefer session-scoped focus when CURRENT_SESSION is set
-            let sid = crate::session::CURRENT_SESSION
-                .try_with(|s| s.clone())
-                .ok();
+            let sid = crate::session::CURRENT_SESSION.try_with(|s| s.clone()).ok();
             let mut ctx = crate::focus::context_tool_json(sid.as_deref());
             // Enrich with live ACP / task-local project so agent never confuses
             // "UI focus not published" with "no product exists".
@@ -2135,8 +2299,7 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
 
         "sign_off" => {
             let slug = arg_str(arguments, &["project", "slug", "id"]);
-            let decision = arg_str(arguments, &["decision"])
-                .unwrap_or_else(|| "approve".into());
+            let decision = arg_str(arguments, &["decision"]).unwrap_or_else(|| "approve".into());
             let via = arg_str(arguments, &["via"]).unwrap_or_default();
             // Agent may navigate + highlight. It must not press Sign off.
             if via == "ux" || crate::focus::client_present() {
@@ -2253,13 +2416,17 @@ fn chrono_ms() -> u64 {
 ///
 /// **Idempotent:** if a repo with the same slug already exists, returns that
 /// project (ok: true, existing: true) instead of creating a duplicate.
-pub async fn create_project_domain(name: &str, description: Option<&str>) -> Result<Value, String> {
+pub async fn create_project_domain(
+    name: &str,
+    description: Option<&str>,
+    origin: Option<Value>,
+) -> Result<Value, String> {
     use crate::provider::s3_workspace::{
-        allow_disk_project_create, ide_source_mode, seed_new_repo_scaffold, IdeSourceMode,
+        IdeSourceMode, allow_disk_project_create, ide_source_mode, seed_new_repo_scaffold,
     };
 
     let mode = ide_source_mode();
-    let remote_only = matches!(mode, IdeSourceMode::S3);
+    let remote_only = matches!(mode, IdeSourceMode::S3 | IdeSourceMode::Local);
     let want_slug = crate::project_layout::slugify_name(name);
 
     // Idempotent: reuse existing product with same slug
@@ -2276,9 +2443,10 @@ pub async fn create_project_domain(name: &str, description: Option<&str>) -> Res
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
-                if slug == want_slug || crate::project_layout::slugify_name(
-                    repo.get("name").and_then(|v| v.as_str()).unwrap_or(""),
-                ) == want_slug
+                if slug == want_slug
+                    || crate::project_layout::slugify_name(
+                        repo.get("name").and_then(|v| v.as_str()).unwrap_or(""),
+                    ) == want_slug
                 {
                     let bind = crate::agent_scope::prepare_project(&want_slug, None).ok();
                     return Ok(json!({
@@ -2295,6 +2463,7 @@ pub async fn create_project_domain(name: &str, description: Option<&str>) -> Res
                             IdeSourceMode::S3 => "s3",
                             IdeSourceMode::PreferS3 => "prefer_s3",
                             IdeSourceMode::Disk => "disk",
+                            IdeSourceMode::Local => "local",
                         },
                         "session": bind,
                         "hint": "Continue with write_source / create_file / update_mission — do NOT create_project again. Product annotations belong in layers/*.layer (`ann`), not a platform ticket.",
@@ -2305,10 +2474,13 @@ pub async fn create_project_domain(name: &str, description: Option<&str>) -> Res
     }
 
     // Keep human title for DDB `name`; slug is derived server-side.
-    let body = json!({
+    let mut body = json!({
         "name": name,
         "description": description,
     });
+    if let Some(o) = origin {
+        body["origin"] = o;
+    }
     let (status, data) = http_json("POST", "/api/repos", Some(body))
         .await
         .unwrap_or((0, json!({})));
@@ -2331,10 +2503,15 @@ pub async fn create_project_domain(name: &str, description: Option<&str>) -> Res
             // Seed with slug (filesystem-safe); MISSION title still gets display name via scaffold.
             match seed_new_repo_scaffold(&rid, name) {
                 Ok(files) => {
+                    let store = if crate::git_origin::GitOrigin::for_repo(&rid).is_git_remote() {
+                        "github"
+                    } else {
+                        "s3"
+                    };
                     scaffold = Some(json!({
                         "repo_id": rid.clone(),
                         "files": files,
-                        "store": "s3",
+                        "store": store,
                     }));
                     // Drop orphan same-slug sessions (wrong repo_id) and open mainline.
                     if crate::session::sessions_enabled() {
@@ -2427,12 +2604,22 @@ pub async fn create_project_domain(name: &str, description: Option<&str>) -> Res
         IdeSourceMode::S3 => "s3",
         IdeSourceMode::PreferS3 => "prefer_s3",
         IdeSourceMode::Disk => "disk",
+        IdeSourceMode::Local => "local",
     };
 
     Ok(json!({
         "ok": ok_status(status),
         "summary": if ok_status(status) {
-            if scaffold.is_some() {
+            let store = scaffold
+                .as_ref()
+                .and_then(|s| s.get("store"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("s3");
+            if scaffold.is_some() && store == "github" {
+                format!(
+                    "Created project `{display_name}` (slug `{slug}`) with GitHub origin — write VEIL via write_source, not the local disk"
+                )
+            } else if scaffold.is_some() {
                 format!(
                     "Created remote project `{display_name}` (slug `{slug}`, DDB + S3 scaffold)"
                 )
@@ -2485,12 +2672,17 @@ pub fn tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "create_project",
-            "description": "Create a new product project/repo. Returns intent.present (form fill + pulse). via=ux: UX commits after Present (browser); via=server: domain first (default for multi-step/ACP). Do NOT re-create or curl. ALWAYS use when the user asks to create a project. On success the project is bound — immediately write layers/*.layer (declare product annotations with `ann`), MISSION.md, and main.veil. Do not wiki-search for whether those annotations exist in ddd.layer.",
+            "description": "Create a new product project/repo. Each project has its own git origin (GitHub org like jdwil/… or veil/…, or Bitbucket). Pass origin_provider + origin_owner/origin_repo, or origin:{provider,repo}. Default owner is VEIL_GITHUB_OWNER. origin_create=false binds an existing remote. Do NOT re-create or curl. On success write layers/*.layer (product `ann`s), MISSION.md, and main.veil via write_source. Never mkdir on the operator disk.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "name": { "type": "string", "description": "Project name/slug (e.g. agentic-workflows)" },
                     "description": { "type": "string", "description": "Optional short description" },
+                    "origin_provider": { "type": "string", "enum": ["github", "bitbucket"], "description": "Git host for THIS project (default: runtime default)" },
+                    "origin_owner": { "type": "string", "description": "GitHub org/user or Bitbucket workspace (e.g. jdwil, veil)" },
+                    "origin_repo": { "type": "string", "description": "owner/name or just the repo name" },
+                    "origin_create": { "type": "boolean", "description": "true = create remote repo; false = bind an existing one (default true)" },
+                    "origin": { "type": "object", "description": "Full origin object: {kind, provider, repo|owner, create, private, branch, subpath}" },
                     "open": { "type": "boolean", "description": "Navigate to project detail after create (default true)" },
                     "open_ide": { "type": "boolean", "description": "Open IDE embed after create (default false)" },
                     "via": { "type": "string", "enum": ["ux", "server"], "description": "ux = Agent→Present→UX→Server; server = domain first + illustrate Present" }
@@ -2830,8 +3022,44 @@ pub fn tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "get_config",
-            "description": "Read runtime config (projects_dir, etc.).",
+            "description": "Read runtime config (projects_dir, reference_dirs, etc.) plus git provider status (login, orgs, Bitbucket).",
             "inputSchema": { "type": "object", "properties": {}, "required": [] }
+        }),
+        json!({
+            "name": "get_git_status",
+            "description": "GitHub/Bitbucket connection for this runtime (login, orgs, default owner). No secrets. Use before create_project/bind_origin to pick origin_owner.",
+            "inputSchema": { "type": "object", "properties": {}, "required": [] }
+        }),
+        json!({
+            "name": "get_origin",
+            "description": "Read the git origin binding for a VEIL project (provider + owner/name, or unbound).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "project": { "type": "string" },
+                    "slug": { "type": "string" },
+                    "id": { "type": "string" }
+                },
+                "required": []
+            }
+        }),
+        json!({
+            "name": "bind_origin",
+            "description": "Set THIS project's git origin. GitHub or Bitbucket, any org you can write (jdwil/…, veil/…). origin_create=true creates the remote; false binds an existing repo. NEVER curl /api/repos/*/origin.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "project": { "type": "string" },
+                    "slug": { "type": "string" },
+                    "id": { "type": "string" },
+                    "origin_provider": { "type": "string", "enum": ["github", "bitbucket"] },
+                    "origin_owner": { "type": "string" },
+                    "origin_repo": { "type": "string", "description": "owner/name or repo name" },
+                    "origin_create": { "type": "boolean", "description": "Create remote if missing (default false)" },
+                    "origin": { "type": "object" }
+                },
+                "required": []
+            }
         }),
         json!({
             "name": "get_mission",
@@ -3099,9 +3327,12 @@ impl Tool for OpenProjectTool {
     }
 
     async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
-        dispatch("open_project", &serde_json::to_value(args).unwrap_or_default())
-            .await
-            .map_err(ToolErr)
+        dispatch(
+            "open_project",
+            &serde_json::to_value(args).unwrap_or_default(),
+        )
+        .await
+        .map_err(ToolErr)
     }
 }
 
@@ -3273,9 +3504,12 @@ impl Tool for ApproveChangeTool {
     }
 
     async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
-        dispatch("approve_pr", &serde_json::to_value(args).unwrap_or_default())
-            .await
-            .map_err(ToolErr)
+        dispatch(
+            "approve_pr",
+            &serde_json::to_value(args).unwrap_or_default(),
+        )
+        .await
+        .map_err(ToolErr)
     }
 }
 
@@ -3348,9 +3582,12 @@ impl Tool for ProvisionProjectTool {
     }
 
     async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
-        dispatch("provision_project", &serde_json::to_value(args).unwrap_or_default())
-            .await
-            .map_err(ToolErr)
+        dispatch(
+            "provision_project",
+            &serde_json::to_value(args).unwrap_or_default(),
+        )
+        .await
+        .map_err(ToolErr)
     }
 }
 
@@ -3385,9 +3622,12 @@ impl Tool for DeployStatusTool {
     }
 
     async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
-        dispatch("deploy_status", &serde_json::to_value(args).unwrap_or_default())
-            .await
-            .map_err(ToolErr)
+        dispatch(
+            "deploy_status",
+            &serde_json::to_value(args).unwrap_or_default(),
+        )
+        .await
+        .map_err(ToolErr)
     }
 }
 
@@ -3458,8 +3698,14 @@ mod tests {
         assert!(is_platform_tool("run_coding_plan"));
         assert_eq!(canonicalize_tool("create_pr"), "create_pr");
         assert_eq!(canonicalize_tool("submit_pr"), "submit_pr");
+        assert!(is_platform_tool("get_git_status"));
+        assert!(is_platform_tool("get_origin"));
+        assert!(is_platform_tool("bind_origin"));
+        assert_eq!(canonicalize_tool("set_origin"), "bind_origin");
         assert!(!is_platform_tool("veil_check"));
         assert!(!is_platform_tool("write_source"));
+        assert!(!is_platform_tool("reference_read"));
+        assert!(crate::reference_fs::is_reference_tool("reference_read"));
     }
 
     #[test]
@@ -3521,6 +3767,9 @@ mod tests {
         assert!(names.contains(&"deploy_status"));
         assert!(names.contains(&"search_registry"));
         assert!(names.contains(&"get_config"));
+        assert!(names.contains(&"get_git_status"));
+        assert!(names.contains(&"get_origin"));
+        assert!(names.contains(&"bind_origin"));
         assert!(names.contains(&"get_mission"));
         assert!(names.contains(&"wait_intent_ack"));
         assert!(names.contains(&"get_current_context"));
