@@ -39,9 +39,13 @@ pub fn git_origin_for(repo: &Repo) -> GitOrigin {
                     .clone()
                     .unwrap_or_else(|| repo.default_branch.clone()),
             };
+            veil_server::git_origin::register_origin(&repo.id.value, Some(cfg.clone()));
             GitOrigin::with_remote(repo.id.value.clone(), cfg)
         }
-        _ => GitOrigin::new(repo.id.value.clone()),
+        _ => {
+            veil_server::git_origin::register_origin(&repo.id.value, None);
+            GitOrigin::new(repo.id.value.clone())
+        }
     }
 }
 

@@ -12,6 +12,23 @@ Local dual-loop against the **dev** account should mirror production:
 Leftover named prefixes (`repos/relay`, `git/{slug}/` SHA stubs) are not origin.
 Clean a messy dev bucket with `scripts/ops-cleanup-dev-store.sh` (dry-run) then `--apply`.
 
+## Personal host (this machine + GitHub)
+
+To run ProductHost **without** the DashLX DynamoDB catalog:
+
+```bash
+VEIL_PLATFORM_LOCAL=1
+VEIL_SOURCE_MODE=local
+VEIL_PROJECTS_DIR=~/.veil/personal/projects
+VEIL_GITHUB_OWNER=your-user
+VEIL_GIT_DEFAULT_ORIGIN=github
+# Do not set AWS_PROFILE / VEIL_DDB_TABLE / BUCKET
+```
+
+Catalog is SQLite (`~/.veil/personal/projects/.veil-catalog.sqlite`) plus a JSON
+sidecar. Git history for new projects is GitHub. Existing DashLX `veil-runtime-dev`
+rows are not listed.
+
 ## Env (local ProductHost)
 
 `scripts/dev-stack.sh` sets these. Override only when you mean to.
@@ -34,9 +51,46 @@ Confirm identity: `aws sts get-caller-identity`.
 
 | Mode | Behavior |
 |------|----------|
-| `s3` (dev-stack default) | **IDE + deploy compile**: DDB META + S3 only. Materialize to `$TMP/veil-s3-ws/{slug}/`, write-through on edit. **No `VEIL_PROJECTS_DIR` product writes.** Closest to ECS. |
-| `prefer_s3` | Try S3 open first; fall back to disk hub on miss |
+| `s3` (dev-stack default) | **IDE + deploy compile**: DDB META + origin (S3 bundles **or GitHub**). Materialize to a host checkout, write-through on edit. **No `VEIL_PROJECTS_DIR` product writes.** Closest to ECS. |
+| `prefer_s3` | Try S3/GitHub open first; fall back to disk hub on miss |
 | `disk` | Always `{projects_dir}/{slug}` (legacy local-only hub) |
+
+### GitHub as origin (local ProductHost)
+
+Catalog (project list, sessions) still lives in DynamoDB. **Git history** can live
+on GitHub instead of S3 bundles.
+
+```bash
+# .env — opt in by setting owner + token
+VEIL_GITHUB_TOKEN=ghp_…          # or GITHUB_TOKEN / `gh auth login`
+VEIL_GITHUB_OWNER=your-user      # user or org that will own new repos
+VEIL_GIT_DEFAULT_ORIGIN=auto     # auto (GitHub when owner+token) | github | s3
+VEIL_GITHUB_REPO_PRIVATE=1
+```
+
+`create_project` then: DDB META → `POST` GitHub `user/orgs` repo (empty) → bind
+`origin.kind=git` → seed `MISSION.md` / `main.veil` / layers and `git push`.
+Sessions (`write_source` / `session_commit`) checkout and push that remote.
+The inner agent must use MCP tools; it must not grep the monorepo or `/tmp`.
+
+### Operator local reference trees (read-only)
+
+ACP `fs/*` / `terminal/*` stay refused so the agent cannot edit host checkouts.
+To convert existing local code into VEIL, list directories the agent may **read**:
+
+```bash
+VEIL_REFERENCE_DIRS=~/src/legacy-app:shop=~/code/shop
+```
+
+Or Config → Reference trees (persisted in `~/.veil/config.json` as `reference_dirs`).
+MCP tools: `reference_roots` / `reference_list` / `reference_read` / `reference_grep`.
+Writes still go through `write_source` on the bound product. `$HOME`, `/`, `/tmp`,
+and `$TMP/veil-ws` cannot be roots.
+
+Bind an existing repo later: `POST /api/repos/{id}/origin`
+`{ "kind":"git", "provider":"github", "repo":"owner/name" }`.
+
+Status (no secrets): `GET /api/git/status`.
 
 ### Create project (agent / API)
 

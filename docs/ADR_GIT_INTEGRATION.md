@@ -12,7 +12,11 @@ a **subdirectory** of a shared repo (`subpath`). Git holds code + history + PRs;
 **VEIL's visual/structural review is the merge gate**, surfaced to the provider
 as a required `veil/review` status check.
 
-The S3 bundle backend stays the **default**. Git is additive.
+The S3 bundle backend stays the **default** unless the operator sets
+`VEIL_GITHUB_OWNER` plus a GitHub token (`VEIL_GIT_DEFAULT_ORIGIN=auto`) or
+forces `VEIL_GIT_DEFAULT_ORIGIN=github`. Then `create_project` opens a GitHub
+repo and sessions push there. Git is additive; existing S3-backed products
+are unchanged.
 
 ## Backend abstraction (Phase 1)
 
