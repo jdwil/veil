@@ -1112,16 +1112,7 @@ impl GitOrigin {
             } else {
                 format!("origin/{source}")
             };
-            git(
-                work,
-                &[
-                    "merge",
-                    "--no-ff",
-                    "-m",
-                    &format!("Merge branch '{source}'"),
-                    &merge_ref,
-                ],
-            )?;
+            merge_no_ff_or_abort(work, &merge_ref, source, target)?;
         }
         self.push(work, target)
     }
@@ -1456,16 +1447,7 @@ impl GitOrigin {
             } else {
                 format!("origin/{source}")
             };
-            git(
-                work,
-                &[
-                    "merge",
-                    "--no-ff",
-                    "-m",
-                    &format!("Merge branch '{source}'"),
-                    &merge_ref,
-                ],
-            )?;
+            merge_no_ff_or_abort(work, &merge_ref, source, target)?;
         }
         self.push_remote(work, target, cfg)
     }
@@ -1869,6 +1851,83 @@ fn git(cwd: &Path, args: &[&str]) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&out.stdout).to_string())
 }
 
+/// Run `git merge --no-ff <merge_ref>` and, on ANY failure, restore the
+/// checkout to a clean state before returning.
+///
+/// The cached checkout under `/tmp/veil-git-work/{repo_id16}` is reused across
+/// operations, so a merge that leaves conflict markers / unmerged index entries
+/// on disk would poison later reads and pushes (C2). This helper guarantees the
+/// working tree is clean on every error path:
+///   1. `git merge --abort` (undo the in-progress merge; best-effort).
+///   2. If any unmerged paths remain (abort was a no-op, or merge left a
+///      half-state), force `git reset --hard HEAD` + `git clean` as a backstop.
+///   3. Return a clear, greppable "merge conflict between …" error when the
+///      failure was an actual conflict, rather than an opaque git stderr blob.
+fn merge_no_ff_or_abort(
+    work: &Path,
+    merge_ref: &str,
+    source: &str,
+    target: &str,
+) -> Result<(), String> {
+    let msg = format!("Merge branch '{source}'");
+    let res = git(work, &["merge", "--no-ff", "-m", &msg, merge_ref]);
+    if res.is_ok() {
+        // A merge can "succeed" (exit 0) yet still leave unmerged entries only
+        // under exotic configs; re-check to be certain the tree is clean.
+        if !has_unmerged_paths(work) {
+            return Ok(());
+        }
+    }
+
+    // Failure (or a surprising unmerged state): detect a conflict, then ALWAYS
+    // restore the checkout to a clean state before returning.
+    let conflicted = has_unmerged_paths(work);
+    // Best-effort undo of the in-progress merge.
+    let _ = git(work, &["merge", "--abort"]);
+    // Backstop: if anything is still dirty/unmerged (abort failed or there was
+    // no MERGE_HEAD), hard-reset and drop untracked cruft so reuse is safe.
+    if has_unmerged_paths(work) || !working_tree_clean(work) {
+        let _ = git(work, &["reset", "--hard", "HEAD"]);
+        let _ = git(work, &["clean", "-fd"]);
+    }
+
+    if conflicted {
+        return Err(format!(
+            "merge conflict between '{source}' and '{target}': \
+             resolve the overlapping changes and retry (checkout was reset clean)"
+        ));
+    }
+    // Non-conflict failure: surface the original git error (redacted).
+    Err(res.err().unwrap_or_else(|| {
+        format!("git merge --no-ff {merge_ref} failed (checkout was reset clean)")
+    }))
+}
+
+/// True if `git status --porcelain` reports any unmerged (conflicted) path.
+/// Porcelain v1 marks unmerged entries with codes containing `U` (e.g. `UU`,
+/// `AA`, `DD`, `AU`, `UA`, `DU`, `UD`).
+fn has_unmerged_paths(work: &Path) -> bool {
+    match git(work, &["status", "--porcelain"]) {
+        Ok(out) => out.lines().any(|line| {
+            let code = line.get(0..2).unwrap_or("");
+            code == "AA"
+                || code == "DD"
+                || code.starts_with('U')
+                || code.ends_with('U')
+        }),
+        Err(_) => false,
+    }
+}
+
+/// True if the working tree + index are clean (no staged, unstaged, or
+/// untracked changes).
+fn working_tree_clean(work: &Path) -> bool {
+    match git(work, &["status", "--porcelain"]) {
+        Ok(out) => out.trim().is_empty(),
+        Err(_) => false,
+    }
+}
+
 fn git_author_name() -> String {
     std::env::var("VEIL_GIT_AUTHOR_NAME")
         .or_else(|_| std::env::var("VEIL_DEV_USER"))
@@ -2157,6 +2216,114 @@ mod tests {
         let _ = fs::remove_dir_all(&seed);
         let _ = fs::remove_dir_all(&work);
         let _ = fs::remove_dir_all(&other);
+    }
+
+    /// C2: a conflicting `merge_and_push` against a local `file://` provider
+    /// remote MUST (a) return a clear "merge conflict" error and (b) leave the
+    /// cached checkout CLEAN (no conflict markers, `git status` empty) so a
+    /// later op reusing that dir can never push/read conflicted content.
+    #[test]
+    fn merge_conflict_aborts_and_leaves_checkout_clean() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        // Bare "provider" repo, seeded on main.
+        let bare = unique_tmp("conflict-provider.git");
+        fs::create_dir_all(&bare).unwrap();
+        assert!(
+            Command::new("git")
+                .args(["init", "--bare", "-b", "main"])
+                .current_dir(&bare)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let file_url = format!("file://{}", bare.display());
+        unsafe {
+            std::env::set_var("VEIL_GITHUB_BASE_URL", &file_url);
+            std::env::set_var("VEIL_GITHUB_GH_CLI", "0");
+        }
+
+        let cfg = RemoteConfig {
+            provider: GitProvider::GitHub,
+            repo: "test/conflict".into(),
+            subpath: None,
+            branch: "main".into(),
+        };
+        let origin = GitOrigin::with_remote("dddddddd-eeee-ffff-0000-111111111111", cfg);
+
+        // Seed main with a file both branches will edit on the SAME line.
+        let seed = unique_tmp("conflict-seed");
+        fs::create_dir_all(&seed).unwrap();
+        fs::write(seed.join("main.veil"), "pkg Shop\n  rec Base\n").unwrap();
+        origin.ensure_from_workdir(&seed, "main").unwrap();
+
+        // Branch A: edit line 2 → "Alpha", push.
+        let work = unique_tmp("conflict-work");
+        origin
+            .checkout(&work, "main", CheckoutMode::ResetHard)
+            .unwrap();
+        origin.create_branch(&work, "feat-a").unwrap();
+        fs::write(work.join("main.veil"), "pkg Shop\n  rec Alpha\n").unwrap();
+        origin
+            .commit_and_push(&work, "feat: alpha", "feat-a")
+            .unwrap();
+
+        // Branch B (from the same main base): edit the SAME line → "Beta", push.
+        let work_b = unique_tmp("conflict-work-b");
+        origin
+            .checkout(&work_b, "main", CheckoutMode::ResetHard)
+            .unwrap();
+        origin.create_branch(&work_b, "feat-b").unwrap();
+        fs::write(work_b.join("main.veil"), "pkg Shop\n  rec Beta\n").unwrap();
+        origin
+            .commit_and_push(&work_b, "feat: beta", "feat-b")
+            .unwrap();
+
+        // Merge feat-a into main first (clean, fast).
+        origin.merge_and_push(&work, "feat-a", "main").unwrap();
+
+        // Now merge feat-b into main in the SAME cached checkout: this conflicts
+        // with the already-merged Alpha change on the same line.
+        let err = origin
+            .merge_and_push(&work, "feat-b", "main")
+            .expect_err("conflicting merge must fail");
+        assert!(
+            err.contains("merge conflict"),
+            "expected a typed merge-conflict error, got: {err}"
+        );
+        assert!(
+            err.contains("feat-b") && err.contains("main"),
+            "conflict error should name source+target, got: {err}"
+        );
+
+        // (b) The cached checkout MUST be clean afterwards — no conflict markers,
+        // no unmerged index entries, no in-progress merge.
+        let status = git(&work, &["status", "--porcelain"]).unwrap();
+        assert!(
+            status.trim().is_empty(),
+            "checkout left dirty after aborted merge:\n{status}"
+        );
+        assert!(
+            !work.join(".git/MERGE_HEAD").exists(),
+            "MERGE_HEAD still present — merge was not aborted"
+        );
+        let body = fs::read_to_string(work.join("main.veil")).unwrap();
+        assert!(
+            !body.contains("<<<<<<<") && !body.contains(">>>>>>>") && !body.contains("======="),
+            "conflict markers left on disk:\n{body}"
+        );
+
+        // The checkout must remain usable: a follow-up clean merge target
+        // (re-merging feat-a, already in main) is a no-op that still succeeds.
+        origin.merge_and_push(&work, "feat-a", "main").unwrap();
+
+        unsafe {
+            std::env::remove_var("VEIL_GITHUB_BASE_URL");
+        }
+        let _ = fs::remove_dir_all(&bare);
+        let _ = fs::remove_dir_all(&seed);
+        let _ = fs::remove_dir_all(&work);
+        let _ = fs::remove_dir_all(&work_b);
     }
 
     #[test]

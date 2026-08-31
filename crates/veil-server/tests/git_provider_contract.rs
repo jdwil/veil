@@ -6,6 +6,12 @@
 //! credentials.
 //!
 //! Run: `cargo test -p veil-server --test git_provider_contract`
+//!
+//! The env-mutating tests below hold a std `Mutex` guard across an `.await`
+//! (the `spawn_blocking` that performs the env writes) to serialize access to
+//! process-global env vars. That is the whole point of the guard, so the
+//! `clippy::await_holding_lock` lint is intentionally allowed for this file.
+#![allow(clippy::await_holding_lock)]
 
 use std::sync::{Arc, Mutex};
 
@@ -18,6 +24,16 @@ use serde_json::{Value, json};
 
 use veil_server::git_origin::GitProvider;
 use veil_server::git_provider::{ProviderRepo, VEIL_REVIEW_CONTEXT};
+
+/// These contract tests each mutate the SAME process-global env vars
+/// (`VEIL_GITHUB_API_BASE` / `VEIL_GITHUB_TOKEN`, and the Bitbucket variants)
+/// to point the provider client at a per-test mock server. Under default
+/// parallelism (`cargo test`, no `--test-threads=1`) they would interleave:
+/// one test's `set_var` could redirect another test's `github_whoami()` to the
+/// wrong mock, producing a decode error (M1). A single shared lock, held for
+/// the duration of each env-mutating test, forces them to run one at a time
+/// without requiring `--test-threads=1` or an external `serial_test` dep.
+static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Clone, Default)]
 struct Captured {
@@ -54,6 +70,7 @@ async fn merge_pr(State(cap): State<Captured>, Json(body): Json<Value>) -> Json<
 
 #[tokio::test]
 async fn github_pr_status_merge_contract() {
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let cap = Captured::default();
     let app = Router::new()
         .route("/repos/org/name/pulls", post(create_pr))
@@ -163,6 +180,7 @@ async fn bb_build_status(
 /// variant routing + endpoint shapes without real credentials.
 #[tokio::test]
 async fn bitbucket_server_variant_contract() {
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let cap = BbCaptured::default();
     let app = Router::new()
         .route(
@@ -259,6 +277,7 @@ async fn gh_user_repos(
 
 #[tokio::test]
 async fn github_create_repo_contract() {
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let cap = GhCreateCap::default();
     let app = Router::new()
         .route("/user", get(gh_user))
