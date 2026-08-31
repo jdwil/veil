@@ -504,7 +504,7 @@ mod tests {
         ];
         let mut c = ctx();
         let out = emit_graph(&steps, &reg(), &mut c).expect("graph emitted");
-        assert!(out.contains("match label {"), "got:\n{out}");
+        assert!(out.contains("match &*(label) {"), "got:\n{out}");
         assert!(out.contains("\"approve\" =>"), "got:\n{out}");
         assert!(out.contains("\"reject\" =>"), "got:\n{out}");
         assert!(out.contains("_ =>"), "got:\n{out}");
@@ -564,5 +564,119 @@ mod tests {
         ];
         let mut c = ctx();
         assert!(emit_graph(&steps, &reg(), &mut c).is_none());
+    }
+
+    // ─── Compile-level regression (closes "green != compilable") ──────────
+    //
+    // The `String::contains(..)` assertions above prove the emitted *text*
+    // has the expected shape, but NOT that it compiles. C1 was exactly a
+    // "text looks right, does not compile" bug: a `branch` on a `String`
+    // scrutinee emits `match status { "approve" => .. }`, and Rust
+    // string-literal patterns are `&str` — matching a `String` against them
+    // is `E0308 expected String, found &str`. These tests actually invoke
+    // `rustc` on the emitted Rust so that class of bug fails the suite.
+
+    /// Compile a self-contained Rust source with `rustc --emit=metadata`
+    /// (type-checks without linking). Returns `Ok(())` on success or
+    /// `Err(stderr)` on a compile error. Returns `Ok(())` (skips) if `rustc`
+    /// is unavailable in the environment.
+    fn rustc_typecheck(source: &str) -> Result<(), String> {
+        use std::process::Command;
+        let dir = match tempfile::tempdir() {
+            Ok(d) => d,
+            Err(e) => return Err(format!("tempdir: {e}")),
+        };
+        let src_path = dir.path().join("gen.rs");
+        if let Err(e) = std::fs::write(&src_path, source) {
+            return Err(format!("write: {e}"));
+        }
+        let out = Command::new("rustc")
+            .arg("--edition=2021")
+            .arg("--crate-type=lib")
+            .arg("--emit=metadata")
+            .arg("-o")
+            .arg(dir.path().join("gen.rmeta"))
+            .arg(&src_path)
+            .output();
+        match out {
+            Ok(o) if o.status.success() => Ok(()),
+            Ok(o) => Err(String::from_utf8_lossy(&o.stderr).into_owned()),
+            // rustc not found → skip (do not fail on constrained CI images).
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(format!("rustc spawn: {e}")),
+        }
+    }
+
+    /// Wrap an emitted workflow body in a compilable function. The scrutinee
+    /// `status` is a real `String`, reproducing the C1 shape end-to-end.
+    fn wrap_workflow_body(body: &str) -> String {
+        format!(
+            "pub fn run(status: String, flag: bool) -> i64 {{\n\
+             {body}\n\
+             0\n\
+             }}\n"
+        )
+    }
+
+    /// REGRESSION for C1: a Decision → Branch(on a `String`) → Transform
+    /// workflow must produce Rust that actually COMPILES. Before the fix this
+    /// emits `match status {{ \"approve\" => .. }}` against a `String` and
+    /// fails to type-check (E0308); after the fix the scrutinee is coerced to
+    /// `&str` and it compiles.
+    #[test]
+    fn branch_on_string_scrutinee_compiles() {
+        let steps = vec![
+            // entry: decision on a boolean param; both arms converge on Route.
+            step(Some("decision"), "Gate", vec![f("condition", "\"flag\"")],
+                 vec![edge("true", "Route"), edge("false", "Route")]),
+            // branch on the String `status` — this is the C1 path. Matching a
+            // `String` against `&str` literal arms is the exact bug.
+            step(Some("branch"), "Route", vec![f("scrutinee", "\"status\"")],
+                 vec![edge("approve", "Approve"), edge("reject", "Reject"), edge("default", "Done")]),
+            step(Some("transform"), "Approve", vec![f("binding", "y"), f("expression", "\"1\"")],
+                 vec![edge("next", "Done")]),
+            step(Some("transform"), "Reject", vec![f("binding", "y"), f("expression", "\"2\"")],
+                 vec![edge("next", "Done")]),
+            step(Some("transform"), "Done", vec![f("binding", "z"), f("expression", "\"3\"")],
+                 vec![]),
+        ];
+        let mut c = ctx();
+        let body = emit_graph(&steps, &reg(), &mut c).expect("graph emitted");
+        // Sanity: the branch and its string-literal arms are present.
+        assert!(body.contains("match "), "no match emitted:\n{body}");
+        assert!(body.contains("\"approve\""), "no string arm:\n{body}");
+        // The real gate: it must type-check with `status: String`.
+        let program = wrap_workflow_body(&body);
+        if let Err(stderr) = rustc_typecheck(&program) {
+            panic!(
+                "emitted workflow Rust does not compile (C1 regression):\n\
+                 --- stderr ---\n{stderr}\n--- program ---\n{program}"
+            );
+        }
+    }
+
+    /// A branch whose scrutinee is already `&str` must also compile, ensuring
+    /// the `&*` coercion does not break the already-`&str` case.
+    #[test]
+    fn branch_on_str_slice_scrutinee_compiles() {
+        let steps = vec![
+            step(Some("branch"), "Route", vec![f("scrutinee", "\"input\"")],
+                 vec![edge("approve", "A"), edge("default", "D")]),
+            step(Some("transform"), "A", vec![f("binding", "y"), f("expression", "\"1\"")],
+                 vec![edge("next", "D")]),
+            step(Some("transform"), "D", vec![f("binding", "z"), f("expression", "\"2\"")], vec![]),
+        ];
+        let mut c = ctx();
+        let body = emit_graph(&steps, &reg(), &mut c).expect("graph emitted");
+        // Wrap with `input: &str` to exercise the &str scrutinee path.
+        let program = format!(
+            "pub fn run(input: &str) -> i64 {{\n{body}\n0\n}}\n"
+        );
+        if let Err(stderr) = rustc_typecheck(&program) {
+            panic!(
+                "emitted &str-scrutinee workflow Rust does not compile:\n\
+                 --- stderr ---\n{stderr}\n--- program ---\n{program}"
+            );
+        }
     }
 }

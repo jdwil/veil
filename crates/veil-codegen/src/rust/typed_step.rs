@@ -126,9 +126,18 @@ fn lower_branch(
     // `cases` is captured as a raw list string (e.g. `["approve", "reject"]`);
     // the edge labels are the authoritative case set. Emit one arm per edge
     // label that is not the default sentinel.
+    //
+    // C1 fix: the arm patterns are always string literals (`{:?}` on labels),
+    // which are `&str`. A `String` scrutinee does NOT match `&str` patterns
+    // (`E0308 expected String, found &str`). Coerce the scrutinee to `&str`
+    // with `&*(..)`: `Deref` yields `str` for both `String` and `&str`, and
+    // `&str` literal patterns match `&str`, so this is correct for either. We
+    // deliberately do NOT use `.as_str()` — it is unstable on `&str` (only
+    // stable on `String`), so it would break an already-`&str` scrutinee. The
+    // parenthesization keeps precedence safe for arbitrary scrutinee exprs.
     let mut out = String::new();
     out.push_str(&format!("// branch: {}\n", step.name));
-    out.push_str(&format!("match {scrutinee} {{\n"));
+    out.push_str(&format!("match &*({scrutinee}) {{\n"));
     let mut saw_default = false;
     for edge in &step.edges {
         if edge.label == "default" || edge.label == "_" {
@@ -240,7 +249,7 @@ mod tests {
             vec![edge("approve", "a"), edge("reject", "b"), edge("default", "c")],
         );
         let out = lower_typed_step(&s, &reg(), &ctx(), &empty).unwrap();
-        assert!(out.contains("match label {"), "got: {out}");
+        assert!(out.contains("match &*(label) {"), "got: {out}");
         assert!(out.contains("\"approve\" =>"), "got: {out}");
         assert!(out.contains("\"reject\" =>"), "got: {out}");
         assert!(out.contains("_ =>"), "got: {out}");
