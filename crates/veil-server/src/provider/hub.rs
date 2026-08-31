@@ -11,11 +11,11 @@ use std::sync::{Arc, Mutex};
 
 use super::filesystem::FilesystemProvider;
 use super::s3_workspace::{
-    ide_source_mode, list_s3_projects, open_s3_project, IdeSourceMode,
+    IdeSourceMode, ide_source_mode, list_local_catalog_projects, list_s3_projects, open_s3_project,
 };
 use crate::project_layout::{
-    collect_project_files, create_project, ensure_project_shape, is_project_root,
-    is_source_editable, list_projects, ProjectInfo,
+    ProjectInfo, collect_project_files, create_project, ensure_project_shape, is_project_root,
+    is_source_editable, list_projects,
 };
 use crate::provider::{FileInfo, FileKind, SourceProvider};
 use async_trait::async_trait;
@@ -94,11 +94,12 @@ impl ProjectsHub {
                 Ok(out)
             }
             IdeSourceMode::Disk => list_projects(&self.projects_dir),
+            IdeSourceMode::Local => list_local_catalog_projects(),
         }
     }
 
     pub fn create(&self, name: &str) -> Result<ProjectInfo, String> {
-        if matches!(ide_source_mode(), IdeSourceMode::S3) {
+        if matches!(ide_source_mode(), IdeSourceMode::S3 | IdeSourceMode::Local) {
             return Err(
                 "create project under VEIL_SOURCE_MODE=s3 is not supported from the hub — \
                  seed DDB META + S3 (scripts/seed-repo-s3.sh) or use the platform CreateRepo path"
@@ -161,6 +162,11 @@ impl ProjectsHub {
                 }
             },
             IdeSourceMode::Disk => self.open_disk(name)?,
+            IdeSourceMode::Local => {
+                tracing::info!(%name, "opening project from local catalog / git origin");
+                let p = open_s3_project(name, self.show_core_layers)?;
+                p as Session
+            }
         };
 
         self.sessions
@@ -232,9 +238,7 @@ pub struct MultiProjectProvider {
 
 impl MultiProjectProvider {
     pub fn new(hub: ProjectsHub) -> Self {
-        Self {
-            hub: Arc::new(hub),
-        }
+        Self { hub: Arc::new(hub) }
     }
 
     pub fn hub(&self) -> &Arc<ProjectsHub> {
@@ -242,9 +246,9 @@ impl MultiProjectProvider {
     }
 
     fn session(&self) -> Result<Session, String> {
-        let name = CURRENT_PROJECT.try_with(|n| n.clone()).map_err(|_| {
-            "project scope missing — use /api/p/{project}/… routes".to_string()
-        })?;
+        let name = CURRENT_PROJECT
+            .try_with(|n| n.clone())
+            .map_err(|_| "project scope missing — use /api/p/{project}/… routes".to_string())?;
         self.hub.open(&name)
     }
 }
@@ -314,9 +318,7 @@ impl SourceProvider for MultiProjectProvider {
     }
 
     fn is_editable(&self, file: &str) -> bool {
-        self.session()
-            .map(|p| p.is_editable(file))
-            .unwrap_or(false)
+        self.session().map(|p| p.is_editable(file)).unwrap_or(false)
     }
 
     fn file_kind(&self, file: &str) -> FileKind {
@@ -335,9 +337,9 @@ impl SourceProvider for MultiProjectProvider {
 
     async fn reload_from_disk(&self) -> Result<usize, String> {
         // Drop cached session so the next open re-materializes from S3 (or re-reads disk).
-        let name = CURRENT_PROJECT.try_with(|n| n.clone()).map_err(|_| {
-            "project scope missing — use /api/p/{project}/… routes".to_string()
-        })?;
+        let name = CURRENT_PROJECT
+            .try_with(|n| n.clone())
+            .map_err(|_| "project scope missing — use /api/p/{project}/… routes".to_string())?;
         let prev_active_name = if let Ok(p) = self.session() {
             let files = p.list_files().await;
             files.into_iter().find(|f| f.active).map(|f| f.name)

@@ -5,8 +5,9 @@
 //! 2. Materialize `s3://$BUCKET/repos/{id}/{branch}/` → `$TMP/veil-s3-ws/{slug}/`
 //! 3. Serve via [`FilesystemProvider`] with **write-through** back to S3
 //!
-//! Source of truth is git origin on S3 (`git/{repo_id}/`) — not `VEIL_PROJECTS_DIR`. ACP should use MCP
-//! `write_source` / structured edits; raw FS tools under monorepo CWD are wrong.
+//! Source of truth is the project git origin (S3 bundles or GitHub remote) —
+//! not `VEIL_PROJECTS_DIR`. ACP should use MCP `write_source` / structured
+//! edits; raw FS tools under monorepo CWD are wrong.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -26,9 +27,14 @@ pub enum IdeSourceMode {
     Disk,
     PreferS3,
     S3,
+    /// Machine-local catalog (SQLite/JSON) + GitHub origin. No DashLX DDB/S3.
+    Local,
 }
 
 pub fn ide_source_mode() -> IdeSourceMode {
+    if crate::config::platform_local() {
+        return IdeSourceMode::Local;
+    }
     match std::env::var("VEIL_SOURCE_MODE")
         .unwrap_or_else(|_| "prefer_s3".into())
         .to_ascii_lowercase()
@@ -36,7 +42,8 @@ pub fn ide_source_mode() -> IdeSourceMode {
     {
         "s3" | "remote" | "object" | "object_store" => IdeSourceMode::S3,
         "prefer_s3" | "prefer-s3" | "hybrid" => IdeSourceMode::PreferS3,
-        "disk" | "fs" | "filesystem" | "local" => IdeSourceMode::Disk,
+        "disk" | "fs" | "filesystem" => IdeSourceMode::Disk,
+        "local" | "personal" => IdeSourceMode::Local,
         other => {
             tracing::warn!(%other, "unknown VEIL_SOURCE_MODE; using prefer_s3");
             IdeSourceMode::PreferS3
@@ -103,14 +110,8 @@ pub fn purge_repo_store(repo_id: &str) -> Result<(), String> {
         if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&q.stdout) {
             if let Some(items) = v.get("Items").and_then(|i| i.as_array()) {
                 for it in items {
-                    let pk = it
-                        .pointer("/PK/S")
-                        .and_then(|x| x.as_str())
-                        .unwrap_or("");
-                    let sk = it
-                        .pointer("/SK/S")
-                        .and_then(|x| x.as_str())
-                        .unwrap_or("");
+                    let pk = it.pointer("/PK/S").and_then(|x| x.as_str()).unwrap_or("");
+                    let sk = it.pointer("/SK/S").and_then(|x| x.as_str()).unwrap_or("");
                     if pk.is_empty() || sk.is_empty() {
                         continue;
                     }
@@ -123,9 +124,7 @@ pub fn purge_repo_store(repo_id: &str) -> Result<(), String> {
                             "--region",
                             &region,
                             "--key",
-                            &format!(
-                                "{{\"PK\":{{\"S\":\"{pk}\"}},\"SK\":{{\"S\":\"{sk}\"}}}}"
-                            ),
+                            &format!("{{\"PK\":{{\"S\":\"{pk}\"}},\"SK\":{{\"S\":\"{sk}\"}}}}"),
                         ])
                         .status();
                 }
@@ -264,9 +263,7 @@ pub fn lookup_slug_for_repo_id(repo_id: &str) -> Result<Option<String>, String> 
         }
     }
     let table = ddb_table();
-    let key = format!(
-        r##"{{"PK":{{"S":"REPO#{repo_id}"}},"SK":{{"S":"META"}}}}"##
-    );
+    let key = format!(r##"{{"PK":{{"S":"REPO#{repo_id}"}},"SK":{{"S":"META"}}}}"##);
     let out = aws_base()
         .args([
             "dynamodb",
@@ -309,6 +306,7 @@ pub fn lookup_slug_for_repo_id(repo_id: &str) -> Result<Option<String>, String> 
     if let Some(ref s) = slug {
         cache_identity(s, repo_id);
     }
+    crate::git_origin::register_origin_from_repo_json(repo_id, &meta);
     Ok(slug)
 }
 
@@ -319,6 +317,14 @@ pub fn resolve_project_identity(raw: &str) -> Result<ProjectIdentity, String> {
     let raw = raw.trim();
     if raw.is_empty() {
         return Err("empty project identity".into());
+    }
+    if matches!(ide_source_mode(), IdeSourceMode::Local) {
+        if let Some(id) = lookup_local_catalog_identity(raw) {
+            return Ok(id);
+        }
+        return Err(format!(
+            "no local catalog repo for '{raw}' — create_project first (GitHub origin)"
+        ));
     }
     let key = crate::project_layout::slugify_name(raw);
     if key.is_empty() {
@@ -359,10 +365,7 @@ pub fn resolve_project_identity(raw: &str) -> Result<ProjectIdentity, String> {
     if looks_like_repo_uuid(&key) {
         if let Some(slug) = lookup_slug_for_repo_id(&key)? {
             cache_identity(&slug, &key);
-            return Ok(ProjectIdentity {
-                slug,
-                repo_id: key,
-            });
+            return Ok(ProjectIdentity { slug, repo_id: key });
         }
         // META missing but S3 tree may exist — degrade to id-as-slug.
         let repo_id = resolve_repo_id_uncached(&key)?;
@@ -437,17 +440,11 @@ fn resolve_repo_id_uncached(slug: &str) -> Result<String, String> {
         .cloned()
         .unwrap_or_default();
     for item in items {
-        let sk = item
-            .pointer("/SK/S")
-            .and_then(|s| s.as_str())
-            .unwrap_or("");
+        let sk = item.pointer("/SK/S").and_then(|s| s.as_str()).unwrap_or("");
         if sk != "META" {
             continue;
         }
-        let pk = item
-            .pointer("/PK/S")
-            .and_then(|s| s.as_str())
-            .unwrap_or("");
+        let pk = item.pointer("/PK/S").and_then(|s| s.as_str()).unwrap_or("");
         let data = item
             .pointer("/data/S")
             .and_then(|s| s.as_str())
@@ -456,10 +453,7 @@ fn resolve_repo_id_uncached(slug: &str) -> Result<String, String> {
             continue;
         }
         if let Ok(meta) = serde_json::from_str::<serde_json::Value>(data) {
-            let s = meta
-                .get("slug")
-                .and_then(|x| x.as_str())
-                .unwrap_or("");
+            let s = meta.get("slug").and_then(|x| x.as_str()).unwrap_or("");
             let id_in_meta = meta
                 .pointer("/id/value")
                 .and_then(|x| x.as_str())
@@ -470,7 +464,11 @@ fn resolve_repo_id_uncached(slug: &str) -> Result<String, String> {
             if s == slug || pk_id == slug || id_in_meta == slug {
                 if let Some(id) = pk.strip_prefix("REPO#") {
                     let id = id.to_string();
-                    let product_slug = if s.is_empty() { slug.to_string() } else { s.to_string() };
+                    let product_slug = if s.is_empty() {
+                        slug.to_string()
+                    } else {
+                        s.to_string()
+                    };
                     cache_identity(&product_slug, &id);
                     return Ok(id);
                 }
@@ -500,12 +498,101 @@ fn resolve_repo_id_uncached(slug: &str) -> Result<String, String> {
 
 /// Strict remote mode: never write product source under `VEIL_PROJECTS_DIR`.
 pub fn allow_disk_project_create() -> bool {
-    !matches!(ide_source_mode(), IdeSourceMode::S3)
+    matches!(
+        ide_source_mode(),
+        IdeSourceMode::Disk | IdeSourceMode::PreferS3
+    )
+}
+
+/// Repos from the personal catalog (`.veil-meta.json`). No AWS.
+pub fn list_local_catalog_projects() -> Result<Vec<crate::project_layout::ProjectInfo>, String> {
+    let repos = load_local_catalog_repos();
+    let mut out: Vec<crate::project_layout::ProjectInfo> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for repo in repos {
+        let slug = repo
+            .get("slug")
+            .and_then(|s| s.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if slug.is_empty() || !seen.insert(slug.clone()) {
+            continue;
+        }
+        let id = repo
+            .pointer("/id/value")
+            .or_else(|| repo.get("id"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        crate::git_origin::register_origin_from_repo_json(id, &repo);
+        if !id.is_empty() {
+            cache_identity(&slug, id);
+        }
+        let origin = repo.get("origin");
+        let path = crate::git_origin::remote_config_from_json(origin)
+            .map(|c| format!("github:{}", c.repo))
+            .unwrap_or_else(|| format!("local:{slug}"));
+        out.push(crate::project_layout::ProjectInfo {
+            name: slug,
+            path,
+            is_git: true,
+            package_count: 0,
+        });
+    }
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(out)
+}
+
+fn load_local_catalog_repos() -> Vec<serde_json::Value> {
+    let path = crate::config::local_catalog_path();
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return Vec::new();
+    };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return Vec::new();
+    };
+    let Some(map) = v.get("repos").and_then(|r| r.as_object()) else {
+        return Vec::new();
+    };
+    map.values().cloned().collect()
+}
+
+fn lookup_local_catalog_identity(raw: &str) -> Option<ProjectIdentity> {
+    let needle = raw.trim();
+    if needle.is_empty() {
+        return None;
+    }
+    let slug_key = crate::project_layout::slugify_name(needle);
+    for repo in load_local_catalog_repos() {
+        let id = repo
+            .pointer("/id/value")
+            .or_else(|| repo.get("id"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let slug = repo.get("slug").and_then(|s| s.as_str()).unwrap_or("");
+        let name = repo.get("name").and_then(|s| s.as_str()).unwrap_or("");
+        if id == needle
+            || slug == needle
+            || slug == slug_key
+            || crate::project_layout::slugify_name(name) == slug_key
+        {
+            if id.is_empty() || slug.is_empty() {
+                continue;
+            }
+            crate::git_origin::register_origin_from_repo_json(id, &repo);
+            cache_identity(slug, id);
+            return Some(ProjectIdentity {
+                slug: slug.to_string(),
+                repo_id: id.to_string(),
+            });
+        }
+    }
+    None
 }
 
 #[cfg(test)]
 mod identity_tests {
-    use super::{looks_like_repo_uuid, ProjectIdentity};
+    use super::{ProjectIdentity, looks_like_repo_uuid};
 
     #[test]
     fn uuid_shape() {
@@ -580,8 +667,11 @@ pub fn seed_new_repo_scaffold(repo_id: &str, name: &str) -> Result<Vec<String>, 
     }
     let files = crate::project_layout::scaffold_file_contents(name)?;
     let mut written = Vec::new();
+    let skip_s3 = matches!(ide_source_mode(), IdeSourceMode::Local);
     for (rel, content) in files {
-        put_repo_text(repo_id, &rel, &content)?;
+        if !skip_s3 {
+            put_repo_text(repo_id, &rel, &content)?;
+        }
         written.push(rel);
     }
     let slug = crate::project_layout::slugify_name(name);
@@ -601,10 +691,13 @@ pub fn seed_new_repo_scaffold(repo_id: &str, name: &str) -> Result<Vec<String>, 
                 std::fs::write(&p, content)
                     .map_err(|e| format!("write seed {}: {e}", p.display()))?;
             }
-            crate::git_origin::GitOrigin::new(repo_id)
-                .ensure_from_workdir(&tmp, &branch())?;
+            crate::git_origin::GitOrigin::for_repo(repo_id).ensure_from_workdir(&tmp, &branch())?;
             Ok(())
         })() {
+            let _ = std::fs::remove_dir_all(&tmp);
+            if crate::git_origin::GitOrigin::for_repo(repo_id).is_git_remote() {
+                return Err(format!("git remote origin init failed: {e}"));
+            }
             tracing::warn!(%repo_id, error = %e, "git origin init after scaffold failed");
         }
         let _ = std::fs::remove_dir_all(&tmp);
@@ -708,17 +801,11 @@ fn list_s3_slug_ids() -> Result<Vec<(String, String)>, String> {
         .cloned()
         .unwrap_or_default()
     {
-        let sk = item
-            .pointer("/SK/S")
-            .and_then(|s| s.as_str())
-            .unwrap_or("");
+        let sk = item.pointer("/SK/S").and_then(|s| s.as_str()).unwrap_or("");
         if sk != "META" {
             continue;
         }
-        let pk = item
-            .pointer("/PK/S")
-            .and_then(|s| s.as_str())
-            .unwrap_or("");
+        let pk = item.pointer("/PK/S").and_then(|s| s.as_str()).unwrap_or("");
         let Some(repo_id) = pk.strip_prefix("REPO#") else {
             continue;
         };
@@ -727,6 +814,7 @@ fn list_s3_slug_ids() -> Result<Vec<(String, String)>, String> {
             .and_then(|s| s.as_str())
             .unwrap_or("");
         if let Ok(meta) = serde_json::from_str::<serde_json::Value>(data) {
+            crate::git_origin::register_origin_from_repo_json(repo_id, &meta);
             if let Some(s) = meta.get("slug").and_then(|x| x.as_str()) {
                 if !s.is_empty() {
                     pairs.push((s.to_string(), repo_id.to_string()));
@@ -742,6 +830,9 @@ fn list_s3_slug_ids() -> Result<Vec<(String, String)>, String> {
 /// Import `repos/{id}/{branch}/` into git origin for catalog repos that have
 /// no `git/{id}/` yet. Best-effort; logs and continues on individual failures.
 pub fn backfill_git_origins() -> Vec<(String, String, Result<String, String>)> {
+    if matches!(ide_source_mode(), IdeSourceMode::Local) {
+        return Vec::new();
+    }
     if !crate::git_origin::origin_enabled() {
         return Vec::new();
     }
@@ -751,17 +842,15 @@ pub fn backfill_git_origins() -> Vec<(String, String, Result<String, String>)> {
     let br = branch();
     let mut out = Vec::new();
     for (slug, repo_id) in pairs {
-        let origin = crate::git_origin::GitOrigin::new(&repo_id);
+        let origin = crate::git_origin::GitOrigin::for_repo(&repo_id);
         if origin.exists() {
             out.push((slug, repo_id, Ok("already".into())));
             continue;
         }
-        let r = origin
-            .import_legacy_tree(&br)
-            .and_then(|sha| match sha {
-                Some(s) => Ok(s),
-                None => Err("no legacy tree".into()),
-            });
+        let r = origin.import_legacy_tree(&br).and_then(|sha| match sha {
+            Some(s) => Ok(s),
+            None => Err("no legacy tree".into()),
+        });
         match &r {
             Ok(sha) => tracing::info!(%slug, %repo_id, %sha, "backfilled git origin"),
             Err(e) => tracing::warn!(%slug, %repo_id, error = %e, "git origin backfill skipped"),
@@ -787,7 +876,7 @@ pub fn materialize_repo_incremental(repo_id: &str, work: &Path) -> Result<(), St
 
 fn materialize_repo_with(repo_id: &str, work: &Path, delete: bool) -> Result<(), String> {
     if crate::git_origin::origin_enabled() {
-        let origin = crate::git_origin::GitOrigin::new(repo_id);
+        let origin = crate::git_origin::GitOrigin::for_repo(repo_id);
         let br = branch();
         let mode = if delete {
             crate::git_origin::CheckoutMode::ResetHard
@@ -797,9 +886,17 @@ fn materialize_repo_with(repo_id: &str, work: &Path, delete: bool) -> Result<(),
         if origin.exists() {
             return origin.checkout(work, &br, mode).map(|_| ());
         }
+        if matches!(ide_source_mode(), IdeSourceMode::Local) {
+            return origin.checkout(work, &br, mode).map(|_| ());
+        }
         if let Ok(Some(_)) = origin.import_legacy_tree(&br) {
             return origin.checkout(work, &br, mode).map(|_| ());
         }
+    }
+    if matches!(ide_source_mode(), IdeSourceMode::Local) {
+        return Err(format!(
+            "local catalog has no git origin for {repo_id} — bind GitHub or recreate the project"
+        ));
     }
     let b = bucket();
     let prefix = s3_prefix(repo_id);
@@ -910,13 +1007,20 @@ fn put_file_s3(
         }
         serde_json::from_slice::<serde_json::Value>(&o.stdout)
             .ok()
-            .and_then(|v| v.get("ETag").and_then(|e| e.as_str()).map(|s| s.to_string()))
+            .and_then(|v| {
+                v.get("ETag")
+                    .and_then(|e| e.as_str())
+                    .map(|s| s.to_string())
+            })
     });
     Ok(etag)
 }
 
 /// Open a project slug from S3 into a temp workspace + write-through provider.
-pub fn open_s3_project(slug: &str, show_core_layers: bool) -> Result<Arc<S3WorkspaceProvider>, String> {
+pub fn open_s3_project(
+    slug: &str,
+    show_core_layers: bool,
+) -> Result<Arc<S3WorkspaceProvider>, String> {
     let repo_id = resolve_repo_id(slug)?;
     let work = workspace_root(slug);
     // Always pull S3 main (with --delete) so merge promotions are visible.
@@ -930,9 +1034,8 @@ pub fn open_s3_project(slug: &str, show_core_layers: bool) -> Result<Arc<S3Works
         }
     })?;
 
-    let paths = collect_project_files(&work, show_core_layers).map_err(|e| {
-        format!("S3 workspace {slug} has no packages after materialize: {e}")
-    })?;
+    let paths = collect_project_files(&work, show_core_layers)
+        .map_err(|e| format!("S3 workspace {slug} has no packages after materialize: {e}"))?;
     let entries: Vec<(PathBuf, String, bool)> = paths
         .into_iter()
         .map(|path| {
@@ -944,7 +1047,8 @@ pub fn open_s3_project(slug: &str, show_core_layers: bool) -> Result<Arc<S3Works
     if entries.is_empty() {
         return Err(format!("S3 workspace {slug} empty after materialize"));
     }
-    let reg = LayerRegistry::for_veil_file(&entries[0].0).unwrap_or_else(|_| LayerRegistry::builtin());
+    let reg =
+        LayerRegistry::for_veil_file(&entries[0].0).unwrap_or_else(|_| LayerRegistry::builtin());
     let inner = FilesystemProvider::with_files_in_project(entries, reg, Some(work.clone()));
     Ok(S3WorkspaceProvider::from_parts(
         Arc::new(inner),
@@ -1056,14 +1160,13 @@ impl S3WorkspaceProvider {
             .ok()
             .and_then(|h| {
                 let m = h.snapshot_meta();
-                m.base_branch
-                    .or_else(|| {
-                        if m.draft_mode {
-                            Some("main".into())
-                        } else {
-                            None
-                        }
-                    })
+                m.base_branch.or_else(|| {
+                    if m.draft_mode {
+                        Some("main".into())
+                    } else {
+                        None
+                    }
+                })
             })
     }
 }
@@ -1098,10 +1201,7 @@ fn s3_get_commit_snapshot_text(
 
 fn s3_cat_key(key: &str) -> Option<String> {
     let uri = format!("s3://{}/{}", bucket(), key);
-    let out = aws_base()
-        .args(["s3", "cp", &uri, "-"])
-        .output()
-        .ok()?;
+    let out = aws_base().args(["s3", "cp", &uri, "-"]).output().ok()?;
     if !out.status.success() {
         return None;
     }
@@ -1176,9 +1276,7 @@ impl SourceProvider for S3WorkspaceProvider {
 
         // Feature/draft session: baseline is product base branch (usually main).
         if self.draft_mode {
-            let base_br = self
-                .session_base_branch()
-                .unwrap_or_else(|| branch());
+            let base_br = self.session_base_branch().unwrap_or_else(|| branch());
             if let Some(text) = s3_get_object_text(&self.repo_id, &base_br, &rel) {
                 return Ok(Some((format!("branch:{base_br}"), text)));
             }
@@ -1239,7 +1337,9 @@ impl SourceProvider for S3WorkspaceProvider {
         source: String,
         editable: bool,
     ) -> Result<usize, String> {
-        let idx = self.inner.register_file(path.clone(), source.clone(), editable)?;
+        let idx = self
+            .inner
+            .register_file(path.clone(), source.clone(), editable)?;
         put_file_s3(
             &self.repo_id,
             &self.work,

@@ -12,13 +12,546 @@
 //!
 //! The client is synchronous (`reqwest::blocking`) to match `git_origin`.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use crate::git_origin::{redact_secrets, resolve_credential, GitProvider};
+use crate::git_origin::{
+    GitProvider, RemoteConfig, bitbucket_owner, bitbucket_token_for_api, github_owner,
+    github_repos_private, github_token_for_api, redact_secrets, register_origin,
+    resolve_credential,
+};
 
 /// The status/check context VEIL posts on the PR head. Operators configure
 /// branch protection to require this check before merge.
 pub const VEIL_REVIEW_CONTEXT: &str = "veil/review";
+
+/// Authenticated GitHub account (GET /user). Token is never returned.
+#[derive(Debug, Clone)]
+pub struct GithubUser {
+    pub login: String,
+    pub html_url: String,
+}
+
+/// A GitHub repository VEIL created or bound.
+#[derive(Debug, Clone)]
+pub struct GithubRepo {
+    pub full_name: String,
+    pub html_url: String,
+    pub private: bool,
+    /// GitHub `size` is zero (no git objects yet).
+    pub empty: bool,
+}
+
+fn github_bearer() -> Result<String, String> {
+    github_token_for_api().ok_or_else(|| {
+        "no GitHub token — set VEIL_GITHUB_TOKEN / GITHUB_TOKEN / GH_TOKEN, or run `gh auth login`"
+            .into()
+    })
+}
+
+fn github_authed(
+    req: reqwest::blocking::RequestBuilder,
+) -> Result<reqwest::blocking::RequestBuilder, String> {
+    Ok(req
+        .bearer_auth(github_bearer()?)
+        .header("Accept", "application/vnd.github+json")
+        .header("User-Agent", "veil-runtime")
+        .header("X-GitHub-Api-Version", "2022-11-28"))
+}
+
+/// `GET /user` with the configured token.
+pub fn github_whoami() -> Result<GithubUser, String> {
+    let url = format!("{}/user", api_base(GitProvider::GitHub));
+    let resp = github_authed(client()?.get(&url))?
+        .send()
+        .map_err(|e| redact_secrets(&format!("github /user: {e}")))?;
+    let status = resp.status();
+    let v: Value = resp.json().map_err(|e| format!("github /user json: {e}"))?;
+    if !status.is_success() {
+        return Err(redact_secrets(&format!(
+            "github /user failed ({status}): {v}"
+        )));
+    }
+    let login = v
+        .get("login")
+        .and_then(|s| s.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if login.is_empty() {
+        return Err("github /user returned no login".into());
+    }
+    Ok(GithubUser {
+        html_url: v
+            .get("html_url")
+            .and_then(|s| s.as_str())
+            .unwrap_or("")
+            .to_string(),
+        login,
+    })
+}
+
+fn parse_github_repo(v: &Value) -> GithubRepo {
+    let size = v.get("size").and_then(|n| n.as_u64()).unwrap_or(0);
+    GithubRepo {
+        full_name: v
+            .get("full_name")
+            .and_then(|s| s.as_str())
+            .unwrap_or("")
+            .to_string(),
+        html_url: v
+            .get("html_url")
+            .and_then(|s| s.as_str())
+            .unwrap_or("")
+            .to_string(),
+        private: v.get("private").and_then(|b| b.as_bool()).unwrap_or(true),
+        empty: size == 0,
+    }
+}
+
+/// `GET /repos/{owner}/{name}`.
+pub fn github_get_repo(owner: &str, name: &str) -> Result<GithubRepo, String> {
+    let owner = owner.trim().trim_matches('/');
+    let name = name.trim().trim_matches('/');
+    let url = format!("{}/repos/{owner}/{name}", api_base(GitProvider::GitHub));
+    let resp = github_authed(client()?.get(&url))?
+        .send()
+        .map_err(|e| redact_secrets(&format!("github get repo: {e}")))?;
+    let status = resp.status();
+    let v: Value = resp
+        .json()
+        .map_err(|e| format!("github get repo json: {e}"))?;
+    if !status.is_success() {
+        return Err(redact_secrets(&format!(
+            "github get repo {owner}/{name} failed ({status}): {v}"
+        )));
+    }
+    Ok(parse_github_repo(&v))
+}
+
+/// Create `owner/name` (user repo if owner is the token user, else org).
+/// If it already exists (422), fetch and return it.
+pub fn github_create_repo(
+    owner: &str,
+    name: &str,
+    private: bool,
+    description: Option<&str>,
+) -> Result<GithubRepo, String> {
+    let owner = owner.trim().trim_matches('/');
+    let name = name.trim().trim_matches('/');
+    if owner.is_empty() || name.is_empty() {
+        return Err("github create repo: owner and name required".into());
+    }
+    let me = github_whoami()?;
+    let mut payload = json!({
+        "name": name,
+        "private": private,
+        "auto_init": false,
+    });
+    if let Some(d) = description.map(str::trim).filter(|s| !s.is_empty()) {
+        payload["description"] = json!(d);
+    }
+    let url = if owner.eq_ignore_ascii_case(&me.login) {
+        format!("{}/user/repos", api_base(GitProvider::GitHub))
+    } else {
+        format!("{}/orgs/{owner}/repos", api_base(GitProvider::GitHub))
+    };
+    let resp = github_authed(client()?.post(&url))?
+        .json(&payload)
+        .send()
+        .map_err(|e| redact_secrets(&format!("github create repo: {e}")))?;
+    let status = resp.status();
+    let v: Value = resp
+        .json()
+        .map_err(|e| format!("github create repo json: {e}"))?;
+    if status.as_u16() == 422 {
+        // Name taken — reuse if we can see it.
+        return github_get_repo(owner, name);
+    }
+    if !status.is_success() {
+        return Err(redact_secrets(&format!(
+            "github create repo {owner}/{name} failed ({status}): {v}"
+        )));
+    }
+    Ok(parse_github_repo(&v))
+}
+
+/// How a new VEIL project should attach to git.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OriginKind {
+    /// Caller omitted origin — apply runtime default.
+    Unspecified,
+    S3,
+    Git,
+}
+
+#[derive(Debug, Clone)]
+pub struct OriginRequest {
+    pub kind: OriginKind,
+    pub provider: GitProvider,
+    /// `org/name` on the provider.
+    pub full_name: String,
+    /// Create the remote repo if missing. `false` = bind an existing remote.
+    pub create: bool,
+    pub private: bool,
+    pub subpath: Option<String>,
+    pub branch: String,
+}
+
+impl OriginRequest {
+    /// Parse UI / API / tool payload. `default_slug` fills the repo name when
+    /// only an owner is given.
+    pub fn from_value(v: Option<&Value>, default_slug: &str) -> Result<Self, String> {
+        let Some(v) = v.filter(|x| !x.is_null()) else {
+            return Ok(Self::unspecified(default_slug));
+        };
+        let kind_s = v
+            .get("kind")
+            .and_then(|k| k.as_str())
+            .unwrap_or("git")
+            .trim()
+            .to_ascii_lowercase();
+        if kind_s == "s3" || kind_s == "none" || kind_s == "off" {
+            return Ok(Self {
+                kind: OriginKind::S3,
+                provider: GitProvider::GitHub,
+                full_name: String::new(),
+                create: false,
+                private: true,
+                subpath: None,
+                branch: "main".into(),
+            });
+        }
+        let provider = GitProvider::parse(
+            v.get("provider")
+                .and_then(|p| p.as_str())
+                .unwrap_or("github"),
+        )
+        .unwrap_or(GitProvider::GitHub);
+        let full_name = parse_full_name(v, default_slug)?;
+        let create = v.get("create").and_then(|c| c.as_bool()).unwrap_or(true);
+        let private = v
+            .get("private")
+            .and_then(|c| c.as_bool())
+            .unwrap_or_else(github_repos_private);
+        let subpath = v
+            .get("subpath")
+            .and_then(|s| s.as_str())
+            .map(|s| s.trim().trim_matches('/').to_string())
+            .filter(|s| !s.is_empty());
+        let branch = v
+            .get("branch")
+            .and_then(|s| s.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "main".into());
+        Ok(Self {
+            kind: OriginKind::Git,
+            provider,
+            full_name,
+            create,
+            private,
+            subpath,
+            branch,
+        })
+    }
+
+    fn unspecified(default_slug: &str) -> Self {
+        let owner = github_owner().unwrap_or_default();
+        let full_name = if owner.is_empty() {
+            String::new()
+        } else {
+            format!("{owner}/{default_slug}")
+        };
+        Self {
+            kind: OriginKind::Unspecified,
+            provider: GitProvider::GitHub,
+            full_name,
+            create: true,
+            private: github_repos_private(),
+            subpath: None,
+            branch: "main".into(),
+        }
+    }
+
+    pub fn wants_git(&self) -> bool {
+        match self.kind {
+            OriginKind::Git => true,
+            OriginKind::S3 => false,
+            OriginKind::Unspecified => {
+                crate::git_origin::default_origin_is_github() && !self.full_name.is_empty()
+            }
+        }
+    }
+}
+
+fn parse_full_name(v: &Value, default_slug: &str) -> Result<String, String> {
+    if let Some(repo) = v
+        .get("repo")
+        .and_then(|s| s.as_str())
+        .map(|s| s.trim().trim_matches('/').to_string())
+        .filter(|s| !s.is_empty())
+    {
+        if repo.contains('/') {
+            return Ok(repo);
+        }
+        let owner = v
+            .get("owner")
+            .and_then(|s| s.as_str())
+            .map(|s| s.trim().trim_matches('/').to_string())
+            .filter(|s| !s.is_empty())
+            .or_else(github_owner)
+            .ok_or_else(|| "origin.repo needs owner/name (or set origin.owner)".to_string())?;
+        return Ok(format!("{owner}/{repo}"));
+    }
+    let owner = v
+        .get("owner")
+        .and_then(|s| s.as_str())
+        .map(|s| s.trim().trim_matches('/').to_string())
+        .filter(|s| !s.is_empty());
+    let name = v
+        .get("name")
+        .and_then(|s| s.as_str())
+        .map(|s| s.trim().trim_matches('/').to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| default_slug.to_string());
+    let owner = owner.or_else(github_owner).ok_or_else(|| {
+        "git origin needs owner/org (origin.owner or VEIL_GITHUB_OWNER)".to_string()
+    })?;
+    if name.is_empty() {
+        return Err("git origin needs a repository name".into());
+    }
+    Ok(format!("{owner}/{name}"))
+}
+
+/// Create or bind a provider repo and return the VEIL remote config.
+pub fn provision_origin(
+    repo_id: &str,
+    _slug: &str,
+    description: Option<&str>,
+    spec: &OriginRequest,
+) -> Result<RemoteConfig, String> {
+    let (owner, name) = spec
+        .full_name
+        .split_once('/')
+        .ok_or_else(|| format!("git origin `{}` is not owner/name", spec.full_name))?;
+    let empty = match spec.provider {
+        GitProvider::GitHub => {
+            if spec.create {
+                let created = github_create_repo(owner, name, spec.private, description)?;
+                created.empty
+            } else {
+                let existing = github_get_repo(owner, name)?;
+                existing.empty
+            }
+        }
+        GitProvider::Bitbucket => {
+            if spec.create {
+                bitbucket_create_repo(owner, name, spec.private, description)?.empty
+            } else {
+                bitbucket_get_repo(owner, name)?.empty
+            }
+        }
+    };
+    if spec.create && !empty {
+        return Err(format!(
+            "{} repo {} already has commits — bind it with create=false or pick another name",
+            spec.provider.as_str(),
+            spec.full_name
+        ));
+    }
+    let _ = empty;
+    let cfg = RemoteConfig {
+        provider: spec.provider,
+        repo: spec.full_name.clone(),
+        subpath: spec.subpath.clone(),
+        branch: spec.branch.clone(),
+    };
+    register_origin(repo_id, Some(cfg.clone()));
+    Ok(cfg)
+}
+
+/// Back-compat wrapper used by older call sites.
+pub fn provision_github_origin(
+    repo_id: &str,
+    slug: &str,
+    description: Option<&str>,
+) -> Result<RemoteConfig, String> {
+    let spec = OriginRequest::unspecified(slug);
+    if !spec.wants_git() {
+        return Err("GitHub origin is not the runtime default (set VEIL_GITHUB_OWNER)".into());
+    }
+    provision_origin(repo_id, slug, description, &spec)
+}
+
+fn github_list_orgs() -> Vec<String> {
+    let url = format!("{}/user/orgs?per_page=50", api_base(GitProvider::GitHub));
+    let Ok(client) = client() else {
+        return Vec::new();
+    };
+    let Ok(req) = github_authed(client.get(&url)) else {
+        return Vec::new();
+    };
+    let Ok(resp) = req.send() else {
+        return Vec::new();
+    };
+    if !resp.status().is_success() {
+        return Vec::new();
+    }
+    let Ok(v) = resp.json::<Value>() else {
+        return Vec::new();
+    };
+    v.as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|o| {
+                    o.get("login")
+                        .and_then(|s| s.as_str())
+                        .map(|s| s.to_string())
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn bitbucket_authed(
+    req: reqwest::blocking::RequestBuilder,
+) -> Result<reqwest::blocking::RequestBuilder, String> {
+    let tok = bitbucket_token_for_api()
+        .ok_or_else(|| "no Bitbucket token (VEIL_BITBUCKET_TOKEN)".to_string())?;
+    let user = std::env::var("VEIL_BITBUCKET_USER")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "x-token-auth".into());
+    Ok(req
+        .basic_auth(user, Some(tok))
+        .header("User-Agent", "veil-runtime"))
+}
+
+/// Bitbucket Cloud repo.
+struct BitbucketRepo {
+    full_name: String,
+    empty: bool,
+}
+
+fn parse_bitbucket_repo(v: &Value) -> BitbucketRepo {
+    let full = v
+        .get("full_name")
+        .and_then(|s| s.as_str())
+        .unwrap_or("")
+        .to_string();
+    let size = v.get("size").and_then(|n| n.as_u64()).unwrap_or(0);
+    BitbucketRepo {
+        full_name: full,
+        empty: size == 0,
+    }
+}
+
+fn bitbucket_get_repo(workspace: &str, name: &str) -> Result<BitbucketRepo, String> {
+    let url = format!(
+        "{}/repositories/{workspace}/{name}",
+        api_base(GitProvider::Bitbucket)
+    );
+    let resp = bitbucket_authed(client()?.get(&url))?
+        .send()
+        .map_err(|e| redact_secrets(&format!("bitbucket get repo: {e}")))?;
+    let status = resp.status();
+    let v: Value = resp
+        .json()
+        .map_err(|e| format!("bitbucket get repo json: {e}"))?;
+    if !status.is_success() {
+        return Err(redact_secrets(&format!(
+            "bitbucket get repo {workspace}/{name} failed ({status}): {v}"
+        )));
+    }
+    Ok(parse_bitbucket_repo(&v))
+}
+
+fn bitbucket_create_repo(
+    workspace: &str,
+    name: &str,
+    private: bool,
+    description: Option<&str>,
+) -> Result<BitbucketRepo, String> {
+    let url = format!(
+        "{}/repositories/{workspace}/{name}",
+        api_base(GitProvider::Bitbucket)
+    );
+    let mut payload = json!({
+        "scm": "git",
+        "is_private": private,
+        "name": name,
+    });
+    if let Some(d) = description.map(str::trim).filter(|s| !s.is_empty()) {
+        payload["description"] = json!(d);
+    }
+    let resp = bitbucket_authed(client()?.post(&url))?
+        .json(&payload)
+        .send()
+        .map_err(|e| redact_secrets(&format!("bitbucket create repo: {e}")))?;
+    let status = resp.status();
+    let v: Value = resp
+        .json()
+        .map_err(|e| format!("bitbucket create repo json: {e}"))?;
+    if status.as_u16() == 400 || status.as_u16() == 409 {
+        return bitbucket_get_repo(workspace, name);
+    }
+    if !status.is_success() {
+        return Err(redact_secrets(&format!(
+            "bitbucket create repo {workspace}/{name} failed ({status}): {v}"
+        )));
+    }
+    Ok(parse_bitbucket_repo(&v))
+}
+
+/// Operator-facing status (no secrets) for Config + create-project UI.
+pub fn github_status_json() -> Value {
+    let token = github_token_for_api().is_some();
+    let owner = github_owner();
+    let default = crate::git_origin::default_origin_kind();
+    let default_s = match default {
+        crate::git_origin::DefaultOriginKind::GitHub => "github",
+        crate::git_origin::DefaultOriginKind::S3 => "s3",
+    };
+    let mut login = None;
+    let mut html_url = None;
+    let mut error = None;
+    let mut orgs: Vec<String> = Vec::new();
+    if token {
+        match github_whoami() {
+            Ok(u) => {
+                login = Some(u.login.clone());
+                html_url = Some(u.html_url);
+                orgs = github_list_orgs();
+            }
+            Err(e) => error = Some(e),
+        }
+    }
+    let bb_token = bitbucket_token_for_api().is_some();
+    json!({
+        "connected": token && error.is_none(),
+        "token_present": token,
+        "login": login,
+        "html_url": html_url,
+        "owner": owner,
+        "orgs": orgs,
+        "default_origin": default_s,
+        "new_projects_on_github": matches!(default, crate::git_origin::DefaultOriginKind::GitHub),
+        "repos_private": github_repos_private(),
+        "bitbucket": {
+            "token_present": bb_token,
+            "owner": bitbucket_owner(),
+        },
+        "error": error,
+        "hint": if !token && !bb_token {
+            Some("Set a GitHub token (`gh auth login` or VEIL_GITHUB_TOKEN) and/or VEIL_BITBUCKET_TOKEN. Each project picks provider + owner/name.")
+        } else if owner.is_none() && token {
+            Some("GitHub is connected. Default owner is VEIL_GITHUB_OWNER; you can still put a project under any org you can write (jdwil, veil, …).")
+        } else {
+            None
+        },
+    })
+}
 
 #[derive(Debug, Clone)]
 pub struct ProviderRepo {
@@ -68,9 +601,7 @@ fn api_base(provider: GitProvider) -> String {
     let (env, default) = match provider {
         GitProvider::GitHub => ("VEIL_GITHUB_API_BASE", "https://api.github.com"),
         GitProvider::Bitbucket => match BitbucketVariant::resolve() {
-            BitbucketVariant::Cloud => {
-                ("VEIL_BITBUCKET_API_BASE", "https://api.bitbucket.org/2.0")
-            }
+            BitbucketVariant::Cloud => ("VEIL_BITBUCKET_API_BASE", "https://api.bitbucket.org/2.0"),
             // Server/DC has no fixed default host — operators MUST set the base.
             BitbucketVariant::Server => ("VEIL_BITBUCKET_API_BASE", ""),
         },
@@ -214,9 +745,13 @@ impl ProviderRepo {
             .send()
             .map_err(|e| redact_secrets(&format!("github list prs: {e}")))?;
         let status = resp.status();
-        let v: Value = resp.json().map_err(|e| format!("github list prs json: {e}"))?;
+        let v: Value = resp
+            .json()
+            .map_err(|e| format!("github list prs json: {e}"))?;
         if !status.is_success() {
-            return Err(redact_secrets(&format!("github list prs failed ({status}): {v}")));
+            return Err(redact_secrets(&format!(
+                "github list prs failed ({status}): {v}"
+            )));
         }
         let first = v.as_array().and_then(|a| a.first());
         Ok(first.map(|p| ProviderPr {
@@ -226,7 +761,11 @@ impl ProviderRepo {
                 .and_then(|s| s.as_str())
                 .unwrap_or("")
                 .to_string(),
-            url: p.get("html_url").and_then(|s| s.as_str()).unwrap_or("").to_string(),
+            url: p
+                .get("html_url")
+                .and_then(|s| s.as_str())
+                .unwrap_or("")
+                .to_string(),
         }))
     }
 
@@ -244,11 +783,18 @@ impl ProviderRepo {
             .send()
             .map_err(|e| redact_secrets(&format!("bitbucket list prs: {e}")))?;
         let status = resp.status();
-        let v: Value = resp.json().map_err(|e| format!("bitbucket list prs json: {e}"))?;
+        let v: Value = resp
+            .json()
+            .map_err(|e| format!("bitbucket list prs json: {e}"))?;
         if !status.is_success() {
-            return Err(redact_secrets(&format!("bitbucket list prs failed ({status}): {v}")));
+            return Err(redact_secrets(&format!(
+                "bitbucket list prs failed ({status}): {v}"
+            )));
         }
-        let first = v.pointer("/values").and_then(|a| a.as_array()).and_then(|a| a.first());
+        let first = v
+            .pointer("/values")
+            .and_then(|a| a.as_array())
+            .and_then(|a| a.first());
         Ok(first.map(|p| ProviderPr {
             number: p.get("id").and_then(|n| n.as_u64()).unwrap_or(0),
             head_sha: p
@@ -256,7 +802,11 @@ impl ProviderRepo {
                 .and_then(|s| s.as_str())
                 .unwrap_or("")
                 .to_string(),
-            url: p.pointer("/links/html/href").and_then(|s| s.as_str()).unwrap_or("").to_string(),
+            url: p
+                .pointer("/links/html/href")
+                .and_then(|s| s.as_str())
+                .unwrap_or("")
+                .to_string(),
         }))
     }
 
@@ -269,7 +819,11 @@ impl ProviderRepo {
         title: &str,
         body: &str,
     ) -> Result<ProviderPr, String> {
-        let url = format!("{}/repos/{}/pulls", api_base(GitProvider::GitHub), self.repo);
+        let url = format!(
+            "{}/repos/{}/pulls",
+            api_base(GitProvider::GitHub),
+            self.repo
+        );
         let resp = self
             .gh_auth(client()?.post(&url))?
             .header("Accept", "application/vnd.github+json")
@@ -279,7 +833,9 @@ impl ProviderRepo {
         let status = resp.status();
         let v: Value = resp.json().map_err(|e| format!("github pr json: {e}"))?;
         if !status.is_success() {
-            return Err(redact_secrets(&format!("github create pr failed ({status}): {v}")));
+            return Err(redact_secrets(&format!(
+                "github create pr failed ({status}): {v}"
+            )));
         }
         Ok(ProviderPr {
             number: v.get("number").and_then(|n| n.as_u64()).unwrap_or(0),
@@ -326,7 +882,9 @@ impl ProviderRepo {
         let status = resp.status();
         if !status.is_success() {
             let body = resp.text().unwrap_or_default();
-            return Err(redact_secrets(&format!("github post status failed ({status}): {body}")));
+            return Err(redact_secrets(&format!(
+                "github post status failed ({status}): {body}"
+            )));
         }
         Ok(())
     }
@@ -351,9 +909,14 @@ impl ProviderRepo {
         let status = resp.status();
         let v: Value = resp.json().map_err(|e| format!("github merge json: {e}"))?;
         if !status.is_success() {
-            return Err(redact_secrets(&format!("github merge failed ({status}): {v}")));
+            return Err(redact_secrets(&format!(
+                "github merge failed ({status}): {v}"
+            )));
         }
-        Ok(v.get("sha").and_then(|s| s.as_str()).unwrap_or("").to_string())
+        Ok(v.get("sha")
+            .and_then(|s| s.as_str())
+            .unwrap_or("")
+            .to_string())
     }
 
     // ---- Bitbucket Cloud -------------------------------------------------
@@ -393,7 +956,9 @@ impl ProviderRepo {
         let status = resp.status();
         let v: Value = resp.json().map_err(|e| format!("bitbucket pr json: {e}"))?;
         if !status.is_success() {
-            return Err(redact_secrets(&format!("bitbucket create pr failed ({status}): {v}")));
+            return Err(redact_secrets(&format!(
+                "bitbucket create pr failed ({status}): {v}"
+            )));
         }
         Ok(ProviderPr {
             number: v.get("id").and_then(|n| n.as_u64()).unwrap_or(0),
@@ -438,7 +1003,9 @@ impl ProviderRepo {
         let status = resp.status();
         if !status.is_success() {
             let body = resp.text().unwrap_or_default();
-            return Err(redact_secrets(&format!("bitbucket post status failed ({status}): {body}")));
+            return Err(redact_secrets(&format!(
+                "bitbucket post status failed ({status}): {body}"
+            )));
         }
         Ok(())
     }
@@ -462,7 +1029,9 @@ impl ProviderRepo {
         let status = resp.status();
         if !status.is_success() {
             let body = resp.text().unwrap_or_default();
-            return Err(redact_secrets(&format!("bitbucket merge failed ({status}): {body}")));
+            return Err(redact_secrets(&format!(
+                "bitbucket merge failed ({status}): {body}"
+            )));
         }
         // Bitbucket returns the merged PR; the merge commit hash is nested.
         let v: Value = resp.json().unwrap_or(json!({}));
@@ -528,7 +1097,9 @@ impl ProviderRepo {
         let status = resp.status();
         let v: Value = resp.json().map_err(|e| format!("bb-server pr json: {e}"))?;
         if !status.is_success() {
-            return Err(redact_secrets(&format!("bitbucket-server create pr failed ({status}): {v}")));
+            return Err(redact_secrets(&format!(
+                "bitbucket-server create pr failed ({status}): {v}"
+            )));
         }
         Ok(ProviderPr {
             number: v.get("id").and_then(|n| n.as_u64()).unwrap_or(0),
@@ -573,7 +1144,9 @@ impl ProviderRepo {
         let status = resp.status();
         if !status.is_success() {
             let body = resp.text().unwrap_or_default();
-            return Err(redact_secrets(&format!("bitbucket-server post status failed ({status}): {body}")));
+            return Err(redact_secrets(&format!(
+                "bitbucket-server post status failed ({status}): {body}"
+            )));
         }
         Ok(())
     }
@@ -599,7 +1172,9 @@ impl ProviderRepo {
         let status = resp.status();
         let v: Value = resp.json().unwrap_or(json!({}));
         if !status.is_success() {
-            return Err(redact_secrets(&format!("bitbucket-server merge failed ({status}): {v}")));
+            return Err(redact_secrets(&format!(
+                "bitbucket-server merge failed ({status}): {v}"
+            )));
         }
         Ok(v.pointer("/properties/mergeCommit/id")
             .and_then(|s| s.as_str())
@@ -621,11 +1196,18 @@ impl ProviderRepo {
             .send()
             .map_err(|e| redact_secrets(&format!("bitbucket-server list prs: {e}")))?;
         let status = resp.status();
-        let v: Value = resp.json().map_err(|e| format!("bb-server list json: {e}"))?;
+        let v: Value = resp
+            .json()
+            .map_err(|e| format!("bb-server list json: {e}"))?;
         if !status.is_success() {
-            return Err(redact_secrets(&format!("bitbucket-server list prs failed ({status}): {v}")));
+            return Err(redact_secrets(&format!(
+                "bitbucket-server list prs failed ({status}): {v}"
+            )));
         }
-        let first = v.pointer("/values").and_then(|a| a.as_array()).and_then(|a| a.first());
+        let first = v
+            .pointer("/values")
+            .and_then(|a| a.as_array())
+            .and_then(|a| a.first());
         Ok(first.map(|p| ProviderPr {
             number: p.get("id").and_then(|n| n.as_u64()).unwrap_or(0),
             head_sha: p
@@ -633,7 +1215,39 @@ impl ProviderRepo {
                 .and_then(|s| s.as_str())
                 .unwrap_or("")
                 .to_string(),
-            url: p.pointer("/links/self/0/href").and_then(|s| s.as_str()).unwrap_or("").to_string(),
+            url: p
+                .pointer("/links/self/0/href")
+                .and_then(|s| s.as_str())
+                .unwrap_or("")
+                .to_string(),
         }))
+    }
+}
+
+#[cfg(test)]
+mod origin_request_tests {
+    use super::*;
+
+    #[test]
+    fn parses_full_repo_and_owner_name() {
+        let s = OriginRequest::from_value(
+            Some(&json!({"provider": "github", "repo": "veil/shop"})),
+            "ignored",
+        )
+        .unwrap();
+        assert_eq!(s.full_name, "veil/shop");
+        assert!(s.create);
+        assert_eq!(s.provider, GitProvider::GitHub);
+
+        let s = OriginRequest::from_value(
+            Some(&json!({"owner": "jdwil", "name": "widgets", "create": false, "provider": "github"})),
+            "x",
+        )
+        .unwrap();
+        assert_eq!(s.full_name, "jdwil/widgets");
+        assert!(!s.create);
+
+        let s = OriginRequest::from_value(Some(&json!({"kind": "s3"})), "x").unwrap();
+        assert!(!s.wants_git());
     }
 }

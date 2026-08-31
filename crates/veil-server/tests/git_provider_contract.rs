@@ -10,11 +10,11 @@
 use std::sync::{Arc, Mutex};
 
 use axum::{
-    extract::State,
-    routing::{post, put},
     Json, Router,
+    extract::State,
+    routing::{get, post, put},
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use veil_server::git_origin::GitProvider;
 use veil_server::git_provider::{ProviderRepo, VEIL_REVIEW_CONTEXT};
@@ -133,9 +133,14 @@ async fn bb_create_pr(
 ) -> Json<Value> {
     cap.log.lock().unwrap().push((
         "create".into(),
-        format!("/projects/{proj}/repos/{slug}/pull-requests fromRef={}", body["fromRef"]["id"]),
+        format!(
+            "/projects/{proj}/repos/{slug}/pull-requests fromRef={}",
+            body["fromRef"]["id"]
+        ),
     ));
-    Json(json!({ "id": 7, "fromRef": { "latestCommit": "deadbeef" }, "links": { "self": [ { "href": "http://bb/pr/7" } ] } }))
+    Json(
+        json!({ "id": 7, "fromRef": { "latestCommit": "deadbeef" }, "links": { "self": [ { "href": "http://bb/pr/7" } ] } }),
+    )
 }
 
 async fn bb_build_status(
@@ -143,10 +148,13 @@ async fn bb_build_status(
     axum::extract::Path(sha): axum::extract::Path<String>,
     Json(body): Json<Value>,
 ) -> Json<Value> {
-    cap.log
-        .lock()
-        .unwrap()
-        .push(("status".into(), format!("/build-status/commits/{sha} key={} state={}", body["key"], body["state"])));
+    cap.log.lock().unwrap().push((
+        "status".into(),
+        format!(
+            "/build-status/commits/{sha} key={} state={}",
+            body["key"], body["state"]
+        ),
+    ));
     Json(json!({}))
 }
 
@@ -198,10 +206,105 @@ async fn bitbucket_server_variant_contract() {
     .unwrap();
 
     let entries = log.lock().unwrap().clone();
-    assert_eq!(entries.len(), 2, "expected create + status on server endpoints");
-    assert!(entries[0].1.contains("/projects/DLX/repos/agent-core/pull-requests"));
-    assert!(entries[0].1.contains("refs/heads/feat-y"), "fromRef id shape");
+    assert_eq!(
+        entries.len(),
+        2,
+        "expected create + status on server endpoints"
+    );
+    assert!(
+        entries[0]
+            .1
+            .contains("/projects/DLX/repos/agent-core/pull-requests")
+    );
+    assert!(
+        entries[0].1.contains("refs/heads/feat-y"),
+        "fromRef id shape"
+    );
     assert!(entries[1].1.contains("/build-status/commits/deadbeef"));
     assert!(entries[1].1.contains("key=\"veil/review\""));
     assert!(entries[1].1.contains("state=\"SUCCESSFUL\""));
+}
+
+#[derive(Clone, Default)]
+struct GhCreateCap {
+    log: Arc<Mutex<Vec<(String, Value)>>>,
+}
+
+async fn gh_user(State(cap): State<GhCreateCap>) -> Json<Value> {
+    cap.log
+        .lock()
+        .unwrap()
+        .push(("GET /user".into(), json!({})));
+    Json(json!({ "login": "jd", "html_url": "https://github.com/jd" }))
+}
+
+async fn gh_user_repos(
+    State(cap): State<GhCreateCap>,
+    Json(body): Json<Value>,
+) -> (axum::http::StatusCode, Json<Value>) {
+    cap.log
+        .lock()
+        .unwrap()
+        .push(("POST /user/repos".into(), body.clone()));
+    (
+        axum::http::StatusCode::CREATED,
+        Json(json!({
+            "full_name": format!("jd/{}", body["name"].as_str().unwrap_or("x")),
+            "html_url": "https://github.com/jd/widgets",
+            "private": body["private"],
+            "size": 0
+        })),
+    )
+}
+
+#[tokio::test]
+async fn github_create_repo_contract() {
+    let cap = GhCreateCap::default();
+    let app = Router::new()
+        .route("/user", get(gh_user))
+        .route("/user/repos", post(gh_user_repos))
+        .with_state(cap.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let base = format!("http://{addr}");
+    let log = cap.log.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        unsafe {
+            std::env::set_var("VEIL_GITHUB_API_BASE", &base);
+            std::env::set_var("VEIL_GITHUB_TOKEN", "test-token");
+            std::env::set_var("VEIL_GITHUB_OWNER", "jd");
+            std::env::set_var("VEIL_GITHUB_GH_CLI", "0");
+        }
+        let me = veil_server::git_provider::github_whoami().expect("whoami");
+        assert_eq!(me.login, "jd");
+        let repo = veil_server::git_provider::github_create_repo(
+            "jd",
+            "widgets",
+            true,
+            Some("a veil product"),
+        )
+        .expect("create");
+        assert_eq!(repo.full_name, "jd/widgets");
+        assert!(repo.empty);
+        unsafe {
+            std::env::remove_var("VEIL_GITHUB_API_BASE");
+            std::env::remove_var("VEIL_GITHUB_TOKEN");
+            std::env::remove_var("VEIL_GITHUB_OWNER");
+        }
+    })
+    .await;
+    result.unwrap();
+    let entries = log.lock().unwrap().clone();
+    assert!(entries.iter().any(|(m, _)| m == "GET /user"));
+    let body = entries
+        .iter()
+        .find(|(m, _)| m == "POST /user/repos")
+        .map(|(_, b)| b.clone())
+        .expect("create body");
+    assert_eq!(body["name"], "widgets");
+    assert_eq!(body["private"], true);
+    assert_eq!(body["auto_init"], false);
 }

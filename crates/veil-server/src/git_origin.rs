@@ -4,9 +4,11 @@
 //! engine: one git bundle per ref tip. Session workdirs are native git
 //! checkouts. See `docs/ADR_GIT_ORIGIN_S3.md`.
 
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::{Mutex, OnceLock};
 
 use serde::Serialize;
 
@@ -22,10 +24,13 @@ pub fn origin_enabled() -> bool {
             Flag::Off => false,
             Flag::On => true,
             Flag::Auto => {
+                if crate::config::platform_local() {
+                    return true;
+                }
                 let mode = std::env::var("VEIL_SOURCE_MODE")
                     .unwrap_or_else(|_| "prefer_s3".into())
                     .to_ascii_lowercase();
-                !matches!(mode.as_str(), "disk" | "fs" | "filesystem" | "local")
+                !matches!(mode.as_str(), "disk" | "fs" | "filesystem")
             }
         },
     }
@@ -112,7 +117,11 @@ pub(crate) struct Credential {
 impl std::fmt::Debug for Credential {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // Never render the secret.
-        write!(f, "Credential {{ username: {:?}, token: <redacted> }}", self.username)
+        write!(
+            f,
+            "Credential {{ username: {:?}, token: <redacted> }}",
+            self.username
+        )
     }
 }
 
@@ -162,7 +171,12 @@ impl RemoteConfig {
 
     /// The `org` / workspace segment of `org/name`.
     fn org(&self) -> &str {
-        self.repo.trim().trim_matches('/').split('/').next().unwrap_or("")
+        self.repo
+            .trim()
+            .trim_matches('/')
+            .split('/')
+            .next()
+            .unwrap_or("")
     }
 
     /// Resolve the credential for this repo (per-repo → per-org/workspace →
@@ -229,7 +243,13 @@ pub(crate) fn resolve_credential(provider: GitProvider, repo: &str) -> Option<Cr
 
     let sanitize = |s: &str| {
         s.chars()
-            .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_uppercase() } else { '_' })
+            .map(|c| {
+                if c.is_ascii_alphanumeric() {
+                    c.to_ascii_uppercase()
+                } else {
+                    '_'
+                }
+            })
             .collect::<String>()
     };
 
@@ -246,7 +266,7 @@ pub(crate) fn resolve_credential(provider: GitProvider, repo: &str) -> Option<Cr
         }
     }
 
-    // 3) global provider token.
+    // 3) global provider token (env, then `gh auth token` for GitHub).
     let tok = provider_token(provider)?;
     Some(default_cred(provider, tok))
 }
@@ -296,7 +316,93 @@ fn provider_token(provider: GitProvider) -> Option<String> {
             }
         }
     }
+    if matches!(provider, GitProvider::GitHub) {
+        return gh_cli_token();
+    }
     None
+}
+
+fn gh_cli_token() -> Option<String> {
+    match std::env::var("VEIL_GITHUB_GH_CLI")
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "0" | "false" | "off" | "no" => return None,
+        _ => {}
+    }
+    static CACHED: OnceLock<Option<String>> = OnceLock::new();
+    CACHED
+        .get_or_init(|| {
+            let out = Command::new("gh")
+                .args(["auth", "token"])
+                .env("GH_PROMPT_DISABLED", "1")
+                .output()
+                .ok()?;
+            if !out.status.success() {
+                return None;
+            }
+            let t = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if t.is_empty() { None } else { Some(t) }
+        })
+        .clone()
+}
+
+/// DDB META → RemoteConfig. Skipped under `VEIL_GIT_STORE_ROOT` (unit tests).
+fn load_origin_from_ddb(repo_id: &str) -> Option<RemoteConfig> {
+    if fs_store_root().is_some() {
+        return None;
+    }
+    if crate::config::platform_local() {
+        let path = crate::config::local_catalog_path();
+        let text = std::fs::read_to_string(path).ok()?;
+        let v: serde_json::Value = serde_json::from_str(&text).ok()?;
+        let repos = v.get("repos")?.as_object()?;
+        if let Some(meta) = repos.get(repo_id) {
+            return remote_config_from_json(meta.get("origin"));
+        }
+        for meta in repos.values() {
+            let id = meta
+                .pointer("/id/value")
+                .or_else(|| meta.get("id"))
+                .and_then(|x| x.as_str())
+                .unwrap_or("");
+            if id == repo_id {
+                return remote_config_from_json(meta.get("origin"));
+            }
+        }
+        return None;
+    }
+    let table = std::env::var("VEIL_DDB_TABLE").ok()?;
+    if table.is_empty() {
+        return None;
+    }
+    let key = format!(r##"{{"PK":{{"S":"REPO#{repo_id}"}},"SK":{{"S":"META"}}}}"##);
+    let out = aws_base()
+        .args([
+            "dynamodb",
+            "get-item",
+            "--table-name",
+            &table,
+            "--key",
+            &key,
+            "--projection-expression",
+            "#d",
+            "--expression-attribute-names",
+            r##"{"#d":"data"}"##,
+            "--output",
+            "json",
+        ])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).ok()?;
+    let data = v.pointer("/Item/data/S").and_then(|s| s.as_str())?;
+    let meta: serde_json::Value = serde_json::from_str(data).ok()?;
+    remote_config_from_json(meta.get("origin"))
 }
 
 /// Optional provider username (Bitbucket app-password style). Env only.
@@ -305,7 +411,10 @@ fn provider_user(provider: GitProvider) -> Option<String> {
         GitProvider::GitHub => "VEIL_GITHUB_USER",
         GitProvider::Bitbucket => "VEIL_BITBUCKET_USER",
     };
-    std::env::var(name).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+    std::env::var(name)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
 }
 
 /// Optional base-URL override for enterprise hosts / self-hosted / local test
@@ -315,7 +424,10 @@ fn provider_base_url(provider: GitProvider) -> Option<String> {
         GitProvider::GitHub => "VEIL_GITHUB_BASE_URL",
         GitProvider::Bitbucket => "VEIL_BITBUCKET_BASE_URL",
     };
-    std::env::var(name).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+    std::env::var(name)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
 }
 
 /// Standard base64 (for the Authorization header). No external dep.
@@ -329,8 +441,16 @@ fn base64_encode(input: &[u8]) -> String {
         let n = (b0 << 16) | (b1 << 8) | b2;
         out.push(T[((n >> 18) & 63) as usize] as char);
         out.push(T[((n >> 12) & 63) as usize] as char);
-        out.push(if chunk.len() > 1 { T[((n >> 6) & 63) as usize] as char } else { '=' });
-        out.push(if chunk.len() > 2 { T[(n & 63) as usize] as char } else { '=' });
+        out.push(if chunk.len() > 1 {
+            T[((n >> 6) & 63) as usize] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            T[(n & 63) as usize] as char
+        } else {
+            '='
+        });
     }
     out
 }
@@ -472,12 +592,196 @@ pub struct GitOrigin {
     pub backend: OriginBackend,
 }
 
+/// Process-local origin binding (S3 bundle vs GitHub/Bitbucket remote).
+///
+/// Populated from DDB `Repo.origin` on catalog reads, create, and bind.
+/// Sessions call [`GitOrigin::for_repo`] so a git-backed project never
+/// silently falls back to the S3 bundle backend.
+#[derive(Clone)]
+enum CachedOrigin {
+    S3,
+    Git(RemoteConfig),
+}
+
+fn origin_cache() -> &'static Mutex<HashMap<String, CachedOrigin>> {
+    static C: OnceLock<Mutex<HashMap<String, CachedOrigin>>> = OnceLock::new();
+    C.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+#[cfg(test)]
+pub fn clear_origin_cache() {
+    if let Ok(mut g) = origin_cache().lock() {
+        g.clear();
+    }
+}
+
+/// Record how a product's git history is stored. `remote = None` means S3.
+pub fn register_origin(repo_id: &str, remote: Option<RemoteConfig>) {
+    let id = repo_id.trim();
+    if id.is_empty() {
+        return;
+    }
+    if let Ok(mut g) = origin_cache().lock() {
+        g.insert(
+            id.to_string(),
+            match remote {
+                Some(r) => CachedOrigin::Git(r),
+                None => CachedOrigin::S3,
+            },
+        );
+    }
+}
+
+/// Parse a DDB/API `origin` object (`{kind, provider, repo, subpath, branch}`).
+pub fn remote_config_from_json(origin: Option<&serde_json::Value>) -> Option<RemoteConfig> {
+    let o = origin?;
+    let kind = o.get("kind").and_then(|k| k.as_str()).unwrap_or("s3");
+    if !kind.eq_ignore_ascii_case("git") {
+        return None;
+    }
+    let provider = GitProvider::parse(o.get("provider").and_then(|p| p.as_str()).unwrap_or(""))?;
+    let repo = o
+        .get("repo")
+        .and_then(|r| r.as_str())
+        .map(|s| s.trim().trim_matches('/').to_string())
+        .filter(|s| s.contains('/'))?;
+    let subpath = o
+        .get("subpath")
+        .and_then(|s| s.as_str())
+        .map(|s| s.trim().trim_matches('/').to_string())
+        .filter(|s| !s.is_empty());
+    let branch = o
+        .get("branch")
+        .and_then(|s| s.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "main".into());
+    Some(RemoteConfig {
+        provider,
+        repo,
+        subpath,
+        branch,
+    })
+}
+
+/// Register from a full Repo JSON blob (`origin` field optional).
+pub fn register_origin_from_repo_json(repo_id: &str, meta: &serde_json::Value) {
+    register_origin(repo_id, remote_config_from_json(meta.get("origin")));
+}
+
+/// Where new projects store git history.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DefaultOriginKind {
+    S3,
+    GitHub,
+}
+
+/// `VEIL_GIT_DEFAULT_ORIGIN`: `s3` | `github` | `auto` (default).
+///
+/// `auto` picks GitHub only when a token is present **and** `VEIL_GITHUB_OWNER`
+/// is set — that env is the operator opt-in so a stray `GITHUB_TOKEN` does not
+/// reroute every create onto GitHub.
+pub fn default_origin_kind() -> DefaultOriginKind {
+    match std::env::var("VEIL_GIT_DEFAULT_ORIGIN")
+        .unwrap_or_else(|_| "auto".into())
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "github" | "gh" | "git" => DefaultOriginKind::GitHub,
+        "s3" | "bundle" => DefaultOriginKind::S3,
+        _ => {
+            if github_token_for_api().is_some() && github_owner().is_some() {
+                DefaultOriginKind::GitHub
+            } else {
+                DefaultOriginKind::S3
+            }
+        }
+    }
+}
+
+pub fn default_origin_is_github() -> bool {
+    matches!(default_origin_kind(), DefaultOriginKind::GitHub)
+}
+
+/// Owner/org for newly created GitHub repos (`VEIL_GITHUB_OWNER` / `VEIL_GITHUB_ORG`).
+pub fn github_owner() -> Option<String> {
+    for key in ["VEIL_GITHUB_OWNER", "VEIL_GITHUB_ORG"] {
+        if let Ok(v) = std::env::var(key) {
+            let v = v.trim().trim_matches('/').to_string();
+            if !v.is_empty() {
+                return Some(v);
+            }
+        }
+    }
+    None
+}
+
+pub fn github_repos_private() -> bool {
+    match std::env::var("VEIL_GITHUB_REPO_PRIVATE")
+        .unwrap_or_else(|_| "1".into())
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "0" | "false" | "off" | "no" | "public" => false,
+        _ => true,
+    }
+}
+
+/// Token for GitHub HTTPS + REST. Env first, then `gh auth token` (local).
+pub fn github_token_for_api() -> Option<String> {
+    provider_token(GitProvider::GitHub)
+}
+
+pub fn bitbucket_token_for_api() -> Option<String> {
+    provider_token(GitProvider::Bitbucket)
+}
+
+/// Workspace for new Bitbucket repos (`VEIL_BITBUCKET_OWNER` / `VEIL_BITBUCKET_WORKSPACE`).
+pub fn bitbucket_owner() -> Option<String> {
+    for key in ["VEIL_BITBUCKET_OWNER", "VEIL_BITBUCKET_WORKSPACE"] {
+        if let Ok(v) = std::env::var(key) {
+            let v = v.trim().trim_matches('/').to_string();
+            if !v.is_empty() {
+                return Some(v);
+            }
+        }
+    }
+    None
+}
+
 impl GitOrigin {
     pub fn new(repo_id: impl Into<String>) -> Self {
         Self {
             repo_id: repo_id.into(),
             backend: OriginBackend::S3Bundle,
         }
+    }
+
+    /// Origin for a product: GitHub/Bitbucket remote when bound, else S3.
+    ///
+    /// Looks at the process cache, then DDB META (skipped in unit tests that
+    /// set `VEIL_GIT_STORE_ROOT`).
+    pub fn for_repo(repo_id: impl AsRef<str>) -> Self {
+        let repo_id = repo_id.as_ref().trim();
+        if repo_id.is_empty() {
+            return GitOrigin::new(repo_id);
+        }
+        if let Ok(g) = origin_cache().lock() {
+            if let Some(c) = g.get(repo_id) {
+                return match c {
+                    CachedOrigin::S3 => GitOrigin::new(repo_id),
+                    CachedOrigin::Git(r) => GitOrigin::with_remote(repo_id, r.clone()),
+                };
+            }
+        }
+        if let Some(remote) = load_origin_from_ddb(repo_id) {
+            register_origin(repo_id, Some(remote.clone()));
+            return GitOrigin::with_remote(repo_id, remote);
+        }
+        register_origin(repo_id, None);
+        GitOrigin::new(repo_id)
     }
 
     /// Construct a git-backed origin bound to a real provider remote.
@@ -513,13 +817,16 @@ impl GitOrigin {
         }
     }
 
-    /// Create origin from a working tree if the remote is empty.
+    /// Create origin from a working tree if the remote has no tip yet.
+    ///
+    /// A reachable empty GitHub repo (`auto_init: false`) counts as "exists"
+    /// for `ls-remote` but has no heads — we still push the seed.
     pub fn ensure_from_workdir(&self, seed: &Path, branch: &str) -> Result<String, String> {
-        if self.exists() {
-            return self
-                .remote_tip(branch)
-                .or_else(|| self.remote_tip(&default_git_branch()))
-                .ok_or_else(|| format!("origin {} exists but has no tip", self.repo_id));
+        if let Some(tip) = self
+            .remote_tip(branch)
+            .or_else(|| self.remote_tip(&default_git_branch()))
+        {
+            return Ok(tip);
         }
         init_repo(seed, branch)?;
         if !has_source_files(seed) {
@@ -543,7 +850,10 @@ impl GitOrigin {
         if fs_store_root().is_some() {
             return Ok(None);
         }
-        let tmp = unique_tmp(&format!("veil-git-import-{}", &self.repo_id[..8.min(self.repo_id.len())]));
+        let tmp = unique_tmp(&format!(
+            "veil-git-import-{}",
+            &self.repo_id[..8.min(self.repo_id.len())]
+        ));
         fs::create_dir_all(&tmp).map_err(|e| format!("mkdir import: {e}"))?;
         let src = format!(
             "s3://{}/{}/{branch}/",
@@ -551,7 +861,13 @@ impl GitOrigin {
             format!("repos/{}", self.repo_id)
         );
         let out = aws_base()
-            .args(["s3", "sync", &src, &tmp.to_string_lossy(), "--exact-timestamps"])
+            .args([
+                "s3",
+                "sync",
+                &src,
+                &tmp.to_string_lossy(),
+                "--exact-timestamps",
+            ])
             .output()
             .map_err(|e| format!("aws s3 sync import: {e}"))?;
         if !out.status.success() {
@@ -694,7 +1010,9 @@ impl GitOrigin {
                 "nothing to commit — working tree clean. Edit with write_source first.".into(),
             );
         }
-        let parent = git(work, &["rev-parse", "HEAD"]).ok().map(|s| s.trim().to_string());
+        let parent = git(work, &["rev-parse", "HEAD"])
+            .ok()
+            .map(|s| s.trim().to_string());
         git(work, &["commit", "-m", message])?;
         let sha = git(work, &["rev-parse", "HEAD"])?.trim().to_string();
         let branch = current_branch(work)?;
@@ -720,12 +1038,7 @@ impl GitOrigin {
         let bundle = unique_tmp(&format!("veil-{}.bundle", &sha[..8.min(sha.len())]));
         git(
             work,
-            &[
-                "bundle",
-                "create",
-                &bundle.to_string_lossy(),
-                branch,
-            ],
+            &["bundle", "create", &bundle.to_string_lossy(), branch],
         )?;
         let bytes = fs::read(&bundle).map_err(|e| format!("read bundle: {e}"))?;
         let _ = fs::remove_file(&bundle);
@@ -737,16 +1050,13 @@ impl GitOrigin {
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty() && s != &sha);
 
-        store_put(
-            &format!("{prefix}refs/heads/{branch}/{sha}.bundle"),
-            &bytes,
-        )?;
-        store_put(
-            &format!("{prefix}refs/heads/{branch}/TIP"),
-            sha.as_bytes(),
-        )?;
+        store_put(&format!("{prefix}refs/heads/{branch}/{sha}.bundle"), &bytes)?;
+        store_put(&format!("{prefix}refs/heads/{branch}/TIP"), sha.as_bytes())?;
         if branch == default_git_branch() || !self.exists_head() {
-            store_put(&format!("{prefix}HEAD"), format!("refs/heads/{branch}").as_bytes())?;
+            store_put(
+                &format!("{prefix}HEAD"),
+                format!("refs/heads/{branch}").as_bytes(),
+            )?;
         }
         if let Some(old) = prev {
             let _ = store_delete(&format!("{prefix}refs/heads/{branch}/{old}.bundle"));
@@ -755,7 +1065,12 @@ impl GitOrigin {
         Ok(sha)
     }
 
-    pub fn commit_and_push(&self, work: &Path, message: &str, branch: &str) -> Result<CommitInfo, String> {
+    pub fn commit_and_push(
+        &self,
+        work: &Path,
+        message: &str,
+        branch: &str,
+    ) -> Result<CommitInfo, String> {
         let mut info = self.commit(work, message)?;
         if info.branch != branch && !branch.is_empty() {
             git(work, &["branch", "-M", branch])?;
@@ -897,14 +1212,17 @@ impl GitOrigin {
             return Ok(String::new());
         }
         let tracked = git(work, &["diff", "--no-color", "HEAD"]).unwrap_or_default();
-        let untracked = git(work, &["ls-files", "--others", "--exclude-standard"]).unwrap_or_default();
+        let untracked =
+            git(work, &["ls-files", "--others", "--exclude-standard"]).unwrap_or_default();
         if untracked.trim().is_empty() {
             return Ok(tracked);
         }
         let mut out = tracked;
         for path in untracked.lines().map(str::trim).filter(|s| !s.is_empty()) {
             let body = fs::read_to_string(work.join(path)).unwrap_or_default();
-            out.push_str(&format!("diff --git a/{path} b/{path}\nnew file mode 100644\n--- /dev/null\n+++ b/{path}\n"));
+            out.push_str(&format!(
+                "diff --git a/{path} b/{path}\nnew file mode 100644\n--- /dev/null\n+++ b/{path}\n"
+            ));
             for line in body.lines() {
                 out.push('+');
                 out.push_str(line);
@@ -1044,8 +1362,12 @@ impl GitOrigin {
             // Tokenless origin URL on disk; creds are supplied per-invocation.
             let _ = git(work, &["remote", "set-url", "origin", &url]);
             let _ = scrub_remote_config(work);
-            git_auth(work, &auth, &["fetch", "origin", "+refs/heads/*:refs/remotes/origin/*"])
-                .map_err(|e| format!("git fetch origin: {e}"))?;
+            git_auth(
+                work,
+                &auth,
+                &["fetch", "origin", "+refs/heads/*:refs/remotes/origin/*"],
+            )
+            .map_err(|e| format!("git fetch origin: {e}"))?;
         }
 
         // Select/create the branch.
@@ -1054,7 +1376,10 @@ impl GitOrigin {
             if branch_exists_local(work, branch) {
                 git(work, &["checkout", branch])?;
             } else if remote_branch_exists(work, branch) {
-                git(work, &["checkout", "-B", branch, &format!("origin/{branch}")])?;
+                git(
+                    work,
+                    &["checkout", "-B", branch, &format!("origin/{branch}")],
+                )?;
             } else {
                 // New feature branch off the current tip.
                 git(work, &["checkout", "-B", branch])?;
@@ -1093,8 +1418,12 @@ impl GitOrigin {
             let _ = git(work, &["remote", "set-url", "origin", &url]);
         }
         let _ = scrub_remote_config(work);
-        git_auth(work, &auth, &["push", "origin", &format!("{branch}:{branch}")])
-            .map_err(|e| format!("git push origin {branch}: {e}"))?;
+        git_auth(
+            work,
+            &auth,
+            &["push", "origin", &format!("{branch}:{branch}")],
+        )
+        .map_err(|e| format!("git push origin {branch}: {e}"))?;
         Ok(sha)
     }
 
@@ -1235,7 +1564,10 @@ fn clone_remote(work: &Path, url: &str, auth: &[String], branch: &str) -> Result
     let _ = scrub_remote_config(work);
     // Switch to the requested branch (existing remote branch or a new one).
     if remote_branch_exists(work, branch) {
-        let _ = git(work, &["checkout", "-B", branch, &format!("origin/{branch}")]);
+        let _ = git(
+            work,
+            &["checkout", "-B", branch, &format!("origin/{branch}")],
+        );
     } else if !branch_exists_local(work, branch) {
         let _ = git(work, &["checkout", "-B", branch]);
     }
@@ -1356,23 +1688,15 @@ fn clone_from_bundle(work: &Path, bundle: &Path, branch: &str) -> Result<(), Str
             &bundle.to_string_lossy(),
             name,
         ]);
-    let out = cmd
-        .output()
-        .map_err(|e| format!("git clone bundle: {e}"))?;
+    let out = cmd.output().map_err(|e| format!("git clone bundle: {e}"))?;
     if !out.status.success() {
         // Retry without --branch (bundle may advertise HEAD only).
         let mut cmd = Command::new("git");
         cmd.current_dir(parent)
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .env("GIT_CONFIG_GLOBAL", "/dev/null")
-            .args([
-                "clone",
-                &bundle.to_string_lossy(),
-                name,
-            ]);
-        let out2 = cmd
-            .output()
-            .map_err(|e| format!("git clone bundle: {e}"))?;
+            .args(["clone", &bundle.to_string_lossy(), name]);
+        let out2 = cmd.output().map_err(|e| format!("git clone bundle: {e}"))?;
         if !out2.status.success() {
             return Err(format!(
                 "git clone bundle failed: {}",
@@ -1442,13 +1766,21 @@ fn current_branch(work: &Path) -> Result<String, String> {
 }
 
 fn branch_exists_local(work: &Path, name: &str) -> bool {
-    git(work, &["rev-parse", "--verify", &format!("refs/heads/{name}")]).is_ok()
+    git(
+        work,
+        &["rev-parse", "--verify", &format!("refs/heads/{name}")],
+    )
+    .is_ok()
 }
 
 fn remote_branch_exists(work: &Path, name: &str) -> bool {
     git(
         work,
-        &["rev-parse", "--verify", &format!("refs/remotes/origin/{name}")],
+        &[
+            "rev-parse",
+            "--verify",
+            &format!("refs/remotes/origin/{name}"),
+        ],
     )
     .is_ok()
 }
@@ -1459,7 +1791,17 @@ fn ref_exists(work: &Path, name: &str) -> bool {
 
 fn changed_files(work: &Path, parent: Option<&str>) -> Result<Vec<String>, String> {
     let out = if let Some(p) = parent {
-        git(work, &["diff-tree", "--no-commit-id", "--name-only", "-r", p, "HEAD"])?
+        git(
+            work,
+            &[
+                "diff-tree",
+                "--no-commit-id",
+                "--name-only",
+                "-r",
+                p,
+                "HEAD",
+            ],
+        )?
     } else {
         git(work, &["ls-files"])?
     };
@@ -1727,11 +2069,15 @@ mod tests {
             origin.ensure_from_workdir(&seed, "main").unwrap();
 
             let a = unique_tmp("iso-a");
-            origin.checkout(&a, "main", CheckoutMode::ResetHard).unwrap();
+            origin
+                .checkout(&a, "main", CheckoutMode::ResetHard)
+                .unwrap();
             fs::write(a.join("main.veil"), "pkg Dirty\n").unwrap();
 
             let b = unique_tmp("iso-b");
-            origin.checkout(&b, "main", CheckoutMode::ResetHard).unwrap();
+            origin
+                .checkout(&b, "main", CheckoutMode::ResetHard)
+                .unwrap();
             let body = fs::read_to_string(b.join("main.veil")).unwrap();
             assert!(body.contains("Shop"));
             assert!(!body.contains("Dirty"));
@@ -1752,12 +2098,14 @@ mod tests {
         // Bare "provider" repo, seeded with an initial commit on main.
         let bare = unique_tmp("provider.git");
         fs::create_dir_all(&bare).unwrap();
-        assert!(Command::new("git")
-            .args(["init", "--bare", "-b", "main"])
-            .current_dir(&bare)
-            .status()
-            .unwrap()
-            .success());
+        assert!(
+            Command::new("git")
+                .args(["init", "--bare", "-b", "main"])
+                .current_dir(&bare)
+                .status()
+                .unwrap()
+                .success()
+        );
         let seed = seed_tree();
         {
             git(&seed, &["init", "-b", "main"]).unwrap();
@@ -1844,6 +2192,8 @@ mod tests {
             ] {
                 std::env::remove_var(k);
             }
+            // Tests must not pick up the operator's `gh auth token`.
+            std::env::set_var("VEIL_GITHUB_GH_CLI", "0");
         };
         clear();
 
@@ -1862,12 +2212,7 @@ mod tests {
         assert_eq!(c.token, "org-tok");
 
         // Per-repo overrides per-org, and supports user:token form.
-        unsafe {
-            std::env::set_var(
-                "VEIL_GIT_CRED_GITHUB__DASHLX_VEIL_PROJECTS",
-                "bot:repo-tok",
-            )
-        };
+        unsafe { std::env::set_var("VEIL_GIT_CRED_GITHUB__DASHLX_VEIL_PROJECTS", "bot:repo-tok") };
         let c = resolve_credential(GitProvider::GitHub, "dashlx/veil-projects").unwrap();
         assert_eq!(c.username, "bot");
         assert_eq!(c.token, "repo-tok");
@@ -1902,7 +2247,10 @@ mod tests {
         assert!(joined.contains("credential.helper="));
         // The base64 must decode to x-access-token:secrettoken123 but we at
         // least assert the raw token is not present verbatim.
-        assert!(!joined.contains("secrettoken123"), "token must be base64, not raw");
+        assert!(
+            !joined.contains("secrettoken123"),
+            "token must be base64, not raw"
+        );
 
         unsafe { std::env::remove_var("VEIL_GITHUB_TOKEN") };
     }
@@ -1914,7 +2262,10 @@ mod tests {
         let s = "fatal: could not read from https://x-access-token:ghp_supersecretvalue@github.com/o/r.git";
         let r = redact_secrets(s);
         assert!(!r.contains("ghp_supersecretvalue"), "raw token leaked: {r}");
-        assert!(r.contains("x-access-token:***@github.com"), "userinfo not redacted: {r}");
+        assert!(
+            r.contains("x-access-token:***@github.com"),
+            "userinfo not redacted: {r}"
+        );
         unsafe { std::env::remove_var("VEIL_GITHUB_TOKEN") };
     }
 
@@ -1925,7 +2276,10 @@ mod tests {
         assert_eq!(base64_encode(b"fo"), "Zm8=");
         assert_eq!(base64_encode(b"foo"), "Zm9v");
         assert_eq!(base64_encode(b"foob"), "Zm9vYg==");
-        assert_eq!(base64_encode(b"x-access-token:tok"), "eC1hY2Nlc3MtdG9rZW46dG9r");
+        assert_eq!(
+            base64_encode(b"x-access-token:tok"),
+            "eC1hY2Nlc3MtdG9rZW46dG9r"
+        );
     }
 
     #[test]
@@ -1948,12 +2302,14 @@ mod tests {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let bare = unique_tmp("scrub-provider.git");
         fs::create_dir_all(&bare).unwrap();
-        assert!(Command::new("git")
-            .args(["init", "--bare", "-b", "main"])
-            .current_dir(&bare)
-            .status()
-            .unwrap()
-            .success());
+        assert!(
+            Command::new("git")
+                .args(["init", "--bare", "-b", "main"])
+                .current_dir(&bare)
+                .status()
+                .unwrap()
+                .success()
+        );
         let seed = seed_tree();
         git(&seed, &["init", "-b", "main"]).unwrap();
         git(&seed, &["add", "-A"]).unwrap();
@@ -1971,9 +2327,104 @@ mod tests {
 
         // Read the on-disk config; it must not contain a token/extraheader.
         let cfg = fs::read_to_string(work.join(".git/config")).unwrap_or_default();
-        assert!(!cfg.to_lowercase().contains("extraheader"), "config leaked header: {cfg}");
+        assert!(
+            !cfg.to_lowercase().contains("extraheader"),
+            "config leaked header: {cfg}"
+        );
         assert!(!cfg.contains("Basic Zm9v"), "config leaked auth: {cfg}");
 
+        let _ = fs::remove_dir_all(&bare);
+        let _ = fs::remove_dir_all(&seed);
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    #[test]
+    fn remote_config_from_json_git_and_s3() {
+        let git = serde_json::json!({
+            "kind": "git",
+            "provider": "github",
+            "repo": "acme/widgets",
+            "subpath": "/app/",
+            "branch": "main"
+        });
+        let cfg = remote_config_from_json(Some(&git)).expect("git origin");
+        assert_eq!(cfg.provider, GitProvider::GitHub);
+        assert_eq!(cfg.repo, "acme/widgets");
+        assert_eq!(cfg.subpath.as_deref(), Some("app"));
+
+        let s3 = serde_json::json!({ "kind": "s3" });
+        assert!(remote_config_from_json(Some(&s3)).is_none());
+    }
+
+    #[test]
+    fn for_repo_uses_registered_github_origin() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_origin_cache();
+        unsafe {
+            std::env::set_var("VEIL_GIT_STORE_ROOT", unique_tmp("reg-store"));
+        }
+        let id = "bbbbbbbb-cccc-dddd-eeee-ffffffffffff";
+        let cfg = RemoteConfig {
+            provider: GitProvider::GitHub,
+            repo: "me/app".into(),
+            subpath: None,
+            branch: "main".into(),
+        };
+        register_origin(id, Some(cfg));
+        let origin = GitOrigin::for_repo(id);
+        assert!(origin.is_git_remote());
+        register_origin(id, None);
+        let origin = GitOrigin::for_repo(id);
+        assert!(!origin.is_git_remote());
+        clear_origin_cache();
+        unsafe {
+            std::env::remove_var("VEIL_GIT_STORE_ROOT");
+        }
+    }
+
+    #[test]
+    fn git_remote_seeds_empty_provider_repo() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let bare = unique_tmp("empty-provider.git");
+        fs::create_dir_all(&bare).unwrap();
+        assert!(
+            Command::new("git")
+                .args(["init", "--bare", "-b", "main"])
+                .current_dir(&bare)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let file_url = format!("file://{}", bare.display());
+        unsafe {
+            std::env::set_var("VEIL_GITHUB_BASE_URL", &file_url);
+            std::env::set_var("VEIL_GITHUB_GH_CLI", "0");
+        }
+        let cfg = RemoteConfig {
+            provider: GitProvider::GitHub,
+            repo: "test/empty".into(),
+            subpath: None,
+            branch: "main".into(),
+        };
+        let origin = GitOrigin::with_remote("cccccccc-dddd-eeee-ffff-000000000000", cfg);
+        assert!(origin.exists(), "empty bare repo should be reachable");
+        assert!(origin.remote_tip("main").is_none());
+
+        let seed = seed_tree();
+        let sha = origin
+            .ensure_from_workdir(&seed, "main")
+            .expect("seed empty remote");
+        assert_eq!(sha.len(), 40);
+
+        let work = unique_tmp("from-empty");
+        origin
+            .checkout(&work, "main", CheckoutMode::ResetHard)
+            .expect("checkout seeded remote");
+        assert!(work.join("main.veil").is_file());
+
+        unsafe {
+            std::env::remove_var("VEIL_GITHUB_BASE_URL");
+        }
         let _ = fs::remove_dir_all(&bare);
         let _ = fs::remove_dir_all(&seed);
         let _ = fs::remove_dir_all(&work);
