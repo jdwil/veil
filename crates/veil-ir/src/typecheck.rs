@@ -32,6 +32,14 @@ pub enum Ty {
     /// Fallible: Res! (unit) or Res!<T>
     Res(Option<Box<Ty>>),
     Tuple(Vec<Ty>),
+    /// Anonymous record / struct-like type with named, typed fields.
+    ///
+    /// Produced by the JSON-schema→Ty bridge (see [`crate::schema_bridge`]):
+    /// an Agent node's authored `output_schema` becomes a `Record` so that
+    /// `agentNode.output.<field>` resolves against these fields in the
+    /// typechecker. Fields are stored in a `BTreeMap` for deterministic
+    /// display/equality (order-independent, stable for tests).
+    Record(std::collections::BTreeMap<String, Ty>),
     /// Unit / void / ()
     Unit,
     /// Not enough information
@@ -52,6 +60,14 @@ impl Ty {
                 let inner = ts.iter().map(|t| t.display()).collect::<Vec<_>>().join(", ");
                 format!("({})", inner)
             }
+            Ty::Record(fields) => {
+                let inner = fields
+                    .iter()
+                    .map(|(name, ty)| format!("{}: {}", name, ty.display()))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("{{ {} }}", inner)
+            }
             Ty::Unit => "()".into(),
             Ty::Unknown => "?".into(),
         }
@@ -59,6 +75,29 @@ impl Ty {
 
     fn is_unknown(&self) -> bool {
         matches!(self, Ty::Unknown)
+    }
+
+    /// Public human-readable rendering of this type (e.g. `List<Str>`,
+    /// `{ score: F64, label: Str }`). Exposed for consumers outside the
+    /// typechecker (e.g. the B2 scope resolver's diagnostics).
+    pub fn display_ty(&self) -> String {
+        self.display()
+    }
+
+    /// Is this a [`Ty::Record`] (schema-derived struct-like type)?
+    pub fn is_record(&self) -> bool {
+        matches!(self, Ty::Record(_))
+    }
+
+    /// Resolve a field's type against a record type, returning `None` when the
+    /// type is not a record or has no such field. Consumed by B2 to type
+    /// `agentNode.output.<field>` and to flag field-name typos on a known
+    /// record.
+    pub fn record_field(&self, name: &str) -> Option<Ty> {
+        match self {
+            Ty::Record(fields) => fields.get(name).cloned(),
+            _ => None,
+        }
     }
 
     fn is_res(&self) -> bool {
@@ -279,6 +318,13 @@ fn compatible(expected: &Ty, actual: &Ty) -> bool {
         (Ty::Unit, Ty::Unit) => true,
         (Ty::Unit, Ty::Tuple(ts)) | (Ty::Tuple(ts), Ty::Unit) if ts.is_empty() => true,
         (Ty::Tuple(a), Ty::Tuple(b)) if a.is_empty() && b.is_empty() => true,
+        // Records are structurally compatible: every expected field must be
+        // present in `actual` with a compatible type. Extra actual fields are
+        // tolerated (structural width subtyping — a wider record satisfies a
+        // narrower expectation).
+        (Ty::Record(e), Ty::Record(a)) => e.iter().all(|(name, et)| {
+            a.get(name).map(|at| compatible(et, at)).unwrap_or(false)
+        }),
         // Res!<T> not assignable to T without ?
         _ => false,
     }
@@ -634,6 +680,22 @@ pub fn check_types(sol: &Solution, registry: &LayerRegistry) -> Vec<Diagnostic> 
     for item in &sol.items {
         if let TopLevelItem::Construct(c) = item {
             check_bare_fields(c, &mut diagnostics);
+        }
+    }
+
+    // B0: shallow per-node workflow config checks (Decision / Transform /
+    // Branch / AgentNode). Single-node only — no cross-node scope resolution.
+    for item in &sol.items {
+        match item {
+            TopLevelItem::Construct(c) => {
+                check_workflow_nodes_in_construct(c, &mut diagnostics);
+            }
+            TopLevelItem::Flow(flow) => {
+                for step in &flow.steps {
+                    check_workflow_node_step(step, &flow.name, &mut diagnostics);
+                }
+            }
+            _ => {}
         }
     }
 
@@ -1137,6 +1199,437 @@ fn import_impl_fields(impl_name: &str, env: &TypeEnv, scope: &mut Scope) {
                     scope.bind(n, t.clone());
                 }
             }
+        }
+    }
+}
+
+// ─── B0: shallow per-node workflow config checks ─────────────────────────────
+//
+// Phase 4 workflow DSL. Typed step-nodes (`decision` / `branch` / `transform` /
+// `agent`) carry their config in `StepDef.fields` as raw strings and their
+// routing in `StepDef.edges`. Per-node codegen lowering (typed_step.rs) surfaces
+// bad config LATE as `compile_error!` at cargo build. These checks move
+// single-node validation EARLY into `veil check` so authors see errors AT THE
+// NODE in the builder.
+//
+// SCOPE (B0): single-node config only. NO cross-node scope resolution — no
+// "is this identifier in scope at node N", no Transform-expr-vs-binding typing,
+// no agentNode.output.<field> resolution. All of that is B2 (needs the
+// Workstream-2 graph walker) and B1 (schema→Ty bridge).
+//
+// STRICTNESS POLICY (DECIDED by JD, cross-cutting with B2):
+//   * A referenced type that resolves to `Ty::Unknown` (can't be determined) →
+//     WARN, never hard-error. Preserves the MVP "Unknown is not an error /
+//     avoid false positives" philosophy and avoids false-positiving genuinely
+//     dynamic JSON values.
+//   * A HARD ERROR only when a type IS known and definitively mismatches
+//     (e.g. a Decision `condition` known to be `Str`, not `Bool`), or on
+//     structural / parse failures (a known failure, not Unknown-type).
+//
+// CRATE DIRECTION: rich expression inference lives downstream in veil-codegen;
+// typecheck is upstream in veil-ir and must not pull it up. B0 therefore uses
+// only shallow literal inspection ([`config_value_ty`]) plus structural
+// well-formedness ([`config_expr_wellformed`]) — no real expression parser.
+// Deeper typing is deferred to B2 by policy.
+
+/// Recurse a construct's steps (and children) for workflow node config checks.
+fn check_workflow_nodes_in_construct(c: &Construct, diagnostics: &mut Vec<Diagnostic>) {
+    for step in &c.steps {
+        check_workflow_node_step(step, &c.name, diagnostics);
+    }
+    for child in &c.children {
+        check_workflow_nodes_in_construct(child, diagnostics);
+    }
+}
+
+/// Dispatch a `FlowStep` to the per-kind config validator. Only `FlowStep::Step`
+/// carries a typed node `kind`; parallel/match blocks recurse into their steps.
+fn check_workflow_node_step(step: &FlowStep, location: &str, diagnostics: &mut Vec<Diagnostic>) {
+    match step {
+        FlowStep::Step(sd) => check_workflow_node_config(sd, location, diagnostics),
+        FlowStep::Parallel(par) => {
+            for s in &par.steps {
+                check_workflow_node_config(s, location, diagnostics);
+            }
+        }
+        FlowStep::Match(_) => {}
+    }
+}
+
+/// Look up a typed-step config field value by name (mirrors typed_step.rs).
+fn node_field<'a>(step: &'a StepDef, name: &str) -> Option<&'a str> {
+    step.fields
+        .iter()
+        .find(|f| f.name == name)
+        .map(|f| f.value.as_str())
+}
+
+/// Strip a single matching pair of surrounding quotes (double or single).
+/// Expression-typed config fields are declared `Str` in the layer `has` schema,
+/// so authors quote them (`condition: "x > 0"`). The inner text is the VEIL
+/// expression — same unwrap the codegen (`typed_step.rs`) applies before parse.
+fn unwrap_node_quotes(s: &str) -> &str {
+    let t = s.trim();
+    if t.len() >= 2
+        && ((t.starts_with('"') && t.ends_with('"')) || (t.starts_with('\'') && t.ends_with('\'')))
+    {
+        &t[1..t.len() - 1]
+    } else {
+        t
+    }
+}
+
+/// Shallow literal-type inference for a config expression string.
+///
+/// This is the ONLY type inference B0 performs and is deliberately conservative:
+/// it recognizes bare literals only. Anything that looks like an identifier,
+/// field access, call, or operator expression is `Unknown` (deferred to B2's
+/// scope- and schema-aware resolver). The input must already have its outer
+/// field quotes stripped (see [`unwrap_node_quotes`]).
+///
+/// * `true` / `false`               → `Bool`
+/// * `"…"` / `'…'` (nested literal)  → `Str`
+/// * integer literal                → `Int`
+/// * float literal                  → `F64`
+/// * everything else                → `Unknown`
+fn config_value_ty(inner: &str) -> Ty {
+    let t = inner.trim();
+    if t.is_empty() {
+        return Ty::Unknown;
+    }
+    if t == "true" || t == "false" {
+        return Ty::Named("Bool".into());
+    }
+    // A residual quoted literal after outer-quote stripping is a string value.
+    if t.len() >= 2
+        && ((t.starts_with('"') && t.ends_with('"')) || (t.starts_with('\'') && t.ends_with('\'')))
+    {
+        return Ty::Named("Str".into());
+    }
+    // Pure numeric literal (optional leading sign). Reject anything with other
+    // chars (identifiers, operators, calls) → Unknown.
+    let num = t.strip_prefix(['+', '-']).unwrap_or(t);
+    if !num.is_empty() && num.chars().all(|c| c.is_ascii_digit()) {
+        return Ty::Named("Int".into());
+    }
+    if !num.is_empty()
+        && num.contains('.')
+        && num.chars().all(|c| c.is_ascii_digit() || c == '.')
+        && num.chars().filter(|&c| c == '.').count() == 1
+    {
+        return Ty::Named("F64".into());
+    }
+    Ty::Unknown
+}
+
+/// Shallow structural well-formedness for a config expression string.
+///
+/// B0 cannot run the real expression parser (it lives downstream in
+/// veil-parser), so this catches only *obvious* malformations that are known
+/// failures regardless of scope: empty text, and unbalanced quotes / brackets.
+/// Genuinely nuanced parse errors remain a build-time `compile_error!` from the
+/// codegen leg until B2 threads a real parser. Returns `Err(reason)` when the
+/// text is definitively malformed.
+fn config_expr_wellformed(inner: &str) -> Result<(), String> {
+    let t = inner.trim();
+    if t.is_empty() {
+        return Err("expression is empty".into());
+    }
+    let mut depth_paren = 0i32;
+    let mut depth_brack = 0i32;
+    let mut depth_brace = 0i32;
+    let mut in_str: Option<char> = None;
+    let mut prev = '\0';
+    for ch in t.chars() {
+        if let Some(q) = in_str {
+            if ch == q && prev != '\\' {
+                in_str = None;
+            }
+            prev = ch;
+            continue;
+        }
+        match ch {
+            '"' | '\'' => in_str = Some(ch),
+            '(' => depth_paren += 1,
+            ')' => depth_paren -= 1,
+            '[' => depth_brack += 1,
+            ']' => depth_brack -= 1,
+            '{' => depth_brace += 1,
+            '}' => depth_brace -= 1,
+            _ => {}
+        }
+        if depth_paren < 0 || depth_brack < 0 || depth_brace < 0 {
+            return Err("unbalanced brackets".into());
+        }
+        prev = ch;
+    }
+    if in_str.is_some() {
+        return Err("unterminated string literal".into());
+    }
+    if depth_paren != 0 || depth_brack != 0 || depth_brace != 0 {
+        return Err("unbalanced brackets".into());
+    }
+    Ok(())
+}
+
+/// Validate a single typed workflow node's own config (B0). No-op for plain
+/// steps and non-workflow kinds.
+fn check_workflow_node_config(step: &StepDef, location: &str, diagnostics: &mut Vec<Diagnostic>) {
+    let Some(kind) = step.kind.as_deref() else {
+        return;
+    };
+    match kind {
+        "decision" => check_decision_node(step, location, diagnostics),
+        "branch" => check_branch_node(step, location, diagnostics),
+        "transform" => check_transform_node(step, location, diagnostics),
+        "agent" => check_agent_node(step, location, diagnostics),
+        _ => {}
+    }
+}
+
+/// Decision: `condition` must be present + well-formed. If its type is KNOWN
+/// and not `Bool` → hard error. If `Unknown` → warn (policy). Unparseable /
+/// malformed condition → hard error (a known failure, not Unknown-type).
+fn check_decision_node(step: &StepDef, location: &str, diagnostics: &mut Vec<Diagnostic>) {
+    let Some(raw) = node_field(step, "condition") else {
+        diagnostics.push(diag(
+            Severity::Error,
+            "workflow_missing_config",
+            format!("decision '{}' is missing its `condition`", step.name),
+            location,
+            Some(step.span),
+            Some("add `condition: \"<expr>\"` — the boolean expression that routes true/false".into()),
+        ));
+        return;
+    };
+    let inner = unwrap_node_quotes(raw);
+    if let Err(reason) = config_expr_wellformed(inner) {
+        diagnostics.push(diag(
+            Severity::Error,
+            "workflow_invalid_expr",
+            format!("decision '{}' has an invalid condition: {reason}", step.name),
+            location,
+            Some(step.span),
+            Some("write a boolean VEIL expression, e.g. `condition: \"total > 0\"`".into()),
+        ));
+        return;
+    }
+    let ty = config_value_ty(inner);
+    if ty.is_unknown() {
+        // Can't determine the type here (needs scope/schema) → warn, don't error.
+        diagnostics.push(diag(
+            Severity::Warning,
+            "workflow_condition_unchecked",
+            format!(
+                "decision '{}' condition type is not yet verifiable here — ensure it is Bool",
+                step.name
+            ),
+            location,
+            Some(step.span),
+            Some("full condition type-checking arrives with cross-node scope resolution (B2)".into()),
+        ));
+    } else if !compatible(&Ty::Named("Bool".into()), &ty) {
+        diagnostics.push(diag(
+            Severity::Error,
+            "workflow_condition_not_bool",
+            format!(
+                "decision '{}' condition is {}, but a decision routes on a Bool",
+                step.name,
+                ty.display()
+            ),
+            location,
+            Some(step.span),
+            Some("use a comparison or boolean expression (e.g. `total > 0`), not a literal value".into()),
+        ));
+    }
+}
+
+/// Transform: must have a `binding` (target var) AND a present, well-formed
+/// `expression`. Missing binding or unparseable expr → hard error. Type of the
+/// expression vs. binding is deferred to B2 (needs scope).
+fn check_transform_node(step: &StepDef, location: &str, diagnostics: &mut Vec<Diagnostic>) {
+    match node_field(step, "binding") {
+        Some(b) if !b.trim().is_empty() => {}
+        _ => {
+            diagnostics.push(diag(
+                Severity::Error,
+                "workflow_missing_config",
+                format!("transform '{}' is missing its `binding` (target variable)", step.name),
+                location,
+                Some(step.span),
+                Some("add `binding: <name>` — the variable this transform assigns".into()),
+            ));
+        }
+    }
+    match node_field(step, "expression") {
+        Some(raw) => {
+            let inner = unwrap_node_quotes(raw);
+            if let Err(reason) = config_expr_wellformed(inner) {
+                diagnostics.push(diag(
+                    Severity::Error,
+                    "workflow_invalid_expr",
+                    format!("transform '{}' has an invalid expression: {reason}", step.name),
+                    location,
+                    Some(step.span),
+                    Some("write a VEIL expression, e.g. `expression: \"a + b\"`".into()),
+                ));
+            }
+        }
+        None => {
+            diagnostics.push(diag(
+                Severity::Error,
+                "workflow_missing_config",
+                format!("transform '{}' is missing its `expression`", step.name),
+                location,
+                Some(step.span),
+                Some("add `expression: \"<expr>\"` — the value assigned to the binding".into()),
+            ));
+        }
+    }
+}
+
+/// Branch: `scrutinee` present + well-formed; `cases` non-empty; and the
+/// `default`↔wildcard edge consistency. All violations are structural (known)
+/// → hard error.
+fn check_branch_node(step: &StepDef, location: &str, diagnostics: &mut Vec<Diagnostic>) {
+    match node_field(step, "scrutinee") {
+        Some(raw) => {
+            let inner = unwrap_node_quotes(raw);
+            if let Err(reason) = config_expr_wellformed(inner) {
+                diagnostics.push(diag(
+                    Severity::Error,
+                    "workflow_invalid_expr",
+                    format!("branch '{}' has an invalid scrutinee: {reason}", step.name),
+                    location,
+                    Some(step.span),
+                    Some("write the value being matched, e.g. `scrutinee: \"status\"`".into()),
+                ));
+            }
+        }
+        None => {
+            diagnostics.push(diag(
+                Severity::Error,
+                "workflow_missing_config",
+                format!("branch '{}' is missing its `scrutinee`", step.name),
+                location,
+                Some(step.span),
+                Some("add `scrutinee: \"<expr>\"` — the value each case matches against".into()),
+            ));
+        }
+    }
+
+    // Case labels: the authoritative case set is the non-default edge labels.
+    let case_edges: Vec<&StepEdge> = step
+        .edges
+        .iter()
+        .filter(|e| e.label != "default" && e.label != "_")
+        .collect();
+    let has_default_edge = step
+        .edges
+        .iter()
+        .any(|e| e.label == "default" || e.label == "_");
+    // A `has_default` config flag (when present) must agree with the edges.
+    let has_default_flag = node_field(step, "has_default")
+        .map(|v| v.trim() == "true")
+        .unwrap_or(has_default_edge);
+
+    if case_edges.is_empty() {
+        diagnostics.push(diag(
+            Severity::Error,
+            "workflow_branch_no_cases",
+            format!("branch '{}' has no cases", step.name),
+            location,
+            Some(step.span),
+            Some("add at least one `on <case>: <target>` edge for the branch to route".into()),
+        ));
+    }
+
+    if has_default_flag != has_default_edge {
+        let (msg, hint) = if has_default_flag {
+            (
+                format!(
+                    "branch '{}' declares a default but has no `on default:` (or `on _:`) edge",
+                    step.name
+                ),
+                "add an `on default: <target>` edge, or clear the default flag",
+            )
+        } else {
+            (
+                format!(
+                    "branch '{}' has an `on default:` edge but does not declare a default",
+                    step.name
+                ),
+                "set `has_default: true`, or remove the default edge",
+            )
+        };
+        diagnostics.push(diag(
+            Severity::Error,
+            "workflow_branch_default_mismatch",
+            msg,
+            location,
+            Some(step.span),
+            Some(hint.into()),
+        ));
+    }
+}
+
+/// AgentNode: structural presence checks only. `agent` (id) and
+/// `prompt_template` must be present. `result_binding` must be present when the
+/// node produces output (`output_schema` present). `output_schema`, if present,
+/// must be well-formed JSON. Field-type resolution of the schema is B1/B2.
+fn check_agent_node(step: &StepDef, location: &str, diagnostics: &mut Vec<Diagnostic>) {
+    let missing = |name: &str| -> bool {
+        node_field(step, name).map(|v| v.trim().is_empty()).unwrap_or(true)
+    };
+
+    if missing("agent") {
+        diagnostics.push(diag(
+            Severity::Error,
+            "workflow_missing_config",
+            format!("agent node '{}' is missing its `agent` id", step.name),
+            location,
+            Some(step.span),
+            Some("add `agent: <id>` — the agent this node invokes".into()),
+        ));
+    }
+    if missing("prompt_template") {
+        diagnostics.push(diag(
+            Severity::Error,
+            "workflow_missing_config",
+            format!("agent node '{}' is missing its `prompt_template`", step.name),
+            location,
+            Some(step.span),
+            Some("add `prompt_template: \"<text>\"` — the prompt sent to the agent".into()),
+        ));
+    }
+
+    // output_schema, when present, must be well-formed JSON. Its presence means
+    // the node produces structured output, so a result_binding is required.
+    let output_schema = node_field(step, "output_schema").map(str::trim).filter(|s| !s.is_empty());
+    if let Some(schema) = output_schema {
+        let inner = unwrap_node_quotes(schema);
+        if serde_json::from_str::<serde_json::Value>(inner).is_err() {
+            diagnostics.push(diag(
+                Severity::Error,
+                "workflow_invalid_schema",
+                format!("agent node '{}' has an `output_schema` that is not valid JSON", step.name),
+                location,
+                Some(step.span),
+                Some("provide a JSON object describing the structured output shape".into()),
+            ));
+        }
+        if missing("result_binding") {
+            diagnostics.push(diag(
+                Severity::Error,
+                "workflow_missing_config",
+                format!(
+                    "agent node '{}' produces output (has `output_schema`) but no `result_binding`",
+                    step.name
+                ),
+                location,
+                Some(step.span),
+                Some("add `result_binding: <name>` — the variable that receives the agent output".into()),
+            ));
         }
     }
 }
@@ -1835,6 +2328,11 @@ fn field_ty_of(base: &Ty, field: &str, env: &TypeEnv) -> Ty {
             Ty::Opt(t) => Ty::Opt(t),
             other => Ty::Opt(Box::new(other)),
         },
+        // Record field access: resolve directly against the schema-derived
+        // fields. A missing field is Unknown (the caller decides whether an
+        // unknown field on a *known* record is a typo error — see B2 scope
+        // resolver). This is what makes `agentNode.output.score` typecheck.
+        Ty::Record(fields) => fields.get(field).cloned().unwrap_or(Ty::Unknown),
         Ty::Res(_) if field == "is_ok" || field == "is_err" => Ty::Named("Bool".into()),
         Ty::Res(Some(inner)) => match field_ty_of(inner, field, env) {
             Ty::Unknown => Ty::Unknown,
@@ -4274,6 +4772,327 @@ stub example-http 1.0.0
         assert!(
             !diags.iter().any(|d| d.code == "type_mismatch"),
             "map.get(\"k\").as_s() must be Str: {diags:?}"
+        );
+    }
+
+    // ─── B0: shallow per-node workflow config checks ─────────────────────────
+
+    /// Build a typed workflow node step with the given kind, config fields, and edges.
+    fn node(kind: &str, name: &str, fields: &[(&str, &str)], edges: &[(&str, &str)]) -> FlowStep {
+        FlowStep::Step(StepDef {
+            name: name.into(),
+            span: Span::new(0, 0),
+            body: Vec::new(),
+            refs: Vec::new(),
+            sub_blocks: Vec::new(),
+            kind: Some(kind.into()),
+            fields: fields
+                .iter()
+                .map(|(n, v)| StepField {
+                    name: (*n).into(),
+                    value: (*v).into(),
+                    span: Span::new(0, 0),
+                })
+                .collect(),
+            edges: edges
+                .iter()
+                .map(|(l, t)| StepEdge {
+                    label: (*l).into(),
+                    target: (*t).into(),
+                    span: Span::new(0, 0),
+                })
+                .collect(),
+        })
+    }
+
+    /// A fn-shaped construct hosting the given workflow node steps.
+    fn workflow(steps: Vec<FlowStep>) -> Construct {
+        let mut c = Construct::new("fn", "Fn", Shape::Fn, "Flow".into(), Span::new(0, 0));
+        c.steps = steps;
+        c
+    }
+
+    #[test]
+    fn decision_known_str_condition_errors() {
+        // A condition whose value is a string LITERAL is KNOWN to be Str, not
+        // Bool. Expression fields retain their delimiting quotes in
+        // `StepField.value`; `unwrap_node_quotes` strips one pair, so a nested
+        // quoted literal (source `condition: "\"hello\""`, value `""hello""`)
+        // leaves the string literal `"hello"` — detected as Str.
+        let c = workflow(vec![node("decision", "Check", &[("condition", "\"\"hello\"\"")], &[])]);
+        let diags = check_types(&sol(vec![TopLevelItem::Construct(c)]), &reg());
+        assert!(
+            diags.iter().any(|d| d.code == "workflow_condition_not_bool"),
+            "known-Str condition must hard-error: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn decision_unknown_condition_warns_not_errors() {
+        // An expression referencing an identifier can't be typed here → warn only.
+        let c = workflow(vec![node("decision", "Check", &[("condition", "\"total > 0\"")], &[])]);
+        let diags = check_types(&sol(vec![TopLevelItem::Construct(c)]), &reg());
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.code == "workflow_condition_unchecked"
+                    && matches!(d.severity, Severity::Warning)),
+            "unknown-type condition must WARN: {diags:?}"
+        );
+        assert!(
+            !diags.iter().any(|d| d.code == "workflow_condition_not_bool"),
+            "unknown-type condition must NOT hard-error: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn decision_true_literal_is_bool_clean() {
+        let c = workflow(vec![node("decision", "Check", &[("condition", "true")], &[])]);
+        let diags = check_types(&sol(vec![TopLevelItem::Construct(c)]), &reg());
+        assert!(
+            !diags.iter().any(|d| d.code.starts_with("workflow_")),
+            "`true` is Bool — no workflow diagnostics expected: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn decision_unparseable_condition_errors() {
+        // Unbalanced parens → known malformation → hard error.
+        let c = workflow(vec![node("decision", "Bad", &[("condition", "\"total > (0\"")], &[])]);
+        let diags = check_types(&sol(vec![TopLevelItem::Construct(c)]), &reg());
+        assert!(
+            diags.iter().any(|d| d.code == "workflow_invalid_expr"),
+            "unbalanced condition must hard-error: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn decision_missing_condition_errors() {
+        let c = workflow(vec![node("decision", "Bad", &[], &[])]);
+        let diags = check_types(&sol(vec![TopLevelItem::Construct(c)]), &reg());
+        assert!(
+            diags.iter().any(|d| d.code == "workflow_missing_config"),
+            "missing condition must hard-error: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn transform_missing_binding_errors() {
+        let c = workflow(vec![node(
+            "transform",
+            "Setup",
+            &[("expression", "\"a + b\"")],
+            &[],
+        )]);
+        let diags = check_types(&sol(vec![TopLevelItem::Construct(c)]), &reg());
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.code == "workflow_missing_config" && d.message.contains("binding")),
+            "transform without binding must hard-error: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn transform_missing_expression_errors() {
+        let c = workflow(vec![node("transform", "Setup", &[("binding", "total")], &[])]);
+        let diags = check_types(&sol(vec![TopLevelItem::Construct(c)]), &reg());
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.code == "workflow_missing_config" && d.message.contains("expression")),
+            "transform without expression must hard-error: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn transform_valid_is_clean() {
+        let c = workflow(vec![node(
+            "transform",
+            "Setup",
+            &[("binding", "total"), ("expression", "\"a + b\"")],
+            &[],
+        )]);
+        let diags = check_types(&sol(vec![TopLevelItem::Construct(c)]), &reg());
+        assert!(
+            !diags.iter().any(|d| d.code.starts_with("workflow_")),
+            "valid transform must be clean: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn branch_empty_cases_errors() {
+        // scrutinee present but no case edges.
+        let c = workflow(vec![node("branch", "Route", &[("scrutinee", "\"status\"")], &[])]);
+        let diags = check_types(&sol(vec![TopLevelItem::Construct(c)]), &reg());
+        assert!(
+            diags.iter().any(|d| d.code == "workflow_branch_no_cases"),
+            "branch with no cases must hard-error: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn branch_default_flag_without_edge_errors() {
+        // has_default: true declared but no default/wildcard edge.
+        let c = workflow(vec![node(
+            "branch",
+            "Route",
+            &[("scrutinee", "\"status\""), ("has_default", "true")],
+            &[("approve", "a"), ("reject", "b")],
+        )]);
+        let diags = check_types(&sol(vec![TopLevelItem::Construct(c)]), &reg());
+        assert!(
+            diags.iter().any(|d| d.code == "workflow_branch_default_mismatch"),
+            "declared default without a default edge must hard-error: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn branch_default_edge_without_flag_errors() {
+        // default edge present but has_default flag explicitly false.
+        let c = workflow(vec![node(
+            "branch",
+            "Route",
+            &[("scrutinee", "\"status\""), ("has_default", "false")],
+            &[("approve", "a"), ("default", "c")],
+        )]);
+        let diags = check_types(&sol(vec![TopLevelItem::Construct(c)]), &reg());
+        assert!(
+            diags.iter().any(|d| d.code == "workflow_branch_default_mismatch"),
+            "default edge without declared default must hard-error: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn branch_valid_with_default_is_clean() {
+        let c = workflow(vec![node(
+            "branch",
+            "Route",
+            &[("scrutinee", "\"status\""), ("has_default", "true")],
+            &[("approve", "a"), ("reject", "b"), ("default", "c")],
+        )]);
+        let diags = check_types(&sol(vec![TopLevelItem::Construct(c)]), &reg());
+        assert!(
+            !diags.iter().any(|d| d.code.starts_with("workflow_")),
+            "valid branch with default must be clean: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn branch_valid_without_default_is_clean() {
+        // No default flag and no default edge → consistent, plus cases present.
+        let c = workflow(vec![node(
+            "branch",
+            "Route",
+            &[("scrutinee", "\"status\"")],
+            &[("approve", "a"), ("reject", "b")],
+        )]);
+        let diags = check_types(&sol(vec![TopLevelItem::Construct(c)]), &reg());
+        assert!(
+            !diags.iter().any(|d| d.code.starts_with("workflow_")),
+            "valid branch without default must be clean: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn branch_missing_scrutinee_errors() {
+        let c = workflow(vec![node("branch", "Route", &[], &[("approve", "a")])]);
+        let diags = check_types(&sol(vec![TopLevelItem::Construct(c)]), &reg());
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.code == "workflow_missing_config" && d.message.contains("scrutinee")),
+            "branch without scrutinee must hard-error: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn agent_node_missing_agent_and_prompt_errors() {
+        let c = workflow(vec![node("agent", "Ask", &[], &[])]);
+        let diags = check_types(&sol(vec![TopLevelItem::Construct(c)]), &reg());
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.code == "workflow_missing_config" && d.message.contains("`agent`")),
+            "agent node without agent id must hard-error: {diags:?}"
+        );
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.code == "workflow_missing_config" && d.message.contains("prompt_template")),
+            "agent node without prompt_template must hard-error: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn agent_node_output_schema_requires_binding() {
+        let c = workflow(vec![node(
+            "agent",
+            "Ask",
+            &[
+                ("agent", "classifier"),
+                ("prompt_template", "\"classify this\""),
+                ("output_schema", "{\"type\":\"object\"}"),
+            ],
+            &[],
+        )]);
+        let diags = check_types(&sol(vec![TopLevelItem::Construct(c)]), &reg());
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.code == "workflow_missing_config" && d.message.contains("result_binding")),
+            "output_schema without result_binding must hard-error: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn agent_node_invalid_schema_errors() {
+        let c = workflow(vec![node(
+            "agent",
+            "Ask",
+            &[
+                ("agent", "classifier"),
+                ("prompt_template", "\"classify\""),
+                ("result_binding", "label"),
+                ("output_schema", "{not json"),
+            ],
+            &[],
+        )]);
+        let diags = check_types(&sol(vec![TopLevelItem::Construct(c)]), &reg());
+        assert!(
+            diags.iter().any(|d| d.code == "workflow_invalid_schema"),
+            "malformed output_schema JSON must hard-error: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn agent_node_valid_is_clean() {
+        let c = workflow(vec![node(
+            "agent",
+            "Ask",
+            &[
+                ("agent", "classifier"),
+                ("prompt_template", "\"classify this\""),
+                ("result_binding", "label"),
+                ("output_schema", "{\"type\":\"object\"}"),
+            ],
+            &[],
+        )]);
+        let diags = check_types(&sol(vec![TopLevelItem::Construct(c)]), &reg());
+        assert!(
+            !diags.iter().any(|d| d.code.starts_with("workflow_")),
+            "valid agent node must be clean: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn plain_step_is_not_a_workflow_node() {
+        // A plain step (kind: None) must never trigger workflow node checks.
+        let c = workflow(vec![step(vec![Expr::IntLit(1)])]);
+        let diags = check_types(&sol(vec![TopLevelItem::Construct(c)]), &reg());
+        assert!(
+            !diags.iter().any(|d| d.code.starts_with("workflow_")),
+            "plain step must not be checked as a workflow node: {diags:?}"
         );
     }
 }

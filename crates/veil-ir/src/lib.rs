@@ -20,6 +20,7 @@ pub mod names;
 pub mod presentation;
 pub mod project;
 pub mod resolve;
+pub mod schema_bridge;
 pub mod typecheck;
 pub mod serialize;
 pub mod span;
@@ -100,6 +101,8 @@ pub use project::{
     ProjectEdge, ProjectInputNode, ProjectOutput, MVP_LAYOUTS, NEST_WHENS,
 };
 pub use resolve::{ResolvedPackage, build_composition_ir, find_package_files, resolve_package};
+pub use schema_bridge::schema_to_ty;
+pub use typecheck::Ty;
 pub use serialize::{serialize_solution, serialize_package, serialize_composition};
 pub use span::Span;
 pub use struct_diff::{
