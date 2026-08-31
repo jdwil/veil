@@ -504,9 +504,19 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    // These tests mutate process-global env vars (`VEIL_AUTH_*`). Rust runs
+    // tests in parallel by default, so without serialization one test's
+    // `remove_var` races another's `set_var`, producing flaky failures
+    // (e.g. `assertion failed: config.enabled`). Serialize them on a shared
+    // lock. `.unwrap_or_else(|e| e.into_inner())` tolerates a poisoned lock so
+    // a panic in one test doesn't cascade into the others.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn auth_config_defaults_to_disabled() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         // Clear any env vars that might be set.
         unsafe {
             std::env::remove_var("VEIL_AUTH_ENABLED");
@@ -519,6 +529,7 @@ mod tests {
 
     #[test]
     fn auth_config_enabled_without_pool_is_inactive() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         unsafe {
             std::env::set_var("VEIL_AUTH_ENABLED", "true");
             std::env::set_var("VEIL_AUTH_PROVIDER", "cognito");
@@ -538,6 +549,7 @@ mod tests {
 
     #[test]
     fn auth_config_fully_configured() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         unsafe {
             std::env::set_var("VEIL_AUTH_ENABLED", "true");
             std::env::set_var("VEIL_AUTH_PROVIDER", "cognito");

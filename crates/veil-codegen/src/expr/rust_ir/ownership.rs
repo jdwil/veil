@@ -27,7 +27,7 @@ pub fn apply_ownership(expr: RustExpr, ctx: &GenCtx) -> RustExpr {
             is_async,
             is_fallible,
         } => RustExpr::MethodCall {
-            receiver: Box::new(apply_ownership(*receiver, ctx)),
+            receiver: Box::new(apply_ownership_receiver(*receiver, ctx)),
             method,
             args: args.into_iter().map(|a| apply_ownership(a, ctx)).collect(),
             ty,
@@ -35,6 +35,20 @@ pub fn apply_ownership(expr: RustExpr, ctx: &GenCtx) -> RustExpr {
             is_fallible,
         },
         other => apply_ownership_leaf(other, ctx),
+    }
+}
+
+/// Apply ownership to a method-call *receiver*. A receiver is passed to the
+/// method by reference (or moved into `self`) — it must NOT be defensively
+/// cloned the way a value/move position is. We still recurse into nested
+/// calls/args so inner move positions get their clones, but a bare receiver
+/// (ident or field access) is left untouched (`deps.repo.save(...)`, not
+/// `deps.repo.clone().save(...)`).
+fn apply_ownership_receiver(expr: RustExpr, ctx: &GenCtx) -> RustExpr {
+    match expr {
+        RustExpr::FnCall { .. } | RustExpr::MethodCall { .. } => apply_ownership(expr, ctx),
+        // Leaf receivers (idents, field accesses, etc.): no defensive clone.
+        other => other,
     }
 }
 

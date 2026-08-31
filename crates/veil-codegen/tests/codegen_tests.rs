@@ -3272,7 +3272,7 @@ pkg Test
         "for-of missing:\n{c}"
     );
     assert!(
-        c.contains("if (item.category == category)"),
+        c.contains("if (item.category === category)"),
         "if condition missing:\n{c}"
     );
     assert!(

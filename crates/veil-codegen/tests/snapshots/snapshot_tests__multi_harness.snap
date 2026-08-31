@@ -441,6 +441,7 @@ serde_json = { workspace = true }
 veil_shared = { path = "../veil_shared" }
 axum = "0.8"
 tower-http = { version = "0.6", features = ["cors"] }
+lambda_http = "0.13"
 storefront = { path = "../storefront" }
 
 // ===== crates/veil_bin/src/main.rs =====
@@ -476,9 +477,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/health", get(|| async { "ok" }));
 
     println!("veil_bin: profile=axum_http endpoints=3");
-    println!("veil_bin: listening on :{}", port);
-    let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", port)).await?;
-    axum::serve(listener, app.into_make_service()).await?;
+    // Detect AWS Lambda: run via lambda_http adapter instead of a TCP server.
+    if std::env::var("AWS_LAMBDA_FUNCTION_NAME").is_ok() {
+        println!("veil_bin: running under AWS Lambda (lambda_http)");
+        lambda_http::run(app).await.map_err(|e| -> Box<dyn std::error::Error> { format!("{e}").into() })?;
+    } else {
+        println!("veil_bin: listening on :{}", port);
+        let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", port)).await?;
+        axum::serve(listener, app.into_make_service()).await?;
+    }
     Ok(())
 }
 

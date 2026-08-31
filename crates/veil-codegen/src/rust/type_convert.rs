@@ -388,7 +388,7 @@ pub fn generate_multi_package_harness(
     let mut cargo_toml = String::new();
     cargo_toml.push_str("[package]\nname = \"veil_bin\"\nversion.workspace = true\nedition.workspace = true\n\n");
     cargo_toml.push_str("[[bin]]\nname = \"veil_bin\"\npath = \"src/main.rs\"\n\n");
-    cargo_toml.push_str("[dependencies]\ntokio = { workspace = true }\nuuid = { workspace = true }\nserde_json = { workspace = true }\n");
+    cargo_toml.push_str("[dependencies]\ntokio = { workspace = true }\nuuid = { workspace = true }\nserde = { workspace = true }\nserde_json = { workspace = true }\n");
     cargo_toml.push_str("veil_shared = { path = \"../veil_shared\" }\n");
     // Framework-specific deps from layer
     if let Some(reg) = first_reg {
