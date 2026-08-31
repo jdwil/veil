@@ -47,3 +47,15 @@ curl -X POST "http://localhost:8080/api/read-file" \
 - `agentic-workflows` — Workflow orchestration service
 - `dlx-bus` — Service bus library
 - `dlx-auth` — Auth library
+
+## Project naming & structure conventions (NON-NEGOTIABLE)
+
+- **Project NAME is title-case, SLUG is kebab-case.** Name = "Agent Core"; slug = "agent-core". Never name a project in kebab-case.
+- **One project holds BOTH backend and UI.** Do NOT create a separate `*-ui` project for a project's interface.
+- **Backend/domain → `main.veil`. User interface → `ui.veil`.** This is the VEIL convention. A project's frontend contribution is authored in `ui.veil`, generated to TypeScript; the backend is authored in `main.veil`, generated to Rust. `veil.toml` declares both targets.
+- Example — the "Agent Core" project (slug `agent-core`):
+  - `main.veil` → domain, ports, adapters, handlers → Rust Lambda
+  - `ui.veil` → CrudResource pages → contribution bundle
+  - one `veil.toml` with a rust target (main.veil) + a contribution target (ui.veil)
+
+NEVER create `agent-core-ui`, `agentic-workflows-ui`, etc. UI goes in the project's `ui.veil`.
