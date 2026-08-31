@@ -3092,21 +3092,50 @@ async fn read_frontend_build_config(
         return Err("Could not resolve deploy bucket. Check [deploy.frontend] and terraform outputs.".into());
     }
 
-    // Write main.veil to temp location for veil gen
-    let main_veil_path = format!("/tmp/deploy/{}/main.veil", slug);
-    if let Ok(veil_bytes) = storage::application::read_file(
-        deps,
-        storage::domain::types::RepoId { value: repo_id.to_string() },
-        "main".to_string(),
-        "main.veil".to_string(),
-    ).await {
-        let dir = format!("/tmp/deploy/{}", slug);
-        tokio::fs::create_dir_all(&dir).await.ok();
-        tokio::fs::write(&main_veil_path, &veil_bytes).await.ok();
+    // Resolve the frontend source .veil file PER-TARGET. VEIL convention: UI
+    // lives in `ui.veil` (backend in `main.veil`). Prefer an explicit override
+    // ([deploy.build].veil / .package or top-level main = "..."), then `ui.veil`,
+    // then fall back to `main.veil` for back-compat with UI-in-main projects.
+    let explicit_src = build.get("veil").and_then(|v| v.as_str())
+        .or_else(|| build.get("package").and_then(|v| v.as_str()))
+        .or_else(|| parsed.get("main").and_then(|v| v.as_str()))
+        .map(|s| s.to_string());
+
+    let dir = format!("/tmp/deploy/{}", slug);
+    tokio::fs::create_dir_all(&dir).await.ok();
+
+    // Determine which source file to gen from.
+    let rid_for = || storage::domain::types::RepoId { value: repo_id.to_string() };
+    let (src_name, src_bytes): (String, Option<Vec<u8>>) = if let Some(ref ex) = explicit_src {
+        let bytes = storage::application::read_file(
+            deps, rid_for(), "main".to_string(), ex.clone(),
+        ).await.ok();
+        (ex.clone(), bytes)
+    } else {
+        match storage::application::read_file(
+            deps, rid_for(), "main".to_string(), "ui.veil".to_string(),
+        ).await {
+            Ok(ui) => ("ui.veil".to_string(), Some(ui)),
+            Err(_) => {
+                let m = storage::application::read_file(
+                    deps, rid_for(), "main".to_string(), "main.veil".to_string(),
+                ).await.ok();
+                ("main.veil".to_string(), m)
+            }
+        }
+    };
+
+    // Write the resolved source to the temp location for veil gen.
+    let source_veil_path = format!("/tmp/deploy/{}/{}", slug, src_name);
+    if let Some(bytes) = src_bytes {
+        if let Some(parent) = std::path::Path::new(&source_veil_path).parent() {
+            tokio::fs::create_dir_all(parent).await.ok();
+        }
+        tokio::fs::write(&source_veil_path, &bytes).await.ok();
     }
 
     Ok(crate::deploy::ws::FrontendBuildConfig {
-        main_veil_path,
+        main_veil_path: source_veil_path,
         commands,
         output_dir,
         bucket,

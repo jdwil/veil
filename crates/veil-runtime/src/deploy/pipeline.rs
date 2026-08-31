@@ -14,11 +14,85 @@ use super::{
 use chrono::Utc;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::path::Path;
 use std::process::Stdio;
 use std::sync::Arc;
 use tokio::process::Command;
 use tokio::sync::Mutex;
 use tracing::{error, info, warn};
+
+/// Determine the source `.veil` file to generate from for a given deploy
+/// target. VEIL convention: a single project holds BOTH backend and UI —
+/// backend/domain lives in `main.veil` (→ Rust), the user interface lives in
+/// `ui.veil` (→ TypeScript contribution). The source is therefore PER-TARGET,
+/// not hardcoded:
+///
+/// - Contribution / Frontend (Typescript) builds gen from **`ui.veil`**,
+///   falling back to `main.veil` when `ui.veil` is absent (back-compat with
+///   UI-only projects that still keep their UI in `main.veil`).
+/// - Lambda / ECS (Rust backend) builds gen from **`main.veil`**.
+///
+/// An explicit override always wins:
+/// - `[deploy.contribution].veil` (or `.package`) for contribution builds,
+/// - `[deploy.build].veil` (or `.package`) for other builds,
+/// - legacy top-level `main = "..."` in veil.toml.
+///
+/// `source_dir` is the on-disk checkout used to test file existence for the
+/// `ui.veil` → `main.veil` fallback.
+pub fn resolve_veil_source(
+    config: &ProjectDeployConfig,
+    source_dir: &Path,
+    veil_toml: &str,
+) -> String {
+    let parsed: Option<toml::Value> = veil_toml.parse().ok();
+
+    // Explicit per-target override wins.
+    let explicit = parsed.as_ref().and_then(|p| {
+        let deploy = p.get("deploy");
+        let from_contribution = if config.deploy_type == DeployType::Contribution {
+            deploy
+                .and_then(|d| d.get("contribution"))
+                .and_then(|c| c.get("veil").or_else(|| c.get("package")))
+                .and_then(|v| v.as_str())
+        } else {
+            None
+        };
+        from_contribution
+            .or_else(|| {
+                deploy
+                    .and_then(|d| d.get("build"))
+                    .and_then(|b| b.get("veil").or_else(|| b.get("package")))
+                    .and_then(|v| v.as_str())
+            })
+            .or_else(|| p.get("main").and_then(|v| v.as_str()))
+            .map(|s| s.to_string())
+    });
+    if let Some(f) = explicit {
+        if !f.is_empty() {
+            return f;
+        }
+    }
+
+    // Convention-based default, per deploy target.
+    let is_ui_build = matches!(
+        config.deploy_type,
+        DeployType::Contribution | DeployType::Frontend
+    ) || config
+        .build
+        .as_ref()
+        .map(|b| b.target == BuildTarget::Typescript)
+        .unwrap_or(false);
+
+    if is_ui_build {
+        // Prefer ui.veil, fall back to main.veil for back-compat.
+        if source_dir.join("ui.veil").exists() {
+            return "ui.veil".to_string();
+        }
+        return "main.veil".to_string();
+    }
+
+    "main.veil".to_string()
+}
 
 /// The pipeline state shared across the HTTP server.
 /// Tracks active jobs and prevents concurrent deploys per project.
@@ -199,39 +273,31 @@ impl PipelineState {
         Ok(source_dir)
     }
 
-    /// Determine the main .veil file for a project by checking veil.toml or defaulting.
-    pub async fn resolve_veil_file(&self, slug: &str) -> String {
-        let repo_id = match self.resolve_repo_id(slug).await {
-            Ok(id) => id,
-            Err(_) => return "main.veil".to_string(),
-        };
-        let rid = storage::domain::types::RepoId { value: repo_id };
-
-        // Check veil.toml for [project].main
-        if let Ok(bytes) = storage::application::read_file(
-            &self.storage_deps,
-            rid,
-            "main".to_string(),
-            "veil.toml".to_string(),
-        )
-        .await
-        {
-            let content = String::from_utf8_lossy(&bytes);
-            // Simple parse: look for main = "..."
-            for line in content.lines() {
-                let trimmed = line.trim();
-                if trimmed.starts_with("main") && trimmed.contains('=') {
-                    if let Some(val) = trimmed.split('=').nth(1) {
-                        let cleaned = val.trim().trim_matches('"').trim_matches('\'');
-                        if !cleaned.is_empty() {
-                            return cleaned.to_string();
-                        }
-                    }
-                }
-            }
-        }
-
-        "main.veil".to_string()
+    /// Determine the source `.veil` file to generate from for a given deploy
+    /// target. VEIL convention: a single project holds BOTH backend and UI —
+    /// backend/domain lives in `main.veil` (→ Rust), the user interface lives in
+    /// `ui.veil` (→ TypeScript contribution). The source is therefore
+    /// PER-TARGET, not hardcoded:
+    ///
+    /// - Contribution / Frontend (Typescript) builds gen from **`ui.veil`**,
+    ///   falling back to `main.veil` when `ui.veil` is absent (back-compat with
+    ///   UI-only projects that still keep their UI in `main.veil`).
+    /// - Lambda / ECS (Rust backend) builds gen from **`main.veil`**.
+    ///
+    /// An explicit override always wins:
+    /// - `[deploy.contribution].veil` for contribution builds,
+    /// - `[deploy.build].package` / `[deploy.build].veil` for other builds,
+    /// - legacy top-level `main = "..."` in veil.toml.
+    ///
+    /// `source_dir` is the on-disk checkout used to test file existence for the
+    /// `ui.veil` → `main.veil` fallback.
+    pub fn resolve_veil_file_for(
+        &self,
+        config: &ProjectDeployConfig,
+        source_dir: &Path,
+        veil_toml: &str,
+    ) -> String {
+        resolve_veil_source(config, source_dir, veil_toml)
     }
 
     // ─── Deploy trigger ─────────────────────────────────────────────────────
@@ -510,7 +576,12 @@ impl PipelineState {
             }
         };
 
-        let veil_file = self.resolve_veil_file(&slug).await;
+        let veil_file = {
+            let veil_toml = tokio::fs::read_to_string(source_dir.join("veil.toml"))
+                .await
+                .unwrap_or_default();
+            self.resolve_veil_file_for(&project_config, &source_dir, &veil_toml)
+        };
 
         for step_kind in &steps {
             let result = self
@@ -1305,4 +1376,88 @@ fn parse_toml_deploy_config(content: &str) -> Result<ProjectDeployConfig, String
     }
 
     Ok(config)
+}
+
+#[cfg(test)]
+mod resolve_veil_source_tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn cfg(deploy_type: DeployType, target: Option<BuildTarget>) -> ProjectDeployConfig {
+        ProjectDeployConfig {
+            deploy_type,
+            infrastructure: None,
+            build: target.map(|t| BuildConfig {
+                target: t,
+                rust_target: None,
+            }),
+            artifacts: None,
+            contribution: None,
+            gates: HashMap::new(),
+        }
+    }
+
+    #[test]
+    fn contribution_prefers_ui_veil_when_present() {
+        let dir = std::env::temp_dir().join(format!("veilsrc-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("ui.veil"), b"pkg X").unwrap();
+        std::fs::write(dir.join("main.veil"), b"pkg Y").unwrap();
+        let c = cfg(DeployType::Contribution, None);
+        assert_eq!(resolve_veil_source(&c, &dir, ""), "ui.veil");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn contribution_falls_back_to_main_when_no_ui() {
+        let dir = std::env::temp_dir().join(format!("veilsrc-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("main.veil"), b"pkg Y").unwrap();
+        let c = cfg(DeployType::Contribution, None);
+        assert_eq!(resolve_veil_source(&c, &dir, ""), "main.veil");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn lambda_always_uses_main_even_with_ui_present() {
+        let dir = std::env::temp_dir().join(format!("veilsrc-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("ui.veil"), b"pkg X").unwrap();
+        std::fs::write(dir.join("main.veil"), b"pkg Y").unwrap();
+        let c = cfg(DeployType::Lambda, Some(BuildTarget::Rust));
+        assert_eq!(resolve_veil_source(&c, &dir, ""), "main.veil");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn frontend_typescript_prefers_ui_veil() {
+        let dir = std::env::temp_dir().join(format!("veilsrc-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("ui.veil"), b"pkg X").unwrap();
+        std::fs::write(dir.join("main.veil"), b"pkg Y").unwrap();
+        let c = cfg(DeployType::Frontend, Some(BuildTarget::Typescript));
+        assert_eq!(resolve_veil_source(&c, &dir, ""), "ui.veil");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn explicit_contribution_override_wins() {
+        let dir = std::env::temp_dir().join(format!("veilsrc-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("ui.veil"), b"pkg X").unwrap();
+        let toml = "[deploy]\ntype=\"contribution\"\n[deploy.contribution]\nveil=\"custom.veil\"\n";
+        let c = cfg(DeployType::Contribution, None);
+        assert_eq!(resolve_veil_source(&c, &dir, toml), "custom.veil");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn legacy_top_level_main_override_wins_for_backend() {
+        let dir = std::env::temp_dir().join(format!("veilsrc-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let toml = "main = \"backend.veil\"\n[deploy]\ntype=\"lambda\"\n";
+        let c = cfg(DeployType::Lambda, Some(BuildTarget::Rust));
+        assert_eq!(resolve_veil_source(&c, &dir, toml), "backend.veil");
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }
