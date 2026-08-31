@@ -12,10 +12,17 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-if [[ -f "$ROOT/.env" ]]; then
+# Runtime selection: VEIL_ENV=dlx (default, DashLX dev-account store, :8080)
+#                    VEIL_ENV=foss (local FOSS dev, no AWS, :8090)
+# Picks $ROOT/.env.$VEIL_ENV; falls back to plain $ROOT/.env for backward compat.
+VEIL_ENV="${VEIL_ENV:-dlx}"
+ENV_FILE="$ROOT/.env.$VEIL_ENV"
+[[ -f "$ENV_FILE" ]] || ENV_FILE="$ROOT/.env"
+if [[ -f "$ENV_FILE" ]]; then
+  echo "==> env: $ENV_FILE"
   set -a
   # shellcheck disable=SC1091
-  source "$ROOT/.env"
+  source "$ENV_FILE"
   set +a
 fi
 BACKEND_BIN="${BACKEND_BIN:-$ROOT/target/release/veil-runtime}"

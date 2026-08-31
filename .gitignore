@@ -26,3 +26,5 @@ layers/.designkit.layer.backup
 # build / smoke artifacts (not source)
 target-docker/
 ui/.veil_smoke/
+.env.*
+!.env.example
