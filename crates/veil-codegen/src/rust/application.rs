@@ -946,15 +946,67 @@ pub fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, cra
         ctx.ownership.mut_locals = crate::expr::analyze_mut_locals_in_steps(steps);
         ctx.ownership.ident_uses = crate::expr::count_ident_uses_in_steps(steps);
 
+        // Structured control-flow lowering: when the fn body is a typed-node
+        // GRAPH that branches (a decision/branch node), walk it ONCE from the
+        // entry node and emit nested if/match by following edges, joining at
+        // post-dominators. Returns None for non-branching / non-graph bodies,
+        // which fall through to the linear per-step emitter below.
+        if let Some(graph_rust) = super::graph::emit_graph(steps, registry, &mut ctx) {
+            for line in graph_rust.lines() {
+                if line.is_empty() {
+                    out.push('\n');
+                } else {
+                    out.push_str(&format!("    {line}\n"));
+                }
+            }
+            out.push('\n');
+            // Return expression handling below still applies.
+            if let Some(ret) = return_expr {
+                out.push_str(&format!("    Ok({})\n", expr_to_rust(ret, &ctx)));
+            } else {
+                let has_return_in_body = steps.iter().any(|s| {
+                    if let FlowStep::Step(sd) = s {
+                        sd.body.iter().any(expr_contains_return)
+                    } else {
+                        false
+                    }
+                });
+                if !has_return_in_body {
+                    out.push_str("    Ok(())\n");
+                }
+            }
+            out.push_str("}\n\n");
+            if let Some(inline) = crate::template::compose_inline(template_output, name) {
+                out.push_str(&inline);
+                out.push_str("\n\n");
+            }
+            continue;
+        }
+
         for step in steps {
             match step {
                 FlowStep::Step(s) => {
-                    out.push_str(&format!("    // step: {}\n", s.name));
-                    for expr in &s.body {
-                        out.push_str(&stmt_to_rust(expr, &mut ctx));
+                    // Typed node kinds (decision/branch/transform) lower their
+                    // config fields to real Rust. Edge-target bodies are filled
+                    // by the graph→control-flow assembly pass; here they are
+                    // empty (per-node lowering). Falls through to body emission
+                    // for plain steps and unknown kinds.
+                    let empty_body = |_label: &str| String::new();
+                    if let Some(rust) =
+                        super::typed_step::lower_typed_step(s, registry, &ctx, &empty_body)
+                    {
+                        for line in rust.lines() {
+                            out.push_str(&format!("    {line}\n"));
+                        }
+                        out.push('\n');
+                    } else {
+                        out.push_str(&format!("    // step: {}\n", s.name));
+                        for expr in &s.body {
+                            out.push_str(&stmt_to_rust(expr, &mut ctx));
+                            out.push('\n');
+                        }
                         out.push('\n');
                     }
-                    out.push('\n');
                 }
                 FlowStep::Parallel(par) => {
                     out.push_str("    // parallel execution\n");
