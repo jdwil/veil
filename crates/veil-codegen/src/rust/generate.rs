@@ -263,6 +263,12 @@ pub fn generate(solution: &Solution, registry: &LayerRegistry) -> GeneratedProje
     // cdylib mode: generate factory functions and adjust Cargo.toml for .so output.
     if registry.output_type.as_deref() == Some("cdylib") {
         let factory_content = gen_cdylib_factory_functions(solution, registry);
+        // Workflow FFI shim: if the package has an application fn, emit the stable
+        // C ABI shim (`veil_workflow_run`/`veil_workflow_free`) the daemon loads.
+        // The entry is the first application fn (workflow `run`).
+        let workflow_entry = collect_by_shape(solution, Shape::Fn)
+            .first()
+            .map(|c| crate::rust::to_snake(&c.name));
         // Add factory.rs to the first module crate (or shared crate if no modules)
         if let Some(module) = modules.first() {
             let crate_name = module_crate_name(module, solution);
@@ -271,6 +277,13 @@ pub fn generate(solution: &Solution, registry: &LayerRegistry) -> GeneratedProje
             // Add `pub mod factory;` to the module's lib.rs
             if let Some(lib_file) = files.iter_mut().find(|f| f.path == format!("crates/{}/src/lib.rs", crate_name)) {
                 lib_file.content.push_str("\npub mod factory;\n");
+            }
+            if let Some(entry) = &workflow_entry {
+                let shim_path = format!("crates/{}/src/workflow_ffi.rs", crate_name);
+                files.push(GeneratedFile { path: shim_path, content: gen_workflow_ffi_shim(entry) });
+                if let Some(lib_file) = files.iter_mut().find(|f| f.path == format!("crates/{}/src/lib.rs", crate_name)) {
+                    lib_file.content.push_str("\npub mod workflow_ffi;\n");
+                }
             }
             // Add crate-type = ["cdylib"] to Cargo.toml
             if let Some(cargo_file) = files.iter_mut().find(|f| f.path == format!("crates/{}/Cargo.toml", crate_name)) {
@@ -282,6 +295,13 @@ pub fn generate(solution: &Solution, registry: &LayerRegistry) -> GeneratedProje
             files.push(GeneratedFile { path: factory_path, content: factory_content });
             if let Some(lib_file) = files.iter_mut().find(|f| f.path == "crates/veil_shared/src/lib.rs") {
                 lib_file.content.push_str("\npub mod factory;\n");
+            }
+            if let Some(entry) = &workflow_entry {
+                let shim_path = "crates/veil_shared/src/workflow_ffi.rs".to_string();
+                files.push(GeneratedFile { path: shim_path, content: gen_workflow_ffi_shim(entry) });
+                if let Some(lib_file) = files.iter_mut().find(|f| f.path == "crates/veil_shared/src/lib.rs") {
+                    lib_file.content.push_str("\npub mod workflow_ffi;\n");
+                }
             }
             if let Some(cargo_file) = files.iter_mut().find(|f| f.path == "crates/veil_shared/Cargo.toml") {
                 cargo_file.content.push_str("\n[lib]\ncrate-type = [\"cdylib\"]\n");
