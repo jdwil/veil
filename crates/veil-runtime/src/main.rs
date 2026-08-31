@@ -7,6 +7,7 @@ mod access;
 mod artifact_registry;
 mod auth;
 mod auth_provider;
+mod compile_workflow;
 mod deploy;
 mod function_invoke;
 mod git_files;

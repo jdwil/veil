@@ -36,6 +36,13 @@ pub struct FunctionRegistry {
     /// [`CallableHandle::Lambda`]. `None` in pure unit tests that never resolve
     /// a Lambda-backed function; production builds it from env.
     lambda_client: Option<aws_sdk_lambda::Client>,
+
+    /// LRU of dlopen'd workflow cdylibs, keyed by content hash. Hot workflows
+    /// stay resident so warm invokes skip dlopen + S3 fetch.
+    ffi_cache: super::FfiLibraryCache,
+
+    /// Local directory the `.so` artifacts are fetched into before dlopen.
+    ffi_cache_dir: std::path::PathBuf,
 }
 
 impl FunctionRegistry {
@@ -50,6 +57,8 @@ impl FunctionRegistry {
             cache: Arc::new(RwLock::new(HashMap::new())),
             artifact_store,
             lambda_client: None,
+            ffi_cache: super::FfiLibraryCache::new(default_ffi_cache_capacity()),
+            ffi_cache_dir: default_ffi_cache_dir(),
         }
     }
 
@@ -64,6 +73,8 @@ impl FunctionRegistry {
             cache: Arc::new(RwLock::new(HashMap::new())),
             artifact_store,
             lambda_client: Some(lambda_client),
+            ffi_cache: super::FfiLibraryCache::new(default_ffi_cache_capacity()),
+            ffi_cache_dir: default_ffi_cache_dir(),
         }
     }
 
@@ -208,6 +219,10 @@ impl FunctionRegistry {
                 })?;
                 CallableHandle::InProcess(func)
             }
+            // 5c. FFI cdylib workflow → fetch the .so by content hash and dlopen.
+            Some((_, crate::artifact_registry::InvokeKind::Ffi, _)) => {
+                self.resolve_ffi(function_id, &record).await?
+            }
             // No BackendFunction contribution → fall back to closure by id.
             None => {
                 let func = {
@@ -230,6 +245,73 @@ impl FunctionRegistry {
         }
 
         Ok(handle)
+    }
+
+    // ─── FFI cdylib resolution ──────────────────────────────────────────
+
+    /// Resolve a cdylib-backed workflow to a [`CallableHandle::Ffi`].
+    ///
+    /// Fetches the `.so` from the artifact store (by content hash / blob key)
+    /// into the local cache dir on a miss, `dlopen`s it, and keeps the loaded
+    /// library resident in the LRU. The content hash pins the exact artifact so
+    /// the on-disk file is immutable and safe to reuse.
+    async fn resolve_ffi(
+        &self,
+        function_id: &str,
+        record: &crate::artifact_registry::ArtifactRecord,
+    ) -> Result<CallableHandle, ResolveError> {
+        let hash = record.content_hash.clone().ok_or_else(|| {
+            ResolveError::Internal(format!(
+                "function '{function_id}' is ffi-backed but has no content_hash"
+            ))
+        })?;
+
+        // Fast path: already resident.
+        if let Some(lib) = self.ffi_cache.get(&hash) {
+            return Ok(CallableHandle::Ffi(lib));
+        }
+
+        // The blob key defaults to the spec layout `artifacts/{id}/{version}/lib.so`.
+        let blob_key = record.blob_key.clone().unwrap_or_else(|| {
+            format!("artifacts/{}/{}/lib.so", record.id, record.version)
+        });
+
+        // Fetch into a content-addressed local file (immutable once written).
+        let so_path = self.ffi_cache_dir.join(format!("{hash}.so"));
+        if !so_path.exists() {
+            let bytes = self
+                .artifact_store
+                .get_blob(&blob_key)
+                .await
+                .map_err(|e| ResolveError::Internal(format!("fetch .so '{blob_key}': {e}")))?;
+            if let Some(parent) = so_path.parent() {
+                tokio::fs::create_dir_all(parent).await.map_err(|e| {
+                    ResolveError::Internal(format!("create ffi cache dir: {e}"))
+                })?;
+            }
+            // Write to a temp file then rename so a concurrent resolver never
+            // dlopens a partially written .so.
+            let tmp = so_path.with_extension("so.partial");
+            tokio::fs::write(&tmp, &bytes)
+                .await
+                .map_err(|e| ResolveError::Internal(format!("write .so: {e}")))?;
+            tokio::fs::rename(&tmp, &so_path)
+                .await
+                .map_err(|e| ResolveError::Internal(format!("rename .so: {e}")))?;
+        }
+
+        // dlopen off the async runtime (blocking + runs library initializers).
+        let load_path = so_path.clone();
+        let load_hash = hash.clone();
+        let loaded = tokio::task::spawn_blocking(move || {
+            super::LoadedWorkflow::load(&load_path, load_hash)
+        })
+        .await
+        .map_err(|e| ResolveError::Internal(format!("dlopen join error: {e}")))?
+        .map_err(|e| ResolveError::Internal(format!("dlopen workflow: {e}")))?;
+
+        let lib = self.ffi_cache.insert(hash, Arc::new(loaded));
+        Ok(CallableHandle::Ffi(lib))
     }
 
     // ─── Cache Invalidation ─────────────────────────────────────────────
@@ -255,6 +337,23 @@ impl FunctionRegistry {
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
+/// Default resident-library capacity for the FFI LRU. Override via
+/// `VEIL_FFI_CACHE_CAPACITY`.
+fn default_ffi_cache_capacity() -> usize {
+    std::env::var("VEIL_FFI_CACHE_CAPACITY")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(32)
+}
+
+/// Default local directory `.so` artifacts are fetched into before dlopen.
+/// Override via `VEIL_FFI_CACHE_DIR`; defaults to a subdir of the system temp.
+fn default_ffi_cache_dir() -> std::path::PathBuf {
+    std::env::var("VEIL_FFI_CACHE_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| std::env::temp_dir().join("veil-ffi-artifacts"))
+}
+
 /// Clone a CallableHandle (clones the inner Arc).
 fn clone_handle(handle: &CallableHandle) -> CallableHandle {
     match handle {
@@ -266,5 +365,6 @@ fn clone_handle(handle: &CallableHandle) -> CallableHandle {
             function_name: function_name.clone(),
             client: client.clone(),
         },
+        CallableHandle::Ffi(lib) => CallableHandle::Ffi(lib.clone()),
     }
 }

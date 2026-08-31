@@ -229,6 +229,84 @@ fn gen_loader_struct(out: &mut String, proj: &LinkedProjectInfo) {
     out.push_str("}\n\n");
 }
 
+// ─── Workflow FFI shim (compile-on-save cdylib ABI) ─────────────────────────
+
+/// Generate the stable C ABI shim a compiled **workflow** cdylib exports so the
+/// daemon's FFI loader (`veil-runtime::function_invoke::ffi_loader`) can invoke
+/// it without sharing any Rust type across the `.so` seam.
+///
+/// The shim exports exactly two `#[no_mangle] extern "C"` symbols:
+///
+/// - `veil_workflow_run(input_json: *const c_char) -> *mut c_char` —
+///   deserializes the JSON input, calls the workflow entry fn
+///   (`crate::application::<entry_fn>`), serializes the `Ok` value to JSON, and
+///   returns an owned C string. Errors and panics become a JSON object
+///   `{"error": "..."}`; the body is wrapped in `catch_unwind` so a panic never
+///   unwinds across the FFI boundary (UB).
+/// - `veil_workflow_free(ptr: *mut c_char)` — frees a string returned by
+///   `veil_workflow_run` using the cdylib's own allocator.
+///
+/// `entry_fn` is the snake_case name of the workflow's generated run function
+/// in `crates/<crate>/src/application/mod.rs`. The entry is expected to take a
+/// single `serde_json::Value` argument and return `Result<serde_json::Value, E>`
+/// where `E: Display`.
+pub fn gen_workflow_ffi_shim(entry_fn: &str) -> String {
+    let mut out = String::with_capacity(1024);
+    out.push_str("//! Auto-generated workflow FFI shim (stable C ABI).\n");
+    out.push_str("//!\n");
+    out.push_str("//! Exports `veil_workflow_run` / `veil_workflow_free` so the daemon can\n");
+    out.push_str("//! dlopen this cdylib and invoke the workflow over a JSON C ABI. Panics are\n");
+    out.push_str("//! caught here so they never unwind across the `.so` boundary.\n\n");
+    out.push_str("#![allow(unsafe_code)]\n\n");
+    out.push_str("use std::ffi::{c_char, CStr, CString};\n\n");
+
+    out.push_str("/// Run the workflow with a JSON input string; returns an owned JSON output.\n");
+    out.push_str("#[no_mangle]\n");
+    out.push_str("pub extern \"C\" fn veil_workflow_run(input_json: *const c_char) -> *mut c_char {\n");
+    out.push_str("    let result = std::panic::catch_unwind(|| {\n");
+    out.push_str("        if input_json.is_null() {\n");
+    out.push_str("            return serde_json::json!({ \"error\": \"null input pointer\" }).to_string();\n");
+    out.push_str("        }\n");
+    out.push_str("        let input = unsafe { CStr::from_ptr(input_json) }\n");
+    out.push_str("            .to_string_lossy()\n");
+    out.push_str("            .into_owned();\n");
+    out.push_str("        let value: serde_json::Value = match serde_json::from_str(&input) {\n");
+    out.push_str("            Ok(v) => v,\n");
+    out.push_str("            Err(e) => {\n");
+    out.push_str("                return serde_json::json!({ \"error\": format!(\"invalid JSON input: {e}\") }).to_string();\n");
+    out.push_str("            }\n");
+    out.push_str("        };\n");
+    out.push_str(&format!(
+        "        match crate::application::{entry_fn}(value) {{\n"
+    ));
+    out.push_str("            Ok(output) => match serde_json::to_string(&output) {\n");
+    out.push_str("                Ok(s) => s,\n");
+    out.push_str("                Err(e) => serde_json::json!({ \"error\": format!(\"serialize output: {e}\") }).to_string(),\n");
+    out.push_str("            },\n");
+    out.push_str("            Err(e) => serde_json::json!({ \"error\": format!(\"{e}\") }).to_string(),\n");
+    out.push_str("        }\n");
+    out.push_str("    });\n");
+    out.push_str("    let out = match result {\n");
+    out.push_str("        Ok(s) => s,\n");
+    out.push_str("        Err(_) => serde_json::json!({ \"error\": \"workflow panicked\" }).to_string(),\n");
+    out.push_str("    };\n");
+    out.push_str("    match CString::new(out) {\n");
+    out.push_str("        Ok(c) => c.into_raw(),\n");
+    out.push_str("        Err(_) => std::ptr::null_mut(),\n");
+    out.push_str("    }\n");
+    out.push_str("}\n\n");
+
+    out.push_str("/// Free a string previously returned by `veil_workflow_run`.\n");
+    out.push_str("#[no_mangle]\n");
+    out.push_str("pub extern \"C\" fn veil_workflow_free(ptr: *mut c_char) {\n");
+    out.push_str("    if !ptr.is_null() {\n");
+    out.push_str("        unsafe { drop(CString::from_raw(ptr)); }\n");
+    out.push_str("    }\n");
+    out.push_str("}\n");
+
+    out
+}
+
 /// Generate factory functions for a library project compiled as cdylib.
 /// These are the `#[no_mangle] extern "C"` exports that the consumer's loader calls.
 pub fn gen_cdylib_factory_functions(
@@ -335,8 +413,7 @@ mod tests {
     }
 
     #[test]
-    fn test_gen_loader_struct() {
-        let proj = LinkedProjectInfo {
+    fn test_gen_loader_struct() {        let proj = LinkedProjectInfo {
             link: LinkDecl {
                 name: "dlx_auth".to_string(),
                 path: None,
@@ -364,5 +441,29 @@ mod tests {
         assert!(out.contains("lib.get(b\"create_jwks_provider\")"));
         assert!(out.contains("lib.get(b\"create_session_store\")"));
         assert!(out.contains("DLX_AUTH_LIB_PATH"));
+    }
+
+    #[test]
+    fn workflow_ffi_shim_exports_stable_c_abi() {
+        let shim = gen_workflow_ffi_shim("run_onboarding");
+        // The two ABI symbols the daemon's FFI loader resolves.
+        assert!(shim.contains("#[no_mangle]"), "shim:\n{shim}");
+        assert!(
+            shim.contains("pub extern \"C\" fn veil_workflow_run(input_json: *const c_char) -> *mut c_char"),
+            "shim missing run symbol:\n{shim}"
+        );
+        assert!(
+            shim.contains("pub extern \"C\" fn veil_workflow_free(ptr: *mut c_char)"),
+            "shim missing free symbol:\n{shim}"
+        );
+        // Calls the workflow entry fn.
+        assert!(
+            shim.contains("crate::application::run_onboarding(value)"),
+            "shim should call the entry fn:\n{shim}"
+        );
+        // Panic isolation across the boundary.
+        assert!(shim.contains("catch_unwind"), "shim must catch_unwind:\n{shim}");
+        // Errors become a JSON {"error": ...} object.
+        assert!(shim.contains("\"error\""), "shim should emit error JSON:\n{shim}");
     }
 }

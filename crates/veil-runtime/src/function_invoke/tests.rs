@@ -658,6 +658,142 @@ mod integration {
     }
 }
 
+// ─── FFI cdylib loader end-to-end ───────────────────────────────────────────
+//
+// Compiles a minimal cdylib exporting the workflow C ABI with `rustc`, loads it
+// via `LoadedWorkflow`, and round-trips JSON through it. Proves the ABI seam and
+// panic isolation. Skips gracefully if `rustc` is unavailable in the sandbox.
+mod ffi_e2e {
+    use super::super::LoadedWorkflow;
+    use serde_json::json;
+
+    /// Source of a minimal workflow cdylib. `veil_workflow_run` echoes the input
+    /// under `echo` and doubles an `x` field; a `boom` input panics (to test
+    /// isolation).
+    const CDYLIB_SRC: &str = r#"
+use std::ffi::{c_char, CStr, CString};
+
+#[no_mangle]
+pub extern "C" fn veil_workflow_run(input_json: *const c_char) -> *mut c_char {
+    let result = std::panic::catch_unwind(|| {
+        let input = unsafe { CStr::from_ptr(input_json) }.to_string_lossy().into_owned();
+        let v: serde_json::Value = serde_json::from_str(&input).unwrap_or(serde_json::Value::Null);
+        if v.get("boom").is_some() {
+            panic!("intentional workflow panic");
+        }
+        let x = v.get("x").and_then(|n| n.as_i64()).unwrap_or(0);
+        serde_json::json!({ "echo": v, "doubled": x * 2 }).to_string()
+    });
+    let out = match result {
+        Ok(s) => s,
+        Err(_) => serde_json::json!({ "error": "workflow panicked" }).to_string(),
+    };
+    CString::new(out).unwrap().into_raw()
+}
+
+#[no_mangle]
+pub extern "C" fn veil_workflow_free(ptr: *mut c_char) {
+    if !ptr.is_null() {
+        unsafe { drop(CString::from_raw(ptr)); }
+    }
+}
+"#;
+
+    /// Compile the cdylib source to a `.so`/`.dylib` using the workspace's
+    /// serde_json rlib. Returns the artifact path, or `None` if the toolchain
+    /// isn't usable in this environment (test then skips).
+    fn build_test_cdylib() -> Option<std::path::PathBuf> {
+        let dir = std::env::temp_dir().join(format!("veil-ffi-e2e-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).ok()?;
+        let src = dir.join("wf.rs");
+        std::fs::write(&src, CDYLIB_SRC).ok()?;
+
+        // Locate a serde_json rlib in the workspace target dir to link against.
+        let deps_dir = find_deps_dir()?;
+        let serde_json_rlib = find_rlib(&deps_dir, "serde_json")?;
+        let serde_rlib = find_rlib(&deps_dir, "serde")?;
+
+        let ext = if cfg!(target_os = "macos") { "dylib" } else { "so" };
+        let out = dir.join(format!("libwf.{ext}"));
+
+        let status = std::process::Command::new("rustc")
+            .arg(&src)
+            .arg("--crate-type=cdylib")
+            .arg("--edition=2021")
+            .arg("-o")
+            .arg(&out)
+            .arg("--extern")
+            .arg(format!("serde_json={}", serde_json_rlib.display()))
+            .arg("--extern")
+            .arg(format!("serde={}", serde_rlib.display()))
+            .arg("-L")
+            .arg(format!("dependency={}", deps_dir.display()))
+            .status()
+            .ok()?;
+
+        if status.success() && out.exists() {
+            Some(out)
+        } else {
+            None
+        }
+    }
+
+    fn find_deps_dir() -> Option<std::path::PathBuf> {
+        // CARGO_MANIFEST_DIR/../../target/debug/deps
+        let manifest = std::env::var("CARGO_MANIFEST_DIR").ok()?;
+        let candidates = [
+            std::path::Path::new(&manifest).join("../../target/debug/deps"),
+            std::path::Path::new(&manifest).join("../../target/release/deps"),
+        ];
+        candidates.into_iter().find(|p| p.exists())
+    }
+
+    fn find_rlib(deps: &std::path::Path, crate_name: &str) -> Option<std::path::PathBuf> {
+        let prefix = format!("lib{crate_name}-");
+        let mut newest: Option<(std::time::SystemTime, std::path::PathBuf)> = None;
+        for entry in std::fs::read_dir(deps).ok()? {
+            let entry = entry.ok()?;
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.starts_with(&prefix) && name.ends_with(".rlib") {
+                let mtime = entry.metadata().ok()?.modified().ok()?;
+                if newest.as_ref().map(|(t, _)| mtime > *t).unwrap_or(true) {
+                    newest = Some((mtime, entry.path()));
+                }
+            }
+        }
+        newest.map(|(_, p)| p)
+    }
+
+    #[test]
+    fn ffi_load_and_invoke_round_trips_json() {
+        let Some(so) = build_test_cdylib() else {
+            eprintln!("skipping ffi e2e: rustc/deps unavailable in sandbox");
+            return;
+        };
+        let lib = LoadedWorkflow::load(&so, "test-hash-abc").expect("load cdylib");
+        assert_eq!(lib.content_hash(), "test-hash-abc");
+
+        let out = lib.invoke(&json!({ "x": 21 })).expect("invoke ok");
+        assert_eq!(out["doubled"], json!(42));
+        assert_eq!(out["echo"], json!({ "x": 21 }));
+    }
+
+    #[test]
+    fn ffi_workflow_panic_is_isolated_as_error() {
+        let Some(so) = build_test_cdylib() else {
+            eprintln!("skipping ffi e2e: rustc/deps unavailable in sandbox");
+            return;
+        };
+        let lib = LoadedWorkflow::load(&so, "test-hash-boom").expect("load cdylib");
+
+        // The cdylib's own catch_unwind converts the panic into {"error": ...}
+        // which the loader surfaces as Err — the daemon stays alive.
+        let res = lib.invoke(&json!({ "boom": true }));
+        assert!(res.is_err(), "panicking workflow must surface as Err: {res:?}");
+        assert!(res.unwrap_err().to_string().contains("workflow"));
+    }
+}
+
 // ─── Test Helpers ───────────────────────────────────────────────────────────
 
 /// Create a test ArtifactRegistryStore (uses env vars or defaults).

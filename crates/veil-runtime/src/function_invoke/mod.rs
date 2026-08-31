@@ -12,10 +12,12 @@
 //! `function_name`) resolves to `CallableHandle::Lambda` and is invoked over the
 //! AWS Lambda API. `rpc:dlx-auth` is the first consumer.
 
+mod ffi_loader;
 mod registry;
 #[cfg(test)]
 mod tests;
 
+pub use ffi_loader::{FfiLibraryCache, LoadedWorkflow};
 pub use registry::FunctionRegistry;
 
 use serde_json::Value;
@@ -35,7 +37,7 @@ pub type BoxErr = Box<dyn std::error::Error + Send + Sync>;
 ///   VEIL app's function by name/ARN. Generic — any signed-off backend
 ///   function whose registration carries a Lambda target resolves to this.
 ///
-/// WASM sandboxing and FFI are future additions.
+/// WASM sandboxing is a future addition.
 pub enum CallableHandle {
     /// Function compiled into the same process (registered closure).
     InProcess(Arc<dyn Fn(Value) -> Result<Value, BoxErr> + Send + Sync>),
@@ -46,6 +48,10 @@ pub enum CallableHandle {
         /// Shared Lambda client (cheap to clone — wraps an Arc internally).
         client: aws_sdk_lambda::Client,
     },
+    /// A compiled workflow cdylib dynamically loaded into this process and
+    /// invoked over the stable C ABI (`veil_workflow_run`). The `Arc` keeps the
+    /// library mapped for the duration of any in-flight call.
+    Ffi(Arc<ffi_loader::LoadedWorkflow>),
 }
 
 impl CallableHandle {
@@ -63,6 +69,15 @@ impl CallableHandle {
                 function_name,
                 client,
             } => invoke_lambda(client, function_name, args).await,
+            // FFI invoke is synchronous native code; run it on a blocking thread
+            // so a slow/blocking workflow does not stall the async runtime.
+            CallableHandle::Ffi(lib) => {
+                let lib = lib.clone();
+                let args = args.clone();
+                tokio::task::spawn_blocking(move || lib.invoke(&args))
+                    .await
+                    .map_err(|e| -> BoxErr { format!("ffi invoke join error: {e}").into() })?
+            }
         }
     }
 }
@@ -122,6 +137,10 @@ impl std::fmt::Debug for CallableHandle {
             CallableHandle::Lambda { function_name, .. } => f
                 .debug_struct("CallableHandle::Lambda")
                 .field("function_name", function_name)
+                .finish(),
+            CallableHandle::Ffi(lib) => f
+                .debug_struct("CallableHandle::Ffi")
+                .field("content_hash", &lib.content_hash())
                 .finish(),
         }
     }

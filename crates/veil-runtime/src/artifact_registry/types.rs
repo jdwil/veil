@@ -92,6 +92,10 @@ pub enum InvokeKind {
     InProcess,
     /// A deployed VEIL app running as an AWS Lambda, invoked by name/ARN.
     Lambda,
+    /// A compiled workflow cdylib artifact, dynamically loaded (dlopen) into the
+    /// daemon and invoked over the stable C ABI (`veil_workflow_run`). The
+    /// artifact's `.so` is fetched from the artifact store by content hash.
+    Ffi,
 }
 
 /// Calling convention for backend functions.
