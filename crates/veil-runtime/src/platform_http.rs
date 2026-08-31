@@ -4104,6 +4104,8 @@ struct RegisterArtifactBody {
     bundle_size: Option<u64>,
     #[serde(default)]
     manifest: Option<crate::artifact_registry::ArtifactManifest>,
+    #[serde(default)]
+    toolchain_fingerprint: Option<String>,
 }
 
 async fn register_artifact(
@@ -4132,6 +4134,7 @@ async fn register_artifact(
         bundle_path: body.bundle_path,
         bundle_size: body.bundle_size,
         manifest: body.manifest,
+        toolchain_fingerprint: body.toolchain_fingerprint,
         created_at: now,
         updated_at: now,
     };

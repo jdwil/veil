@@ -166,6 +166,17 @@ pub enum ResolveError {
     #[error("function not signed off: {0}")]
     NotSignedOff(String),
 
+    /// The artifact's toolchain fingerprint does not match the host's. A
+    /// refuse-to-load condition for the FFI/cdylib path — Rust has no stable
+    /// ABI, so loading a mismatched cdylib is undefined behaviour.
+    #[error("toolchain mismatch: {0}")]
+    ToolchainMismatch(String),
+
+    /// The downloaded artifact bytes failed content-hash verification against
+    /// the record before load. Refuse-to-load (integrity / tamper guard).
+    #[error("content hash verification failed: {0}")]
+    HashMismatch(String),
+
     /// Internal error (storage, etc.).
     #[error("internal error: {0}")]
     Internal(String),
@@ -179,6 +190,11 @@ impl ResolveError {
             ResolveError::NotFound(_) => StatusCode::NOT_FOUND,
             ResolveError::NotVisible { .. } => StatusCode::FORBIDDEN,
             ResolveError::NotSignedOff(_) => StatusCode::FORBIDDEN,
+            // A toolchain/hash refusal is an integrity failure — the artifact is
+            // not loadable as-is. 409 Conflict signals "the stored artifact is
+            // incompatible with this host", distinct from a 500 server fault.
+            ResolveError::ToolchainMismatch(_) => StatusCode::CONFLICT,
+            ResolveError::HashMismatch(_) => StatusCode::CONFLICT,
             ResolveError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }

@@ -182,6 +182,10 @@ pub async fn compile_and_register(
         bundle_path: Some(blob_key.clone()),
         bundle_size: Some(bytes.len() as u64),
         manifest: None,
+        // The compile pipeline runs the SAME toolchain the host loads with, so
+        // stamp the host fingerprint. The execution host refuses to dlopen an
+        // artifact whose fingerprint drifts from its own (Rust has no stable ABI).
+        toolchain_fingerprint: Some(crate::toolchain::host_fingerprint().to_wire()),
         created_at: now,
         updated_at: now,
     };
@@ -196,6 +200,44 @@ pub async fn compile_and_register(
         content_hash,
         blob_key,
     })
+}
+
+/// Compile + register an execution artifact **and** its declared triggers.
+///
+/// Reuses [`compile_and_register`] for the artifact (codegen → cdylib → hash →
+/// upload → Pinned Ffi record with toolchain fingerprint), then parses the
+/// project's `veil.toml [[triggers]]` block and upserts a [`TriggerRecord`] per
+/// declaration for `tenant_id`. This is the registration path the execution
+/// host + deploy pipeline call so an artifact and its "when" layer land together.
+///
+/// A trigger store failure after a successful artifact registration is returned
+/// as `CompileError::Registry` — the artifact is registered but triggers may be
+/// partial; re-running is safe (puts are idempotent by trigger id when the
+/// declaration supplies one).
+pub async fn compile_and_register_with_triggers(
+    store: &Arc<ArtifactRegistryStore>,
+    trigger_store: &Arc<crate::triggers::TriggerStore>,
+    tenant_id: &str,
+    workflow_id: &str,
+    veil_source_path: &Path,
+    veil_toml_path: &Path,
+    work_dir: &Path,
+) -> Result<(CompiledWorkflow, usize), CompileError> {
+    let compiled = compile_and_register(store, workflow_id, veil_source_path, work_dir).await?;
+
+    let declarations = crate::triggers::parse_triggers_from_file(veil_toml_path)
+        .map_err(CompileError::Registry)?;
+    let records: Vec<_> = declarations
+        .into_iter()
+        .map(|d| d.into_record(tenant_id, workflow_id))
+        .collect();
+    let n = records.len();
+    trigger_store
+        .put_many(&records)
+        .await
+        .map_err(|e| CompileError::Registry(format!("register triggers: {e}")))?;
+
+    Ok((compiled, n))
 }
 
 /// Find the first `.so` (Linux) or `.dylib` (macOS) in a directory.

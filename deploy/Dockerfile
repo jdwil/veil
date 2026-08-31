@@ -5,7 +5,15 @@
 # ===========================================================================
 
 # Build stage — compile veil-runtime and veil-cli from source
-FROM rust:1.96-bookworm AS builder
+#
+# TOOLCHAIN PIN (load-bearing for the Execution Host FFI path): the builder and
+# the runtime rustup toolchain below MUST be the SAME rustc, and MUST match the
+# rustc the compile pipeline uses at runtime. Rust has no stable ABI — a cdylib
+# artifact built with a different rustc than the host is UB. The execution host
+# records its fingerprint and refuses to dlopen a mismatched artifact; pinning
+# here keeps legitimate artifacts from being needlessly refused.
+ARG RUST_VERSION=1.96.0
+FROM rust:${RUST_VERSION}-bookworm AS builder
 
 WORKDIR /build
 
@@ -49,12 +57,25 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     rm -rf /var/lib/apt/lists/*
 
 # ─── Rust toolchain ──────────────────────────────────────────────────────────
+# Re-declare the ARG in this stage (ARGs do not cross FROM boundaries) and pin
+# rustup to the SAME version as the builder. The compile pipeline
+# (compile_and_register → cargo build) runs in THIS image, so its rustc MUST
+# equal the host's or the toolchain-fingerprint gate will (correctly) refuse
+# every artifact it produces. Do NOT use `--default-toolchain stable` here: a
+# floating stable drifts from the builder on every rebuild.
+ARG RUST_VERSION=1.96.0
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
-    sh -s -- -y --profile minimal --default-toolchain stable && \
+    sh -s -- -y --profile minimal --default-toolchain "${RUST_VERSION}" && \
     /root/.cargo/bin/rustup component add clippy && \
     /root/.cargo/bin/rustup target add x86_64-unknown-linux-gnu
 
 ENV PATH="/root/.cargo/bin:${PATH}"
+
+# Pin the execution-host's enforced toolchain fingerprint to the pinned rustc +
+# target. The host also derives this from `rustc -vV` at startup (present in
+# this image), but setting it explicitly makes the contract auditable and keeps
+# it correct even if rustc is later removed from the runtime image.
+ENV VEIL_TOOLCHAIN_FINGERPRINT="${RUST_VERSION}/x86_64-unknown-linux-gnu"
 
 # ─── Node.js via nvm (version switchable per project) ────────────────────────
 ENV NVM_DIR="/root/.nvm"

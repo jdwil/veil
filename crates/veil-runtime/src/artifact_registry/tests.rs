@@ -71,6 +71,7 @@ fn artifact_record_serde_with_new_fields() {
                 p
             },
         }),
+        toolchain_fingerprint: Some("1.79.0/x86_64-unknown-linux-gnu".into()),
         created_at: now,
         updated_at: now,
     };
@@ -219,6 +220,7 @@ fn contribution_kind_filter_menu_item() {
             bundle_path: None,
             bundle_size: None,
             manifest: None,
+            toolchain_fingerprint: None,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
         },
@@ -328,6 +330,7 @@ fn contribution_tenant_visibility_filtering() {
             bundle_path: None,
             bundle_size: None,
             manifest: None,
+            toolchain_fingerprint: None,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
         },
@@ -350,6 +353,7 @@ fn contribution_tenant_visibility_filtering() {
             bundle_path: None,
             bundle_size: None,
             manifest: None,
+            toolchain_fingerprint: None,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
         },

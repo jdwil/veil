@@ -266,7 +266,24 @@ impl FunctionRegistry {
             ))
         })?;
 
-        // Fast path: already resident.
+        // ── Toolchain fingerprint gate (load-bearing safety) ─────────────
+        // Rust has no stable ABI. Refuse to dlopen a cdylib built with a
+        // toolchain that differs from the host's. A None fingerprint is a
+        // legacy record (permitted, but logged). This check runs BEFORE any
+        // fetch/dlopen so a mismatched artifact never touches the loader.
+        if let Err(mismatch) =
+            crate::toolchain::check_compatible(record.toolchain_fingerprint.as_deref())
+        {
+            return Err(ResolveError::ToolchainMismatch(mismatch.to_string()));
+        }
+        if record.toolchain_fingerprint.is_none() {
+            tracing::warn!(
+                function_id,
+                "ffi artifact has no toolchain fingerprint (legacy record); loading without ABI guarantee"
+            );
+        }
+
+        // Fast path: already resident (already passed the gate on first load).
         if let Some(lib) = self.ffi_cache.get(&hash) {
             return Ok(CallableHandle::Ffi(lib));
         }
@@ -284,6 +301,17 @@ impl FunctionRegistry {
                 .get_blob(&blob_key)
                 .await
                 .map_err(|e| ResolveError::Internal(format!("fetch .so '{blob_key}': {e}")))?;
+
+            // ── Hash verification (integrity / tamper guard) ─────────────
+            // The record pins the exact artifact by sha256. Verify the fetched
+            // bytes match before we ever write + dlopen them.
+            let actual = sha256_hex(&bytes);
+            if actual != hash {
+                return Err(ResolveError::HashMismatch(format!(
+                    "artifact '{function_id}' blob '{blob_key}' hash {actual} != record {hash}"
+                )));
+            }
+
             if let Some(parent) = so_path.parent() {
                 tokio::fs::create_dir_all(parent).await.map_err(|e| {
                     ResolveError::Internal(format!("create ffi cache dir: {e}"))
@@ -333,6 +361,11 @@ impl FunctionRegistry {
         let mut cache = self.cache.write().await;
         cache.clear();
     }
+
+    /// Number of resident (dlopen'd) FFI libraries — for host health/metrics.
+    pub fn ffi_cache_len(&self) -> usize {
+        self.ffi_cache.len()
+    }
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -352,6 +385,20 @@ fn default_ffi_cache_dir() -> std::path::PathBuf {
     std::env::var("VEIL_FFI_CACHE_DIR")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|_| std::env::temp_dir().join("veil-ffi-artifacts"))
+}
+
+/// SHA-256 of `bytes` as lowercase hex — used to verify a fetched `.so` matches
+/// the artifact record's `content_hash` before dlopen.
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    let digest = hasher.finalize();
+    let mut s = String::with_capacity(64);
+    for b in digest {
+        s.push_str(&format!("{b:02x}"));
+    }
+    s
 }
 
 /// Clone a CallableHandle (clones the inner Arc).

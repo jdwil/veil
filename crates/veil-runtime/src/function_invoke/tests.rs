@@ -295,6 +295,7 @@ mod integration {
             bundle_path: None,
             bundle_size: None,
             manifest: None,
+            toolchain_fingerprint: None,
             created_at: now,
             updated_at: now,
         };
@@ -364,6 +365,7 @@ mod integration {
             bundle_path: None,
             bundle_size: None,
             manifest: None,
+            toolchain_fingerprint: None,
             created_at: now,
             updated_at: now,
         };
@@ -432,6 +434,7 @@ mod integration {
             bundle_path: None,
             bundle_size: None,
             manifest: None,
+            toolchain_fingerprint: None,
             created_at: now,
             updated_at: now,
         };
@@ -515,6 +518,7 @@ mod integration {
             bundle_path: None,
             bundle_size: None,
             manifest: None,
+            toolchain_fingerprint: None,
             created_at: now,
             updated_at: now,
         };
@@ -584,6 +588,7 @@ mod integration {
             bundle_path: None,
             bundle_size: None,
             manifest: None,
+            toolchain_fingerprint: None,
             created_at: now,
             updated_at: now,
         };
@@ -642,6 +647,7 @@ mod integration {
             bundle_path: None,
             bundle_size: None,
             manifest: None,
+            toolchain_fingerprint: None,
             created_at: now,
             updated_at: now,
         };
@@ -791,6 +797,132 @@ pub extern "C" fn veil_workflow_free(ptr: *mut c_char) {
         let res = lib.invoke(&json!({ "boom": true }));
         assert!(res.is_err(), "panicking workflow must surface as Err: {res:?}");
         assert!(res.unwrap_err().to_string().contains("workflow"));
+    }
+
+    // ─── Full FFI resolve path (fingerprint gate + hash verify + invoke) ─────
+    //
+    // These exercise `FunctionRegistry::resolve_ffi` end to end: they compile a
+    // real cdylib, upload it to the artifact store by content hash, register an
+    // Ffi ArtifactRecord, and resolve. They require BOTH `rustc` (to build the
+    // cdylib) and DDB/S3 (the artifact store). Skips gracefully otherwise.
+    use std::sync::Arc;
+
+    fn skip_if_no_ddb() -> bool {
+        std::env::var("VEIL_SKIP_DDB_TESTS").is_ok()
+            || (std::env::var("VEIL_DDB_TABLE").is_err()
+                && std::env::var("AWS_PROFILE").is_err()
+                && std::env::var("VEIL_PLATFORM_LOCAL").ok().as_deref() != Some("1"))
+    }
+
+    fn sha256_hex(bytes: &[u8]) -> String {
+        use sha2::{Digest, Sha256};
+        let mut h = Sha256::new();
+        h.update(bytes);
+        h.finalize().iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    async fn register_cdylib_artifact(
+        store: &Arc<crate::artifact_registry::ArtifactRegistryStore>,
+        function_id: &str,
+        so_path: &std::path::Path,
+        fingerprint: Option<String>,
+    ) -> String {
+        use crate::artifact_registry::*;
+        let bytes = std::fs::read(so_path).unwrap();
+        let content_hash = sha256_hex(&bytes);
+        let blob_key = store
+            .put_blob(function_id, &content_hash, "lib.so", bytes.clone())
+            .await
+            .unwrap();
+        let now = chrono::Utc::now();
+        let record = ArtifactRecord {
+            id: function_id.to_string(),
+            version: content_hash.clone(),
+            artifact_type: ArtifactType::Cdylib,
+            tenant_visibility: TenantVisibility::All,
+            contributions: vec![Contribution::BackendFunction {
+                name: function_id.to_string(),
+                abi: Abi::Ffi,
+                capabilities: vec![],
+                invoke_kind: InvokeKind::Ffi,
+                function_name: None,
+            }],
+            signed_off_by: Some("test".into()),
+            signed_off_at: Some(now),
+            blob_key: Some(blob_key),
+            content_hash: Some(content_hash.clone()),
+            bundle_path: None,
+            bundle_size: Some(bytes.len() as u64),
+            manifest: None,
+            toolchain_fingerprint: fingerprint,
+            created_at: now,
+            updated_at: now,
+        };
+        store.put_artifact(&record).await.unwrap();
+        content_hash
+    }
+
+    #[tokio::test]
+    async fn ffi_resolve_with_matching_fingerprint_invokes() {
+        let Some(so) = build_test_cdylib() else {
+            eprintln!("skipping: rustc unavailable");
+            return;
+        };
+        if skip_if_no_ddb() {
+            eprintln!("SKIP: ffi_resolve_with_matching_fingerprint_invokes (no DDB)");
+            return;
+        }
+        let store = Arc::new(
+            crate::artifact_registry::ArtifactRegistryStore::from_env().await,
+        );
+        let registry = super::super::FunctionRegistry::new(store.clone());
+        let function_id = format!("wf:test/ffi_ok_{}", uuid::Uuid::new_v4());
+
+        // Matching host fingerprint → loads and invokes.
+        let host_fp = crate::toolchain::host_fingerprint().to_wire();
+        let hash =
+            register_cdylib_artifact(&store, &function_id, &so, Some(host_fp)).await;
+
+        let tenant = crate::tenancy::TenantId::new("any");
+        let handle = registry.resolve(&tenant, &function_id).await.expect("resolve ok");
+        let out = handle.invoke(json!({ "x": 21 })).await.expect("invoke ok");
+        assert_eq!(out["doubled"], json!(42));
+
+        store.delete_artifact(&function_id, &hash).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn ffi_resolve_with_mismatched_fingerprint_is_refused() {
+        let Some(so) = build_test_cdylib() else {
+            eprintln!("skipping: rustc unavailable");
+            return;
+        };
+        if skip_if_no_ddb() {
+            eprintln!("SKIP: ffi_resolve_with_mismatched_fingerprint_is_refused (no DDB)");
+            return;
+        }
+        let store = Arc::new(
+            crate::artifact_registry::ArtifactRegistryStore::from_env().await,
+        );
+        let registry = super::super::FunctionRegistry::new(store.clone());
+        let function_id = format!("wf:test/ffi_bad_{}", uuid::Uuid::new_v4());
+
+        // A fingerprint that cannot match the host → refuse-to-load, no dlopen.
+        let bogus = "0.0.0-bogus/mips-unknown-none".to_string();
+        let hash =
+            register_cdylib_artifact(&store, &function_id, &so, Some(bogus)).await;
+
+        let tenant = crate::tenancy::TenantId::new("any");
+        let err = registry
+            .resolve(&tenant, &function_id)
+            .await
+            .expect_err("must refuse mismatched toolchain");
+        assert!(
+            matches!(err, super::super::ResolveError::ToolchainMismatch(_)),
+            "expected ToolchainMismatch, got {err:?}"
+        );
+
+        store.delete_artifact(&function_id, &hash).await.unwrap();
     }
 }
 

@@ -167,6 +167,13 @@ pub struct ArtifactRecord {
     /// Manifest metadata (entrypoint, exports, props interface).
     #[serde(default)]
     pub manifest: Option<ArtifactManifest>,
+    /// Toolchain fingerprint the artifact was compiled with, wire form
+    /// `"{rustc_version}/{target_triple}"`. Load-bearing for the FFI/cdylib path:
+    /// the execution host refuses to `dlopen` a cdylib whose fingerprint does not
+    /// match the host's, because Rust has no stable ABI. `None` on legacy records
+    /// written before this field existed (permitted but logged on load).
+    #[serde(default)]
+    pub toolchain_fingerprint: Option<String>,
     /// When this record was created.
     pub created_at: DateTime<Utc>,
     /// When this record was last updated.

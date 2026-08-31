@@ -9,6 +9,7 @@ mod auth;
 mod auth_provider;
 mod compile_workflow;
 mod deploy;
+mod execution_host;
 mod function_invoke;
 mod git_files;
 mod local_ports;
@@ -16,6 +17,8 @@ mod origin_resolve;
 mod platform;
 mod platform_http;
 pub mod tenancy;
+mod toolchain;
+mod triggers;
 
 use std::sync::Arc;
 
@@ -105,6 +108,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 .unwrap_or_else(|_| "info".into()),
         )
         .init();
+
+    // Run-mode select: the execution-host is a long-lived process that owns a
+    // shared FunctionRegistry + FfiLibraryCache + trigger store, exposing the
+    // register/invoke/fire HTTP surface. It reuses the in-process substrate
+    // rather than being a separate crate (see `veil-execution-host-design`).
+    if std::env::var("VEIL_ROLE").ok().as_deref() == Some("execution-host") {
+        return execution_host::run().await;
+    }
 
     let port: u16 = std::env::var("VEIL_PORT")
         .ok()
