@@ -3450,6 +3450,23 @@ async fn deploy_ws_session(
             let infra_config = read_infra_config_s3(&st.deps, &repo_id, &slug).await;
             crate::deploy::ws::run_terraform_ws(&mut socket, &slug, &tf_files, &infra_config).await;
         }
+        "contribution" => {
+            // Contribution deploy: ui.veil → vite lib bundle → contributions
+            // bucket → re-register manifest. Reads [deploy.contribution] and
+            // materializes the full project (ui.veil + layers) so veil gen works.
+            match read_contribution_config(&st.deps, &repo_id, &slug).await {
+                Ok((contribution, source_dir)) => {
+                    crate::deploy::ws::run_contribution_deploy_ws(
+                        &mut socket, &slug, &source_dir, &contribution,
+                    ).await;
+                }
+                Err(e) => {
+                    let _ = socket.send(Message::Text(
+                        json!({"type": "error", "message": e}).to_string().into()
+                    )).await;
+                }
+            }
+        }
         _ => {
             let _ = socket.send(Message::Text(
                 json!({"type": "error", "message": format!("Unknown deploy type: '{deploy_type}'")}).to_string().into()
@@ -3637,6 +3654,51 @@ async fn read_lambda_build_config(
         artifact_bucket: backend_bucket,
         artifact_prefix,
     })
+}
+
+/// Parse [deploy.contribution] from veil.toml and materialize the full project
+/// source (ui.veil + layers + deps) to /tmp/deploy/{slug} so the contribution
+/// build (veil gen ui.veil) can resolve its layers. Returns the parsed config
+/// and the source dir.
+async fn read_contribution_config(
+    deps: &storage::application::Deps,
+    repo_id: &str,
+    slug: &str,
+) -> Result<(crate::deploy::types::ContributionConfig, std::path::PathBuf), String> {
+    let rid = || storage::domain::types::RepoId { value: repo_id.to_string() };
+    let bytes = storage::application::read_file(
+        deps, rid(), "main".to_string(), "veil.toml".to_string(),
+    ).await.map_err(|e| format!("Failed to read veil.toml: {e:?}"))?;
+    let content = String::from_utf8_lossy(&bytes).into_owned();
+    let parsed: toml::Value = content.parse()
+        .map_err(|e| format!("Failed to parse veil.toml: {e}"))?;
+    let deploy = parsed.get("deploy").ok_or("No [deploy] section in veil.toml")?;
+    // parse_deploy_config expects a serde_json::Value; convert the toml section.
+    let deploy_json: serde_json::Value = serde_json::to_value(deploy)
+        .map_err(|e| format!("convert deploy section to json: {e}"))?;
+    let cfg = crate::deploy::config::parse_deploy_config(&deploy_json);
+    let contribution = cfg.contribution
+        .ok_or("No [deploy.contribution] section in veil.toml")?;
+
+    // Materialize ALL project files (ui.veil, layers/*, stubs/*, etc.).
+    let dir = std::path::PathBuf::from(format!("/tmp/deploy/{}", slug));
+    tokio::fs::create_dir_all(&dir).await
+        .map_err(|e| format!("mkdir source dir: {e}"))?;
+    let files = storage::application::list_files(
+        deps, rid(), "main".to_string(), String::new(),
+    ).await.map_err(|e| format!("list project files: {e:?}"))?;
+    for file_path in &files {
+        if let Ok(fbytes) = storage::application::read_file(
+            deps, rid(), "main".to_string(), file_path.clone(),
+        ).await {
+            let dest = dir.join(file_path);
+            if let Some(parent) = dest.parent() {
+                tokio::fs::create_dir_all(parent).await.ok();
+            }
+            tokio::fs::write(&dest, &fbytes).await.ok();
+        }
+    }
+    Ok((contribution, dir))
 }
 
 async fn fetch_terraform_files_s3(

@@ -226,6 +226,114 @@ pub async fn run_frontend_deploy_ws(
     info!(slug, job_id, bucket = %build_config.bucket, "frontend deploy complete via websocket");
 }
 
+/// Build + deploy a contribution (ui.veil → ES-module bundle) over a websocket,
+/// streaming progress. Mirrors the frontend path but targets the shared
+/// contributions bucket + re-registers the manifest on the runtime.
+pub async fn run_contribution_deploy_ws(
+    ws: &mut WebSocket,
+    slug: &str,
+    source_dir: &Path,
+    contribution: &super::types::ContributionConfig,
+) {
+    let job_id = uuid::Uuid::new_v4().to_string();
+    let steps: Vec<&str> = vec!["build", "upload", "register"];
+    let _ = send(ws, json!({"type": "started", "job_id": &job_id, "steps": steps})).await;
+
+    // ─── BUILD (veil gen ui.veil → vite library bundle) ──────────────────────
+    let _ = send(ws, json!({"type": "step_start", "step": "build"})).await;
+    let veil_file = "ui.veil";
+    let build_res = super::build_contribution::run(slug, veil_file, source_dir, contribution).await;
+    let build = match build_res {
+        Ok(b) => {
+            let _ = send(ws, json!({"type": "step_done", "step": "build", "ok": true})).await;
+            b
+        }
+        Err(e) => {
+            let _ = send(ws, json!({"type": "step_done", "step": "build", "ok": false, "error": &e})).await;
+            let _ = send(ws, json!({"type": "error", "message": format!("contribution build failed: {e}")})).await;
+            return;
+        }
+    };
+
+    // ─── UPLOAD (aws s3 cp bundle + css to contributions bucket) ─────────────
+    let _ = send(ws, json!({"type": "step_start", "step": "upload"})).await;
+    let version = chrono::Utc::now().format("%Y%m%d%H%M%S").to_string();
+    let bucket = &contribution.bucket;
+    let cid = &contribution.contribution_id;
+    let js_key = format!("{cid}/{version}/index.js");
+    let work = std::path::Path::new(&build.bundle_path)
+        .parent()
+        .unwrap_or(Path::new("."));
+
+    match run_streaming(ws, "upload", work, "aws", &[
+        "s3", "cp", &build.bundle_path, &format!("s3://{bucket}/{js_key}"),
+        "--content-type", "application/javascript",
+        "--cache-control", "public, max-age=31536000, immutable", "--no-progress",
+    ]).await {
+        Ok(_) => { let _ = send(ws, json!({"type":"progress","step":"upload","resource":&js_key,"status":"uploaded"})).await; }
+        Err(e) => {
+            let _ = send(ws, json!({"type": "step_done", "step": "upload", "ok": false, "error": &e})).await;
+            let _ = send(ws, json!({"type": "error", "message": format!("S3 upload failed: {e}")})).await;
+            return;
+        }
+    }
+    let css_key = if let Some(css_path) = &build.css_path {
+        let key = format!("{cid}/{version}/style.css");
+        let _ = run_streaming(ws, "upload", work, "aws", &[
+            "s3", "cp", css_path, &format!("s3://{bucket}/{key}"),
+            "--content-type", "text/css",
+            "--cache-control", "public, max-age=31536000, immutable", "--no-progress",
+        ]).await;
+        Some(key)
+    } else { None };
+    let _ = send(ws, json!({"type": "step_done", "step": "upload", "ok": true})).await;
+
+    // ─── REGISTER (re-register the manifest on the runtime) ──────────────────
+    let _ = send(ws, json!({"type": "step_start", "step": "register"})).await;
+    let base = contribution.cdn_base_url.clone()
+        .unwrap_or_else(|| format!("https://{bucket}.s3.amazonaws.com"));
+    let bundle_url = format!("{base}/{js_key}");
+    let css_url = css_key.as_ref().map(|k| format!("{base}/{k}"));
+    let mut body = json!({
+        "app_id": contribution.app_id,
+        "id": contribution.contribution_id,
+        "name": contribution.name,
+        "version": version,
+        "bundle_url": bundle_url,
+        "css_url": css_url,
+        "enabled": true,
+        "order": contribution.order,
+        "access": {"public": true},
+        "slots": contribution.slots,
+    });
+    if css_url.is_none() { body.as_object_mut().map(|m| m.remove("css_url")); }
+    let port = std::env::var("VEIL_PORT").unwrap_or_else(|_| "8080".into());
+    let reg_url = format!("http://127.0.0.1:{port}/api/contributions");
+    match reqwest::Client::new().post(&reg_url).json(&body).send().await {
+        Ok(r) if r.status().is_success() => {
+            let _ = send(ws, json!({"type": "step_done", "step": "register", "ok": true})).await;
+        }
+        Ok(r) => {
+            let code = r.status().as_u16();
+            let txt = r.text().await.unwrap_or_default();
+            let _ = send(ws, json!({"type": "step_done", "step": "register", "ok": false, "error": format!("HTTP {code}: {txt}")})).await;
+            let _ = send(ws, json!({"type": "error", "message": format!("manifest register failed: HTTP {code}")})).await;
+            return;
+        }
+        Err(e) => {
+            let _ = send(ws, json!({"type": "step_done", "step": "register", "ok": false, "error": e.to_string()})).await;
+            let _ = send(ws, json!({"type": "error", "message": format!("manifest register request failed: {e}")})).await;
+            return;
+        }
+    }
+
+    let _ = send(ws, json!({
+        "type": "done", "ok": true, "job_id": &job_id,
+        "outputs": {"bundle_url": bundle_url, "version": version, "id": contribution.contribution_id},
+    })).await;
+    info!(slug, job_id, version, "contribution deploy complete via websocket");
+}
+
 /// Configuration for a frontend build+deploy.
 pub struct FrontendBuildConfig {
     pub main_veil_path: String,
