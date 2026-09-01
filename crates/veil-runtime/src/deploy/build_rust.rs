@@ -80,11 +80,29 @@ pub async fn run(
     info!(slug, "cargo build complete");
 
     // Step 3: Package into lambda.zip
-    let binary_path = gen_dir
+    // The rust codegen emits the Lambda entrypoint as the `veil_bin` binary
+    // (crates/veil_bin — see rust/workspace.rs). AWS custom runtimes require the
+    // packaged binary to be named `bootstrap`, so we locate the produced binary
+    // (preferring an explicit `bootstrap` if a future codegen emits one, else the
+    // current `veil_bin`) and copy it to `bootstrap` inside the zip.
+    let release_dir = gen_dir
         .join("target")
         .join(rust_target)
-        .join("release")
-        .join("bootstrap");
+        .join("release");
+    let binary_path = {
+        let bootstrap_bin = release_dir.join("bootstrap");
+        let veil_bin = release_dir.join("veil_bin");
+        if bootstrap_bin.exists() {
+            bootstrap_bin
+        } else if veil_bin.exists() {
+            veil_bin
+        } else {
+            return Err(format!(
+                "no lambda binary found in {} (looked for 'bootstrap' and 'veil_bin')",
+                release_dir.display()
+            ));
+        }
+    };
     let bootstrap_dest = output_dir.join("bootstrap");
     let zip_path = output_dir.join("lambda.zip");
 
