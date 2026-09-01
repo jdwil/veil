@@ -133,6 +133,9 @@ impl SessionManager {
         let ident = resolve_project_identity(slug)?;
         let slug = ident.slug.as_str();
         let repo_id = ident.repo_id.clone();
+        // Subpath binding (hybrid model): resolve from the origin so the
+        // workspace fs / review / commit all scope to `<checkout>/<subpath>`.
+        let subpath = crate::git_origin::GitOrigin::for_repo(&repo_id).subpath();
         let work_dir = session_work_dir(&user_id, &session_id, slug);
         let work_prefix = if crate::git_origin::origin_enabled() {
             format!("git/{repo_id}#refs/heads/{branch_name}")
@@ -160,6 +163,7 @@ impl SessionManager {
             user_id: user_id.clone(),
             slug: slug.to_string(),
             repo_id: repo_id.clone(),
+            subpath: subpath.clone(),
             branch: base.clone(),
             work_prefix: work_prefix.clone(),
             revision: 0,
@@ -395,6 +399,12 @@ impl SessionManager {
         }
         // Prefer product slug on META when session was created under raw UUID.
         let mut meta = meta;
+        // Re-resolve the subpath binding from the origin (older sessions predate
+        // the field; a rebind may have changed it). Persist only if it changed.
+        let cur_subpath = crate::git_origin::GitOrigin::for_repo(&meta.repo_id).subpath();
+        if meta.subpath != cur_subpath {
+            meta.subpath = cur_subpath;
+        }
         if let Ok(ident) = resolve_project_identity(&meta.repo_id) {
             if meta.slug != ident.slug && ident.slug != ident.repo_id {
                 tracing::info!(
@@ -1046,7 +1056,12 @@ pub fn durable_headers(
 /// Live session: provider + workspace FS + mutable META.
 pub struct SessionHandle {
     pub meta: Mutex<SessionMeta>,
+    /// Git checkout root (the whole repo working tree). Git operations
+    /// (commit / push / merge / log) run here.
     pub work_dir: PathBuf,
+    /// Project root the IDE / agent tools are jailed to. For a subpath-bound
+    /// project this is `<work_dir>/<subpath>`; otherwise it equals `work_dir`.
+    pub project_root: PathBuf,
     /// S3-backed IDE provider (serve set).
     pub provider: Arc<S3WorkspaceProvider>,
     pub fs: WorkspaceFsImpl,
@@ -1054,31 +1069,47 @@ pub struct SessionHandle {
 
 impl SessionHandle {
     fn open(meta: SessionMeta, work_dir: PathBuf) -> Result<Self, String> {
-        // Open provider bound to this work_dir (not global slug tmp)
+        // Hybrid model: the IDE / agent see only `<checkout>/<subpath>` when the
+        // project is bound to a repo subdirectory. Git ops stay at `work_dir`.
+        let project_root =
+            crate::git_origin::project_root_under(&work_dir, meta.subpath.as_deref());
+        if project_root != work_dir {
+            // Ensure the subdir exists so the provider/fs can open it even before
+            // the first write (fresh subpath project on a shared repo).
+            let _ = std::fs::create_dir_all(&project_root);
+        }
+        // Open provider bound to this project root (not the whole checkout)
         let provider = open_s3_project_at(
             &meta.slug,
             &meta.repo_id,
-            &work_dir,
+            &project_root,
             false,
             meta.draft_mode,
             &meta.session_id,
         )?;
         let fs = WorkspaceFsImpl::new(
-            work_dir.clone(),
+            project_root.clone(),
             meta.repo_id.clone(),
             meta.branch.clone(),
             meta.session_id.clone(),
             meta.draft_mode,
-        );
+        )
+        .with_subpath(meta.subpath.clone());
         let handle = Self {
             meta: Mutex::new(meta),
             work_dir,
+            project_root,
             provider,
             fs,
         };
         // PR Wizard intents: reload durable rationales into process cache.
         crate::api::rehydrate_rationales_from_session(&handle);
         Ok(handle)
+    }
+
+    /// Normalised subpath for this session's project (hybrid model), if any.
+    pub fn subpath(&self) -> Option<String> {
+        self.meta.lock().unwrap().subpath.clone()
     }
 
     pub fn session_id(&self) -> String {
@@ -1505,7 +1536,9 @@ impl SessionHandle {
 
     pub fn has_uncommitted(&self) -> bool {
         if crate::git_origin::origin_enabled() && self.work_dir.join(".git").is_dir() {
-            return crate::git_origin::status_dirty(&self.work_dir).unwrap_or(false);
+            let sub = self.subpath();
+            return crate::git_origin::status_dirty_under(&self.work_dir, sub.as_deref())
+                .unwrap_or(false);
         }
         let m = self.meta.lock().unwrap();
         let committed = m.committed_revision.unwrap_or(0);
@@ -1522,11 +1555,15 @@ impl SessionHandle {
     }
 
     pub fn git_status_files(&self) -> Vec<crate::git_origin::StatusFile> {
-        crate::git_origin::GitOrigin::status_files(&self.work_dir).unwrap_or_default()
+        let sub = self.subpath();
+        crate::git_origin::GitOrigin::status_files_under(&self.work_dir, sub.as_deref())
+            .unwrap_or_default()
     }
 
     pub fn git_working_diff(&self) -> String {
-        crate::git_origin::GitOrigin::working_diff(&self.work_dir).unwrap_or_default()
+        let sub = self.subpath();
+        crate::git_origin::GitOrigin::working_diff_under(&self.work_dir, sub.as_deref())
+            .unwrap_or_default()
     }
 }
 
@@ -1579,8 +1616,23 @@ pub fn open_s3_project_at(
     use crate::provider::filesystem::FilesystemProvider;
     use veil_ir::LayerRegistry;
 
+    let subpath = crate::git_origin::GitOrigin::for_repo(repo_id).subpath();
     if !has_veil_file(work) && !work.join("veil.toml").is_file() {
-        materialize_repo(repo_id, work)?;
+        // Subpath projects: `work` is `<checkout>/<subpath>`; materialize the
+        // whole repo at the checkout root so the subpath subtree is populated.
+        let checkout_root = match &subpath {
+            Some(s) => {
+                let depth = s.split('/').count();
+                let mut root = work.to_path_buf();
+                for _ in 0..depth {
+                    root = root.parent().map(|p| p.to_path_buf()).unwrap_or(root);
+                }
+                root
+            }
+            None => work.to_path_buf(),
+        };
+        materialize_repo(repo_id, &checkout_root)?;
+        let _ = std::fs::create_dir_all(work);
     }
     let paths = collect_project_files(work, show_core_layers)
         .map_err(|e| format!("session workspace {slug}: {e}"))?;
@@ -1605,7 +1657,8 @@ pub fn open_s3_project_at(
         slug.to_string(),
         draft_mode,
         session_id.to_string(),
-    ))
+    )
+    .with_subpath(subpath))
 }
 
 /// Request-scoped coding session id (HTTP header `X-Veil-Session-Id`).

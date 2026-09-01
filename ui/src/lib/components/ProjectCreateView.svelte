@@ -20,6 +20,11 @@
   let git_owners: string[] = $state([]);
   let git_label: string = $state('Git origin per project');
   let bb_ready: boolean = $state(false);
+  // Origin type: s3 bundle (default, own history) | repo root (own repo) |
+  // repo subpath (a subdir of a shared repo — many projects per repo).
+  let origin_type: string = $state('repo-root');
+  let git_subpath: string = $state('');
+  let git_subpath_touched: boolean = $state(false);
 
   function slugify(s: string): string {
     return s
@@ -32,6 +37,13 @@
   $effect(() => {
     if (!git_repo_touched) {
       git_repo = slugify(name);
+    }
+  });
+
+  $effect(() => {
+    // Default the subpath to the project slug for repo-subpath origins.
+    if (origin_type === 'repo-subpath' && !git_subpath_touched) {
+      git_subpath = slugify(name);
     }
   });
 
@@ -66,14 +78,27 @@
     error = '';
     try {
       const slug = slugify(git_repo || name);
-      const origin = {
-        kind: 'git',
-        provider: git_provider,
-        owner: git_owner.trim(),
-        name: slug,
-        create: git_mode !== 'bind',
-        private: git_private !== 'public',
-      };
+      // Build the origin by chosen type:
+      //  - s3: no git binding (own S3 bundle history — the default legacy path)
+      //  - repo-root: a git repo the project owns (subpath omitted)
+      //  - repo-subpath: a subdir of a (possibly shared) repo
+      let origin: Record<string, unknown> | undefined;
+      if (origin_type === 's3') {
+        origin = { kind: 's3' };
+      } else {
+        origin = {
+          kind: 'git',
+          provider: git_provider,
+          owner: git_owner.trim(),
+          name: slug,
+          create: git_mode !== 'bind',
+          private: git_private !== 'public',
+        };
+        if (origin_type === 'repo-subpath') {
+          const sub = slugify(git_subpath || name);
+          if (sub) origin.subpath = sub;
+        }
+      }
       const r = await fetch('/api/ux/create_project', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -112,7 +137,7 @@
   submit_label="Create"
   saving_label="Creating…"
   saving={submitting}
-  required_values={[name, git_owner]}
+  required_values={origin_type === 's3' ? [name] : (origin_type === 'repo-subpath' ? [name, git_owner, git_subpath] : [name, git_owner])}
   on_submit={() => { void submit(); }}
   error={error}
   agent={{
@@ -131,6 +156,23 @@
     <FormField id="name" label="Name" bind:value={name} required={true} placeholder="My project" />
     <FormField id="description" label="Description" bind:value={description} input_type="textarea" placeholder="Optional" />
   </FormSection>
+  <FormSection title="Origin" columns={1}>
+    <FormField
+      id="origin_type"
+      label="Where history lives"
+      input_type="select"
+      bind:value={origin_type}
+      options={[
+        { value: 's3', label: 'S3 bundle (own history, no remote)' },
+        { value: 'repo-root', label: 'Git repository (own repo)' },
+        { value: 'repo-subpath', label: 'Subpath of a shared repo (many projects per repo)' },
+      ]}
+      hint={origin_type === 'repo-subpath'
+        ? 'This project is a subdirectory of a shared repo. The IDE + agent are jailed to the subpath; review is scoped to it.'
+        : ''}
+    />
+  </FormSection>
+  {#if origin_type !== 's3'}
   <FormSection title="Git origin" columns={2}>
     <FormField
       id="git_provider"
@@ -147,10 +189,15 @@
       label="Remote"
       input_type="select"
       bind:value={git_mode}
-      options={[
-        { value: 'create', label: 'Create new repository' },
-        { value: 'bind', label: 'Bind existing repository' },
-      ]}
+      options={origin_type === 'repo-subpath'
+        ? [
+            { value: 'bind', label: 'Use existing shared repository' },
+            { value: 'create', label: 'Create shared repository' },
+          ]
+        : [
+            { value: 'create', label: 'Create new repository' },
+            { value: 'bind', label: 'Bind existing repository' },
+          ]}
     />
     <FormField
       id="git_owner"
@@ -162,11 +209,22 @@
     />
     <FormField
       id="git_repo"
-      label="Repository name"
+      label={origin_type === 'repo-subpath' ? 'Shared repository name' : 'Repository name'}
       bind:value={git_repo}
-      placeholder="my-project"
+      placeholder={origin_type === 'repo-subpath' ? 'dlx-shared-libs' : 'my-project'}
       oninput={() => { git_repo_touched = true; }}
     />
+    {#if origin_type === 'repo-subpath'}
+    <FormField
+      id="git_subpath"
+      label="Subpath"
+      bind:value={git_subpath}
+      required={true}
+      placeholder="dlx-auth"
+      hint="The subdirectory in the shared repo this project owns."
+      oninput={() => { git_subpath_touched = true; }}
+    />
+    {/if}
     <FormField
       id="git_private"
       label="Visibility"
@@ -178,6 +236,7 @@
       ]}
     />
   </FormSection>
+  {/if}
 </CreateFormShell>
 
 

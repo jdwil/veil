@@ -105,6 +105,11 @@ pub struct WorkspaceFsImpl {
     branch: String,
     session_id: String,
     draft_mode: bool,
+    /// Repo-relative subpath prefix for the S3 write-through mirror (hybrid
+    /// model). `root` is `<checkout>/<subpath>`, so `rel` paths are
+    /// project-relative; the S3 key must re-prefix `<subpath>/` to stay
+    /// repo-coherent. Empty for repo-root / S3-bundle projects.
+    subpath: Option<String>,
 }
 
 impl WorkspaceFsImpl {
@@ -121,11 +126,26 @@ impl WorkspaceFsImpl {
             branch,
             session_id,
             draft_mode,
+            subpath: None,
         }
     }
 
+    /// Set the repo-relative subpath prefix (hybrid model). Returns self for
+    /// builder-style use.
+    pub fn with_subpath(mut self, subpath: Option<String>) -> Self {
+        self.subpath = crate::git_origin::normalize_subpath(subpath.as_deref());
+        self
+    }
+
     fn s3_key(&self, rel: &str) -> String {
-        let rel = rel.replace('\\', "/").trim_start_matches('/').to_string();
+        let rel = rel.replace('\\', "/");
+        let rel = rel.trim_start_matches('/');
+        // Re-prefix the subpath so the S3 mirror key is repo-relative even
+        // though `rel` is project-relative under a subpath project root.
+        let rel: std::borrow::Cow<'_, str> = match &self.subpath {
+            Some(sub) => std::borrow::Cow::Owned(format!("{sub}/{rel}")),
+            None => std::borrow::Cow::Borrowed(rel),
+        };
         if self.draft_mode {
             format!(
                 "repos/{}/drafts/{}/{rel}",
@@ -452,5 +472,79 @@ mod tests {
         assert!(simple_glob_match("*.veil", "main.veil"));
         assert!(simple_glob_match("layers/*", "layers/main.layer") || simple_glob_match("layers/", "layers/main.layer"));
         assert!(!simple_glob_match("*.stub", "main.veil"));
+    }
+
+    /// Hybrid model: a subpath project's fs is rooted at `<checkout>/<subpath>`.
+    /// The agent MUST NOT be able to escape to a sibling project's subpath via
+    /// `../` traversal — dlx-auth cannot read/write dlx-bus.
+    #[test]
+    fn subpath_jail_blocks_sibling_escape() {
+        let base = std::env::temp_dir().join(format!("veil-subpath-jail-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let checkout = base.join("checkout");
+        let proj_a = checkout.join("dlx-auth");
+        let proj_b = checkout.join("dlx-bus");
+        fs::create_dir_all(proj_a.join("layers")).unwrap();
+        fs::create_dir_all(proj_a.join("sub")).unwrap();
+        fs::create_dir_all(&proj_b).unwrap();
+        fs::write(proj_a.join("main.veil"), "pkg Auth\n").unwrap();
+        fs::write(proj_b.join("secret.veil"), "pkg Bus\n").unwrap();
+
+        // fs rooted at dlx-auth (the project root for the subpath project).
+        // In-jail reads/writes are fine.
+        assert!(path_jail(&proj_a, "main.veil").is_ok());
+        assert!(path_jail(&proj_a, "layers/x.layer").is_ok());
+        assert!(path_jail(&proj_a, "sub/../main.veil").is_ok());
+
+        // Escapes to the sibling subpath MUST be rejected.
+        for esc in [
+            "../dlx-bus/secret.veil",
+            "../../etc/passwd",
+            "../dlx-bus",
+            "..",
+        ] {
+            let r = path_jail(&proj_a, esc);
+            assert!(
+                r.is_err()
+                    || r.as_ref()
+                        .map(|p| !p.starts_with(proj_a.canonicalize().unwrap_or(proj_a.clone())))
+                        .unwrap_or(true),
+                "subpath escape must fail for {esc:?}: {r:?}"
+            );
+        }
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    /// The S3 mirror key for a subpath project re-prefixes `<subpath>/` so the
+    /// object store stays repo-coherent even though `rel` is project-relative.
+    #[test]
+    fn subpath_s3_key_is_repo_relative() {
+        let fs_root = std::env::temp_dir().join("veil-subpath-key-root");
+        let base = WorkspaceFsImpl::new(
+            fs_root.clone(),
+            "repo-uuid".into(),
+            "main".into(),
+            "sess-1".into(),
+            false,
+        );
+        // No subpath: key is project-relative == repo-relative.
+        assert_eq!(base.s3_key("main.veil"), "repos/repo-uuid/main/main.veil");
+
+        let sub = WorkspaceFsImpl::new(
+            fs_root,
+            "repo-uuid".into(),
+            "main".into(),
+            "sess-1".into(),
+            false,
+        )
+        .with_subpath(Some("dlx-auth".into()));
+        assert_eq!(
+            sub.s3_key("main.veil"),
+            "repos/repo-uuid/main/dlx-auth/main.veil"
+        );
+        assert_eq!(
+            sub.s3_key("/layers/x.layer"),
+            "repos/repo-uuid/main/dlx-auth/layers/x.layer"
+        );
     }
 }

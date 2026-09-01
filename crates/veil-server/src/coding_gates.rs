@@ -351,6 +351,7 @@ mod tests {
             user_id: "u".into(),
             slug: "p".into(),
             repo_id: "r".into(),
+            subpath: None,
             branch: "main".into(),
             work_prefix: "".into(),
             revision: 0,

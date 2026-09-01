@@ -26,6 +26,13 @@ pub struct SessionMeta {
     pub user_id: String,
     pub slug: String,
     pub repo_id: String,
+    /// Project root within the git checkout for a subpath-bound project
+    /// (hybrid model: `<checkout>/<subpath>` is the project root). Empty /
+    /// `None` means the project owns the whole repo (or an S3 bundle). Resolved
+    /// from the origin binding at session create/open and persisted so reopen /
+    /// attach re-roots the workspace fs without another origin lookup.
+    #[serde(default)]
+    pub subpath: Option<String>,
     /// Product store branch prefix for non-draft (usually `main`).
     pub branch: String,
     pub work_prefix: String,

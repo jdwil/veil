@@ -679,6 +679,23 @@ pub fn seed_new_repo_scaffold(repo_id: &str, name: &str) -> Result<Vec<String>, 
     cache_identity(&slug, repo_id);
     cache_identity(name, repo_id);
     if crate::git_origin::origin_enabled() {
+        let origin = crate::git_origin::GitOrigin::for_repo(repo_id);
+        // Subpath-bound project on a (possibly shared) repo: seed only the
+        // subdir with a FRESH commit; never graft or touch sibling subpaths.
+        if origin.subpath().is_some() {
+            let files = crate::project_layout::scaffold_file_contents(name)?;
+            match origin.seed_subpath(&files, &branch()) {
+                Ok(_) => {}
+                Err(e) => {
+                    if origin.is_git_remote() {
+                        return Err(format!("git subpath seed failed: {e}"));
+                    }
+                    tracing::warn!(%repo_id, error = %e, "subpath seed after scaffold failed");
+                }
+            }
+            tracing::info!(%repo_id, %slug, display = %name, "seed_new_repo_scaffold (subpath) ok");
+            return Ok(written);
+        }
         let tmp = std::env::temp_dir().join(format!("veil-git-seed-{repo_id}"));
         let _ = std::fs::remove_dir_all(&tmp);
         if let Err(e) = (|| -> Result<(), String> {
@@ -966,11 +983,17 @@ fn put_file_s3(
     abs_path: &Path,
     draft_mode: bool,
     session_id: &str,
+    subpath: Option<&str>,
 ) -> Result<Option<String>, String> {
     let rel = abs_path
         .strip_prefix(work)
         .map_err(|_| format!("{} not under workspace", abs_path.display()))?;
     let rel_s = rel.to_string_lossy().replace('\\', "/");
+    // Re-prefix subpath so the S3 mirror key is repo-relative (hybrid model).
+    let rel_s = match crate::git_origin::normalize_subpath(subpath) {
+        Some(sub) => format!("{sub}/{rel_s}"),
+        None => rel_s,
+    };
     let key = if draft_mode && !session_id.is_empty() {
         format!("repos/{repo_id}/drafts/{session_id}/{rel_s}")
     } else {
@@ -1068,6 +1091,12 @@ pub struct S3WorkspaceProvider {
     slug: String,
     draft_mode: bool,
     session_id: String,
+    /// Repo-relative subpath prefix (hybrid model). `work` is the project root
+    /// `<checkout>/<subpath>`; the S3 mirror key must re-prefix `<subpath>/`.
+    subpath: Option<String>,
+    /// The git checkout root (whole repo). For subpath projects this is the
+    /// parent of `work`; materialize/pull must target this, not the subpath.
+    checkout_root: PathBuf,
 }
 
 impl S3WorkspaceProvider {
@@ -1081,11 +1110,42 @@ impl S3WorkspaceProvider {
     ) -> Arc<Self> {
         Arc::new(Self {
             inner,
+            checkout_root: work.clone(),
             repo_id,
             work,
             slug,
             draft_mode,
             session_id,
+            subpath: None,
+        })
+    }
+
+    /// Set the repo-relative subpath (hybrid model). Builder-style. This also
+    /// re-roots `checkout_root` to the parent-of-subpath so materialize targets
+    /// the whole repo checkout, while file serving stays under the subpath.
+    pub fn with_subpath(self: Arc<Self>, subpath: Option<String>) -> Arc<Self> {
+        let sub = crate::git_origin::normalize_subpath(subpath.as_deref());
+        // Derive the checkout root by stripping the subpath tail from `work`.
+        let checkout_root = match &sub {
+            Some(s) => {
+                let depth = s.split('/').count();
+                let mut root = self.work.clone();
+                for _ in 0..depth {
+                    root = root.parent().map(|p| p.to_path_buf()).unwrap_or(root);
+                }
+                root
+            }
+            None => self.work.clone(),
+        };
+        Arc::new(Self {
+            inner: self.inner.clone(),
+            repo_id: self.repo_id.clone(),
+            work: self.work.clone(),
+            slug: self.slug.clone(),
+            draft_mode: self.draft_mode,
+            session_id: self.session_id.clone(),
+            subpath: sub,
+            checkout_root,
         })
     }
 
@@ -1112,15 +1172,17 @@ impl S3WorkspaceProvider {
 
     /// Re-sync from S3 (source of truth) into the workspace and rebuild cache.
     pub fn rematerialize(&self) -> Result<(), String> {
-        materialize_repo(&self.repo_id, &self.work)
+        materialize_repo(&self.repo_id, &self.checkout_root)
     }
 
     /// Soft pull (no --delete).
     pub fn pull_incremental(&self) -> Result<(), String> {
-        materialize_repo_incremental(&self.repo_id, &self.work)
+        materialize_repo_incremental(&self.repo_id, &self.checkout_root)
     }
 
     /// Relative path of `file` (or active file) under the workspace root.
+    /// For a subpath project the returned path is **repo-relative** (prefixed
+    /// with `<subpath>/`) so S3 baseline lookups hit the right key.
     async fn relative_source_path(&self, file: &str) -> String {
         let files = self.inner.list_files().await;
         let path = if file.is_empty() {
@@ -1135,20 +1197,27 @@ impl S3WorkspaceProvider {
                 .find(|f| f.name == file || f.path == file)
                 .map(|f| PathBuf::from(&f.path))
         };
-        let Some(abs) = path else {
-            return if file.is_empty() {
-                "main.veil".into()
-            } else {
-                file.to_string()
-            };
+        let rel = match path {
+            Some(abs) => abs
+                .strip_prefix(&self.work)
+                .map(|p| p.to_string_lossy().replace('\\', "/"))
+                .unwrap_or_else(|_| {
+                    abs.file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_else(|| "main.veil".into())
+                }),
+            None => {
+                if file.is_empty() {
+                    "main.veil".into()
+                } else {
+                    file.to_string()
+                }
+            }
         };
-        abs.strip_prefix(&self.work)
-            .map(|p| p.to_string_lossy().replace('\\', "/"))
-            .unwrap_or_else(|_| {
-                abs.file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_else(|| "main.veil".into())
-            })
+        match &self.subpath {
+            Some(sub) => format!("{sub}/{rel}"),
+            None => rel,
+        }
     }
 
     fn session_base_branch(&self) -> Option<String> {
@@ -1244,6 +1313,7 @@ impl SourceProvider for S3WorkspaceProvider {
             &path,
             self.draft_mode,
             &self.session_id,
+            self.subpath.as_deref(),
         )?;
         Ok(())
     }
@@ -1346,6 +1416,7 @@ impl SourceProvider for S3WorkspaceProvider {
             &path,
             self.draft_mode,
             &self.session_id,
+            self.subpath.as_deref(),
         )?;
         let _ = source;
         Ok(idx)

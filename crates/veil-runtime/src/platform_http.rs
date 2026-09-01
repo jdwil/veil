@@ -642,9 +642,195 @@ async fn bind_repo_origin(
     })))
 }
 
+#[derive(Deserialize)]
+struct MigrateSubpathBody {
+    /// Target shared repo `org/name` on the provider (e.g. `dlx/dlx-shared-libs`).
+    repo: String,
+    /// Provider: `github` | `bitbucket` (default `bitbucket`).
+    #[serde(default)]
+    provider: Option<String>,
+    /// Subpath to seed the project under. Defaults to the project slug.
+    #[serde(default)]
+    subpath: Option<String>,
+    /// Create the target repo if missing (default false — bind existing).
+    #[serde(default)]
+    create: bool,
+    /// Target repo privacy when `create` (default true).
+    #[serde(default)]
+    private: Option<bool>,
+    /// Default branch (default `main`).
+    #[serde(default)]
+    branch: Option<String>,
+}
+
+/// POST /api/repos/{id}/migrate-to-subpath — move an existing (usually
+/// S3-bundle) project into a shared repo at a subpath.
+///
+/// Preserves project identity (repo_id + catalog entry). Seeds the project's
+/// CURRENT source under `<subpath>/` with a FRESH commit (no history graft —
+/// decision 3), then rebinds the origin from S3-bundle to `{repo, subpath}`.
+/// Idempotent: re-running when the subpath is already populated just rebinds.
+async fn migrate_to_subpath(
+    State(st): State<StorageState>,
+    Path(id): Path<String>,
+    Json(body): Json<MigrateSubpathBody>,
+) -> Result<Json<Value>, StatusCode> {
+    use storage::domain::types::{GitProvider as BindProvider, OriginBinding};
+
+    let repo = crate::origin_resolve::resolve_repo_full(&st.deps, &id)
+        .await
+        .map_err(domain_status)?;
+    let repo_id = repo.id.value.clone();
+    let slug = repo.slug.clone();
+
+    let full_name = body.repo.trim().trim_matches('/').to_string();
+    if !full_name.contains('/') {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let provider_s = body.provider.clone().unwrap_or_else(|| "bitbucket".into());
+    let branch = body
+        .branch
+        .clone()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "main".into());
+    let subpath = veil_server::git_origin::normalize_subpath(
+        body.subpath.as_deref().or(Some(slug.as_str())),
+    )
+    .unwrap_or_else(|| slug.clone());
+    let private = body.private.unwrap_or(true);
+
+    // 1) Snapshot the project's current source from its EXISTING origin (S3
+    //    bundle or otherwise) — this is what we re-seed under the subpath.
+    let src_origin = crate::origin_resolve::git_origin_for(&repo);
+    let seed_files: Vec<(String, String)> = {
+        let rid = repo_id.clone();
+        let br = branch.clone();
+        tokio::task::spawn_blocking(move || {
+            let origin = veil_server::git_origin::GitOrigin::for_repo(&rid);
+            collect_source_files_from_origin(&origin, &br)
+        })
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    };
+    let _ = src_origin;
+    if seed_files.is_empty() {
+        return Ok(Json(json!({
+            "ok": false,
+            "error": "no_source",
+            "message": format!("project `{slug}` has no source to migrate (empty origin)"),
+        })));
+    }
+
+    // 2) Provision (create/bind) the target shared repo and 3) seed the subpath
+    //    with a fresh commit. Runs on the blocking pool (git + provider REST).
+    let provider_owned = provider_s.clone();
+    let full_owned = full_name.clone();
+    let sub_owned = subpath.clone();
+    let br_owned = branch.clone();
+    let create = body.create;
+    let repo_id_seed = repo_id.clone();
+    let slug_seed = slug.clone();
+    let seed_result = tokio::task::spawn_blocking(move || -> Result<Value, String> {
+        let origin_spec = json!({
+            "kind": "git",
+            "provider": provider_owned,
+            "repo": full_owned,
+            "subpath": sub_owned,
+            "create": create,
+            "private": private,
+            "branch": br_owned,
+        });
+        let spec = veil_server::git_provider::OriginRequest::from_value(Some(&origin_spec), &slug_seed)?;
+        // Create/verify the target repo (registers the origin under repo_id with
+        // the subpath so seed_subpath sees it).
+        let _cfg = veil_server::git_provider::provision_origin(
+            &repo_id_seed, &slug_seed, None, &spec,
+        )?;
+        let origin = veil_server::git_origin::GitOrigin::for_repo(&repo_id_seed);
+        let seeded = origin.seed_subpath(&seed_files, &br_owned)?;
+        Ok(json!({ "seed_commit": seeded }))
+    })
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let seed_json = match seed_result {
+        Ok(v) => v,
+        Err(e) => {
+            return Ok(Json(json!({
+                "ok": false,
+                "error": "seed_failed",
+                "message": e,
+            })));
+        }
+    };
+
+    // 4) Rebind the catalog origin to {repo, subpath}, preserving repo_id.
+    let provider = match provider_s.trim().to_ascii_lowercase().as_str() {
+        "github" | "gh" => BindProvider::Github,
+        _ => BindProvider::Bitbucket,
+    };
+    let binding = OriginBinding::Git {
+        provider,
+        repo: full_name.clone(),
+        subpath: Some(subpath.clone()),
+        branch: Some(branch.clone()),
+    };
+    let updated = storage::application::set_repo_origin(&st.deps, repo_id.clone(), Some(binding))
+        .await
+        .map_err(domain_status)?;
+    let _ = crate::origin_resolve::git_origin_for(&updated);
+
+    Ok(Json(json!({
+        "ok": true,
+        "repo_id": repo_id,
+        "slug": slug,
+        "migrated_to": { "repo": full_name, "subpath": subpath, "branch": branch },
+        "seed": seed_json,
+        "origin": updated.origin,
+        "note": "Project identity preserved (repo_id + catalog). Fresh seed commit under the subpath; S3-bundle history was not grafted.",
+    })))
+}
+
+/// Collect `(rel, content)` source files from a git origin's current `branch`
+/// tree (project-root scoped). Used by migration to re-seed under a subpath.
+fn collect_source_files_from_origin(
+    origin: &veil_server::git_origin::GitOrigin,
+    branch: &str,
+) -> Vec<(String, String)> {
+    let Ok(tmp) = origin.checkout_tmp(branch) else {
+        return Vec::new();
+    };
+    // The source root is the origin's project_root (honours any existing
+    // subpath binding — though a migrating S3 project is normally repo-root).
+    let root = origin.project_root(&tmp);
+    let mut out = Vec::new();
+    fn walk(base: &std::path::Path, dir: &std::path::Path, out: &mut Vec<(String, String)>) {
+        let Ok(rd) = std::fs::read_dir(dir) else { return };
+        for e in rd.flatten() {
+            let p = e.path();
+            let name = e.file_name().to_string_lossy().to_string();
+            if matches!(
+                name.as_str(),
+                ".git" | "target" | "generated" | "node_modules" | "dist" | ".veil-session.json"
+            ) {
+                continue;
+            }
+            if p.is_dir() {
+                walk(base, &p, out);
+            } else if let Ok(rel) = p.strip_prefix(base) {
+                if let Ok(content) = std::fs::read_to_string(&p) {
+                    out.push((rel.to_string_lossy().replace('\\', "/"), content));
+                }
+            }
+        }
+    }
+    walk(&root, &root, &mut out);
+    let _ = std::fs::remove_dir_all(&tmp);
+    out
+}
+
 /// GET /api/git/status — GitHub connection (no secrets) for Config + create.
-async fn git_status() -> Json<Value> {
-    let body = tokio::task::spawn_blocking(veil_server::git_provider::github_status_json)
+async fn git_status() -> Json<Value> {    let body = tokio::task::spawn_blocking(veil_server::git_provider::github_status_json)
         .await
         .unwrap_or_else(|e| json!({ "connected": false, "error": format!("join: {e}") }));
     Json(body)
@@ -1410,12 +1596,66 @@ async fn maybe_git_backed_merge(slug: &str, source: &str, target: &str) -> Optio
     })
 }
 
+/// Subpath attribution for a merge (hybrid model). Returns the set of VEIL
+/// project slugs whose subpaths the PR's changed files touch, or `None` when
+/// the repo is not git-backed / not shared / attribution can't be computed
+/// (caller then falls back to the single-project `may_ship`).
+///
+/// Two VEIL projects "share" a repo when their `OriginBinding::Git.repo`
+/// (`org/name`) matches. Changed paths are the name-only diff of the PR's
+/// `source..target` on the shared origin; each path is attributed to the
+/// project whose subpath it lies under.
+async fn touched_subpath_projects(
+    _cm: &CmState,
+    pr: &change_management::domain::types::PullRequest,
+    source: &str,
+    target: &str,
+    fallback_slug: &str,
+) -> Option<Vec<String>> {
+    let deps = resolve_storage_deps().await;
+    // The PR's own repo record (identity: provider org/name + subpath).
+    let this_repo = crate::origin_resolve::resolve_repo_full(&deps, &pr.repo_id.to_string())
+        .await
+        .ok()?;
+    let full_name = crate::origin_resolve::origin_repo_full_name(&this_repo)?;
+
+    // Enumerate sibling projects sharing the same provider repo.
+    let repos = storage::application::list_repos(&deps).await.ok()?;
+    let mut projects: Vec<veil_server::review::SubpathProject> = Vec::new();
+    for r in &repos {
+        if crate::origin_resolve::origin_repo_full_name(r).as_deref() == Some(full_name.as_str()) {
+            projects.push(veil_server::review::SubpathProject {
+                slug: r.slug.clone(),
+                subpath: crate::origin_resolve::origin_subpath(r),
+            });
+        }
+    }
+    // Not a shared repo (only this project binds it) → single-project gate.
+    if projects.len() <= 1 {
+        return None;
+    }
+
+    // Changed paths across the PR (name-only), via the shared git origin.
+    let origin = crate::origin_resolve::git_origin_for(&this_repo);
+    let changed = origin.changed_paths_between(source, target).ok()?;
+    if changed.is_empty() {
+        return None;
+    }
+    let touched = veil_server::review::attribute_paths_to_projects(&changed, &projects);
+    if touched.is_empty() {
+        // Attribution found nothing (paths outside any known subpath) — fall
+        // back to the single project so we never silently skip the gate.
+        Some(vec![fallback_slug.to_string()])
+    } else {
+        Some(touched)
+    }
+}
+
 async fn merge_pr(
     State(st): State<CmState>,
     Path(id): Path<String>,
     Json(body): Json<MergeBody>,
-) -> Result<Json<Value>, StatusCode> {
-    let id = Uuid::parse_str(&id).map_err(|_| StatusCode::BAD_REQUEST)?;
+) -> Result<Json<Value>, StatusCode> {    let id = Uuid::parse_str(&id).map_err(|_| StatusCode::BAD_REQUEST)?;
     let merger = if body.merger.is_empty() {
         "operator".into()
     } else {
@@ -1461,6 +1701,25 @@ so a `cr/…` branch is created and the session is published, then Merge."
             "hint": "Open Review, walk the change set, and press Approve. That record is the ship gate.",
             "audit_env": veil_server::review::audit_env_json(),
         })));
+    }
+    // Subpath (hybrid model): when the PR's repo is shared by multiple VEIL
+    // projects at distinct subpaths, the PR is attributed to EVERY project whose
+    // subpath its changed files touch, and ALL of them must be signed off before
+    // the shared-repo change can ship (decision 2). A single-subpath PR reduces
+    // to the `may_ship(slug)` check above.
+    if let Some(touched) = touched_subpath_projects(&st, &pr, &source, &target, &slug).await {
+        if touched.len() > 1 {
+            if let Err(e) = veil_server::review::may_ship_all(&touched, None) {
+                return Ok(Json(json!({
+                    "ok": false,
+                    "error": "sign_off_required_multi",
+                    "message": e,
+                    "touched_projects": touched,
+                    "hint": "This PR spans multiple subpath projects in a shared repo. Every touched project's Review must be Approved before it can ship.",
+                    "audit_env": veil_server::review::audit_env_json(),
+                })));
+            }
+        }
     }
     let _ = ensure_ci_passed(&st.deps, id, "merge", Some(slug.as_str())).await;
     match change_management::application::merge_pr(&st.deps, id, merger, slug.clone()).await {
@@ -4737,6 +4996,10 @@ pub async fn build_platform_router(
         .route(
             "/api/repos/{id}/origin",
             get(get_repo_origin).post(bind_repo_origin),
+        )
+        .route(
+            "/api/repos/{id}/migrate-to-subpath",
+            post(migrate_to_subpath),
         )
         .route("/api/git/status", get(git_status))
         .route("/api/read-file", post(read_file_api))

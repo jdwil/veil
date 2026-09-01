@@ -58,6 +58,30 @@ pub fn origin_prefix(repo_id: &str) -> String {
     format!("git/{}/", repo_id.trim().trim_matches('/'))
 }
 
+/// Normalise a subpath string: trimmed, no leading/trailing slashes, backslashes
+/// to forward slashes, `None` if empty. Rejects `..` traversal segments (returns
+/// `None`) so a stored/incoming subpath can never point outside the checkout.
+pub fn normalize_subpath(raw: Option<&str>) -> Option<String> {
+    let s = raw?.trim().replace('\\', "/");
+    let s = s.trim_matches('/');
+    if s.is_empty() {
+        return None;
+    }
+    if s.split('/').any(|seg| seg == ".." || seg == ".") {
+        return None;
+    }
+    Some(s.to_string())
+}
+
+/// Project root under a checkout for an optional (already-untrusted) subpath.
+/// `<work>/<subpath>` when a valid subpath is given, else `<work>`.
+pub fn project_root_under(work: &Path, subpath: Option<&str>) -> PathBuf {
+    match normalize_subpath(subpath) {
+        Some(sub) => work.join(sub),
+        None => work.to_path_buf(),
+    }
+}
+
 pub fn default_git_branch() -> String {
     std::env::var("VEIL_SOURCE_BRANCH").unwrap_or_else(|_| "main".into())
 }
@@ -162,11 +186,11 @@ pub struct RemoteConfig {
 
 impl RemoteConfig {
     /// Normalise the subpath: trimmed, no leading/trailing slashes, `None` if empty.
+    /// Also rejects `..`/`.` traversal segments (defense in depth: a
+    /// hand-corrupted catalog binding must never yield a project root that
+    /// escapes the checkout via `work.join("../x")`).
     pub fn subpath_norm(&self) -> Option<String> {
-        self.subpath
-            .as_deref()
-            .map(|s| s.trim().trim_matches('/').to_string())
-            .filter(|s| !s.is_empty())
+        normalize_subpath(self.subpath.as_deref())
     }
 
     /// The `org` / workspace segment of `org/name`.
@@ -842,6 +866,61 @@ impl GitOrigin {
         self.push(seed, branch)
     }
 
+    /// Seed a project **subpath** into a (possibly shared, non-empty) repo:
+    /// checkout the branch, and if `<subpath>/` has no source files yet, write
+    /// the provided scaffold there and push a FRESH commit. No-op if the subpath
+    /// already carries a project (idempotent create). `files` = (rel-in-subpath,
+    /// content). Returns the pushed commit sha, or `Ok(None)` when the subpath
+    /// was already populated.
+    ///
+    /// Only meaningful for a GitRemote origin bound to `subpath`.
+    pub fn seed_subpath(&self, files: &[(String, String)], branch: &str) -> Result<Option<String>, String> {
+        let Some(sub) = self.subpath() else {
+            return Err("seed_subpath: origin has no subpath binding".into());
+        };
+        let work = unique_tmp(&format!(
+            "veil-subpath-seed-{}",
+            &self.repo_id[..8.min(self.repo_id.len())]
+        ));
+        // Materialize the shared repo. An empty remote is fine — we create the
+        // first commit under the subpath.
+        let checkout_res = self.checkout(&work, branch, CheckoutMode::ResetHard);
+        if let Err(e) = checkout_res {
+            // Empty remote: initialise a fresh working tree on `branch`.
+            init_repo(&work, branch).map_err(|_| e)?;
+        }
+        let proj_root = work.join(&sub);
+        if has_source_files(&proj_root) {
+            let _ = fs::remove_dir_all(&work);
+            return Ok(None);
+        }
+        fs::create_dir_all(&proj_root)
+            .map_err(|e| format!("mkdir subpath {}: {e}", proj_root.display()))?;
+        for (rel, content) in files {
+            let rel = rel.trim_start_matches('/');
+            let p = proj_root.join(rel);
+            if let Some(parent) = p.parent() {
+                fs::create_dir_all(parent).map_err(|e| format!("mkdir {}: {e}", parent.display()))?;
+            }
+            fs::write(&p, content).map_err(|e| format!("write seed {}: {e}", p.display()))?;
+        }
+        ensure_gitignore(&work)?;
+        // Ensure we are on the target branch (fresh repo starts detached/default).
+        if current_branch(&work).ok().as_deref() != Some(branch) {
+            let _ = git(&work, &["checkout", "-B", branch]);
+        }
+        // Commit only the subpath (do not sweep sibling projects).
+        git(&work, &["add", "-A", "--", &sub])?;
+        if !status_dirty_under(&work, Some(&sub))? {
+            let _ = fs::remove_dir_all(&work);
+            return Ok(None);
+        }
+        git(&work, &["commit", "-m", &format!("seed {sub}: initial project scaffold")])?;
+        let sha = self.push(&work, branch);
+        let _ = fs::remove_dir_all(&work);
+        sha.map(Some)
+    }
+
     /// If origin is missing, import `repos/{id}/{branch}/` (legacy tree) as the first commit.
     pub fn import_legacy_tree(&self, branch: &str) -> Result<Option<String>, String> {
         if self.exists() {
@@ -1004,8 +1083,18 @@ impl GitOrigin {
             return Err("commit: workdir is not a git checkout".into());
         }
         ensure_gitignore(work)?;
-        git(work, &["add", "-A"])?;
-        if !status_dirty(work)? {
+        // Subpath projects commit only files under their own project root; a
+        // sibling project's dirty files in the same shared checkout must not be
+        // swept into this project's commit.
+        match self.subpath() {
+            Some(sub) => {
+                git(work, &["add", "-A", "--", &sub])?;
+            }
+            None => {
+                git(work, &["add", "-A"])?;
+            }
+        }
+        if !status_dirty_under(work, self.subpath().as_deref())? {
             return Err(
                 "nothing to commit — working tree clean. Edit with write_source first.".into(),
             );
@@ -1172,14 +1261,19 @@ impl GitOrigin {
 
     pub fn log(&self, work: &Path, n: usize) -> Result<Vec<LogEntry>, String> {
         let n = n.max(1).min(100).to_string();
-        let out = git(
-            work,
-            &[
-                "log",
-                &format!("-{n}"),
-                "--format=%H%x09%P%x09%cI%x09%an%x09%s",
-            ],
-        )?;
+        let mut args = vec![
+            "log".to_string(),
+            format!("-{n}"),
+            "--format=%H%x09%P%x09%cI%x09%an%x09%s".to_string(),
+        ];
+        // Scope to the subpath (hybrid model) so a subpath project's history
+        // shows only commits touching its own files.
+        if let Some(sub) = self.subpath() {
+            args.push("--".to_string());
+            args.push(sub);
+        }
+        let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        let out = git(work, &arg_refs)?;
         let mut entries = Vec::new();
         for line in out.lines() {
             let mut parts = line.splitn(5, '\t');
@@ -1239,12 +1333,61 @@ impl GitOrigin {
 
     /// Working-tree diff vs `HEAD` (`git diff HEAD` + untracked as new files).
     pub fn working_diff(work: &Path) -> Result<String, String> {
+        Self::working_diff_under(work, None)
+    }
+
+    /// `git status --porcelain` scoped to a subpath (hybrid model). `subpath`
+    /// `None` = whole checkout. Paths in the returned `StatusFile.path` are
+    /// **repo-relative** (i.e. still prefixed by `<subpath>/`), matching git's
+    /// porcelain output.
+    pub fn status_files_under(
+        work: &Path,
+        subpath: Option<&str>,
+    ) -> Result<Vec<StatusFile>, String> {
+        if !work.join(".git").is_dir() {
+            return Ok(vec![]);
+        }
+        let mut args = vec!["status", "--porcelain", "-uall"];
+        let sub = normalize_subpath(subpath);
+        if let Some(ref s) = sub {
+            args.push("--");
+            args.push(s.as_str());
+        }
+        let out = git(work, &args)?;
+        Ok(out
+            .lines()
+            .filter_map(|line| {
+                if line.len() < 4 {
+                    return None;
+                }
+                let status = line[..2].trim().to_string();
+                let path = line[3..].trim().replace(" -> ", "/");
+                if path.is_empty() {
+                    return None;
+                }
+                Some(StatusFile { path, status })
+            })
+            .collect())
+    }
+
+    /// Working-tree diff vs `HEAD` scoped to `subpath` (hybrid model), with
+    /// untracked files under the subpath rendered as new-file adds. `subpath`
+    /// `None` = whole checkout.
+    pub fn working_diff_under(work: &Path, subpath: Option<&str>) -> Result<String, String> {
         if !work.join(".git").is_dir() {
             return Ok(String::new());
         }
-        let tracked = git(work, &["diff", "--no-color", "HEAD"]).unwrap_or_default();
-        let untracked =
-            git(work, &["ls-files", "--others", "--exclude-standard"]).unwrap_or_default();
+        let sub = normalize_subpath(subpath);
+        let mut diff_args = vec!["diff", "--no-color", "HEAD"];
+        let mut ls_args = vec!["ls-files", "--others", "--exclude-standard"];
+        if let Some(ref s) = sub {
+            diff_args.push("--");
+            diff_args.push(s.as_str());
+            ls_args.push("--");
+            ls_args.push(s.as_str());
+        }
+        let tracked = git(work, &diff_args).unwrap_or_default();
+        let untracked = git(work, &ls_args).unwrap_or_default();
         if untracked.trim().is_empty() {
             return Ok(tracked);
         }
@@ -1306,6 +1449,50 @@ impl GitOrigin {
         let tmp = unique_tmp(&format!("ref-{branch}"));
         self.checkout(&tmp, branch, CheckoutMode::ResetHard)?;
         Ok(tmp)
+    }
+
+    /// Repo-relative paths changed between `from` and `to` (name-only). Used for
+    /// subpath attribution: which project subdirs a PR touches. Best-effort —
+    /// returns an empty vec on any failure.
+    pub fn changed_paths_between(&self, from: &str, to: &str) -> Result<Vec<String>, String> {
+        let tmp = unique_tmp("diff-names");
+        self.checkout(&tmp, to, CheckoutMode::ResetHard)?;
+        let spec = match &self.backend {
+            OriginBackend::GitRemote(cfg) => {
+                let auth = cfg.auth_args();
+                let _ = git_auth(
+                    &tmp,
+                    &auth,
+                    &[
+                        "fetch",
+                        "origin",
+                        &format!("+refs/heads/{from}:refs/remotes/origin/{from}"),
+                    ],
+                );
+                format!("origin/{from}...HEAD")
+            }
+            OriginBackend::S3Bundle => {
+                if let Some(remote) = self.download_tip(from) {
+                    let _ = git(
+                        &tmp,
+                        &[
+                            "fetch",
+                            &remote.bundle_path.to_string_lossy(),
+                            &format!("+refs/heads/{from}:refs/remotes/origin/{from}"),
+                        ],
+                    );
+                    let _ = fs::remove_file(&remote.bundle_path);
+                }
+                format!("origin/{from}...HEAD")
+            }
+        };
+        let out = git(&tmp, &["diff", "--name-only", &spec]).unwrap_or_default();
+        let _ = fs::remove_dir_all(&tmp);
+        Ok(out
+            .lines()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect())
     }
 
     pub fn list_tree_at(&self, work: &Path) -> Result<Vec<String>, String> {
@@ -1498,6 +1685,11 @@ impl GitOrigin {
             Some(sub) => work.join(sub),
             None => work.to_path_buf(),
         }
+    }
+
+    /// The normalised subpath for this origin, if bound to a repo subdirectory.
+    pub fn subpath(&self) -> Option<String> {
+        self.remote().and_then(|c| c.subpath_norm())
     }
 }
 
@@ -1775,10 +1967,21 @@ fn ensure_gitignore(work: &Path) -> Result<(), String> {
 }
 
 pub fn status_dirty(work: &Path) -> Result<bool, String> {
+    status_dirty_under(work, None)
+}
+
+/// Dirty check scoped to a subpath (hybrid model). `None` = whole checkout.
+pub fn status_dirty_under(work: &Path, subpath: Option<&str>) -> Result<bool, String> {
     if !work.join(".git").is_dir() {
         return Ok(false);
     }
-    let out = git(work, &["status", "--porcelain"])?;
+    let mut args = vec!["status", "--porcelain"];
+    let sub = normalize_subpath(subpath);
+    if let Some(ref s) = sub {
+        args.push("--");
+        args.push(s.as_str());
+    }
+    let out = git(work, &args)?;
     Ok(out.lines().any(|l| !l.trim().is_empty()))
 }
 
@@ -2557,6 +2760,129 @@ mod tests {
             origin.project_root(Path::new("/tmp/work")),
             Path::new("/tmp/work/agent-core")
         );
+        assert_eq!(origin.subpath().as_deref(), Some("agent-core"));
+    }
+
+    #[test]
+    fn normalize_subpath_rejects_traversal_and_trims() {
+        assert_eq!(normalize_subpath(Some("  /dlx-auth/ ")).as_deref(), Some("dlx-auth"));
+        assert_eq!(normalize_subpath(Some("a/b/c")).as_deref(), Some("a/b/c"));
+        assert_eq!(normalize_subpath(Some("a\\b")).as_deref(), Some("a/b"));
+        assert_eq!(normalize_subpath(Some("")), None);
+        assert_eq!(normalize_subpath(Some("   ")), None);
+        assert_eq!(normalize_subpath(None), None);
+        // Traversal is refused (never point outside the checkout).
+        assert_eq!(normalize_subpath(Some("../evil")), None);
+        assert_eq!(normalize_subpath(Some("a/../b")), None);
+        assert_eq!(normalize_subpath(Some("./a")), None);
+    }
+
+    #[test]
+    fn project_root_under_helper() {
+        assert_eq!(
+            project_root_under(Path::new("/w"), Some("sub")),
+            Path::new("/w/sub")
+        );
+        assert_eq!(project_root_under(Path::new("/w"), None), Path::new("/w"));
+        // Traversal collapses to the checkout root (never escapes).
+        assert_eq!(
+            project_root_under(Path::new("/w"), Some("../x")),
+            Path::new("/w")
+        );
+    }
+
+    /// Subpath-scoped status/diff/commit: two projects A/ and B/ live in one
+    /// checkout. Editing A/ must NOT surface B/ in A's status/diff, and A's
+    /// commit must not sweep B's dirty files.
+    #[test]
+    fn subpath_scoped_status_diff_commit() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // A shared "provider" bare repo seeded with two subpaths.
+        let bare = unique_tmp("mono-provider.git");
+        fs::create_dir_all(&bare).unwrap();
+        assert!(
+            Command::new("git")
+                .args(["init", "--bare", "-b", "main"])
+                .current_dir(&bare)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let seed = unique_tmp("mono-seed");
+        fs::create_dir_all(seed.join("dlx-auth/layers")).unwrap();
+        fs::create_dir_all(seed.join("dlx-bus/layers")).unwrap();
+        fs::write(seed.join("dlx-auth/main.veil"), "pkg Auth\n").unwrap();
+        fs::write(seed.join("dlx-auth/veil.toml"), "[package]\nname=\"auth\"\n").unwrap();
+        fs::write(seed.join("dlx-bus/main.veil"), "pkg Bus\n").unwrap();
+        fs::write(seed.join("dlx-bus/veil.toml"), "[package]\nname=\"bus\"\n").unwrap();
+        git(&seed, &["init", "-b", "main"]).unwrap();
+        git(&seed, &["add", "-A"]).unwrap();
+        git(&seed, &["commit", "-m", "seed mono"]).unwrap();
+        git(&seed, &["remote", "add", "origin", &bare.to_string_lossy()]).unwrap();
+        git(&seed, &["push", "origin", "main:main"]).unwrap();
+
+        let url = bare.to_string_lossy().to_string();
+        let file_url = format!("file://{}", bare.display());
+        unsafe {
+            std::env::set_var("VEIL_GITHUB_BASE_URL", &file_url);
+            std::env::set_var("VEIL_GITHUB_GH_CLI", "0");
+        }
+        let cfg_a = RemoteConfig {
+            provider: GitProvider::GitHub,
+            repo: "org/mono".into(),
+            subpath: Some("dlx-auth".into()),
+            branch: "main".into(),
+        };
+        let origin_a = GitOrigin::with_remote("repo-a", cfg_a);
+
+        // Checkout the whole repo (a subpath project shares the checkout).
+        let work = unique_tmp("mono-work");
+        clone_remote(&work, &url, &[], "main").unwrap();
+
+        // Dirty BOTH subpaths.
+        fs::write(work.join("dlx-auth/main.veil"), "pkg Auth\n  rec Token\n").unwrap();
+        fs::write(work.join("dlx-bus/main.veil"), "pkg Bus\n  rec Topic\n").unwrap();
+
+        // A's status/diff must show ONLY dlx-auth files.
+        let status_a = GitOrigin::status_files_under(&work, Some("dlx-auth")).unwrap();
+        assert!(
+            status_a.iter().all(|f| f.path.starts_with("dlx-auth/")),
+            "A status leaked non-subpath files: {status_a:?}"
+        );
+        assert!(
+            status_a.iter().any(|f| f.path == "dlx-auth/main.veil"),
+            "A status missing its own edit: {status_a:?}"
+        );
+        let diff_a = GitOrigin::working_diff_under(&work, Some("dlx-auth")).unwrap();
+        assert!(diff_a.contains("Token"), "A diff should show Token");
+        assert!(!diff_a.contains("Topic"), "A diff must NOT show B's Topic:\n{diff_a}");
+
+        // dirty check is subpath-scoped and true for both.
+        assert!(status_dirty_under(&work, Some("dlx-auth")).unwrap());
+        assert!(status_dirty_under(&work, Some("dlx-bus")).unwrap());
+
+        // A's commit must include only dlx-auth (git add -A -- dlx-auth).
+        origin_a.create_branch(&work, "feat-auth").unwrap();
+        let commit = origin_a
+            .commit_and_push(&work, "feat: token", "feat-auth")
+            .unwrap();
+        assert!(
+            commit.files.iter().all(|f| f.starts_with("dlx-auth/")),
+            "A commit swept non-subpath files: {:?}",
+            commit.files
+        );
+        // B's edit is still uncommitted (not swept into A's commit).
+        assert!(
+            status_dirty_under(&work, Some("dlx-bus")).unwrap(),
+            "B's edit must remain uncommitted after A commits its subpath"
+        );
+
+        unsafe {
+            std::env::remove_var("VEIL_GITHUB_BASE_URL");
+        }
+        let _ = fs::remove_dir_all(&bare);
+        let _ = fs::remove_dir_all(&seed);
+        let _ = fs::remove_dir_all(&work);
     }
 
     /// §1.3.1: per-repo → per-org/workspace → global provider precedence, and

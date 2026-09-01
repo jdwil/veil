@@ -505,8 +505,7 @@ pub fn record_pr(slug: &str, title: &str, pr_id: Option<&str>) -> OutstandingIte
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct ListFilter {
-    pub slug: Option<String>,
+pub struct ListFilter {    pub slug: Option<String>,
     pub session_id: Option<String>,
     pub status: Option<ItemStatus>,
 }
@@ -1050,6 +1049,81 @@ pub fn latest_approve(slug: &str, sha: Option<&str>) -> Option<SignOffRecord> {
     }).cloned()
 }
 
+// ─── Subpath attribution (hybrid model: N projects share one repo) ────────
+//
+// A PR / change touches repo-relative file paths. When several VEIL projects
+// bind the SAME repo at distinct subpaths, we attribute the change to EVERY
+// project whose subpath its files touch (path-prefix match), and the ship gate
+// requires ALL touched projects' sign-offs (decision 2). A single-subpath PR is
+// just one project's review — the common case.
+
+/// One project bound to a shared repo: its product slug + its subpath.
+/// `subpath = None` means the project owns the repo root (no other project can
+/// share it, so it only matches when it is the sole binding).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubpathProject {
+    pub slug: String,
+    pub subpath: Option<String>,
+}
+
+/// Attribute a set of repo-relative changed paths to the projects whose
+/// subpaths they touch. Pure + order-independent so it is unit-testable without
+/// a catalog. Returns the touched project slugs (sorted, de-duped).
+///
+/// Rules:
+/// - A path `p` touches project `P` when `P.subpath` is `None` (repo root — it
+///   owns everything) OR `p` is under `<P.subpath>/` (prefix on a path boundary).
+/// - The most specific subpath wins is NOT applied: nested subpaths are a
+///   configuration the design forbids (each project = a distinct subdir), so a
+///   path is attributed to every project it is under. In practice subpaths are
+///   siblings, so each path lands in exactly one project.
+pub fn attribute_paths_to_projects(
+    changed_paths: &[String],
+    projects: &[SubpathProject],
+) -> Vec<String> {
+    let mut touched: HashSet<String> = HashSet::new();
+    for raw in changed_paths {
+        let p = raw.trim().trim_start_matches('/').replace('\\', "/");
+        if p.is_empty() {
+            continue;
+        }
+        for proj in projects {
+            let hit = match proj.subpath.as_deref().map(|s| s.trim_matches('/')) {
+                None | Some("") => true, // repo-root project owns all paths
+                Some(sub) => p == sub || p.starts_with(&format!("{sub}/")),
+            };
+            if hit {
+                touched.insert(proj.slug.clone());
+            }
+        }
+    }
+    let mut out: Vec<String> = touched.into_iter().collect();
+    out.sort();
+    out
+}
+
+/// Ship gate for a set of touched project slugs: EVERY project must pass
+/// [`may_ship`]. Used when a PR touches multiple subpath projects — all of their
+/// review gates must be green before the shared-repo change can merge.
+pub fn may_ship_all(slugs: &[String], sha: Option<&str>) -> Result<(), String> {
+    let mut blocked = Vec::new();
+    for slug in slugs {
+        if let Err(e) = may_ship(slug, sha) {
+            blocked.push(format!("`{slug}`: {e}"));
+        }
+    }
+    if blocked.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "{} of {} touched project(s) not ready to ship — all must be signed off:\n{}",
+            blocked.len(),
+            slugs.len(),
+            blocked.join("\n")
+        ))
+    }
+}
+
 /// Merge / provision gate. New edits after sign-off re-open outstanding and block again.
 pub fn may_ship(slug: &str, sha: Option<&str>) -> Result<(), String> {
     let slug = slug.trim();
@@ -1084,8 +1158,7 @@ pub fn may_ship(slug: &str, sha: Option<&str>) -> Result<(), String> {
     ))
 }
 
-pub fn export_json() -> Value {
-    let guard = store().lock().unwrap_or_else(|e| e.into_inner());
+pub fn export_json() -> Value {    let guard = store().lock().unwrap_or_else(|e| e.into_inner());
     json!({
         "ok": true,
         "exported_at": now_rfc3339(),
@@ -1195,6 +1268,77 @@ mod tests {
             *s = ReviewState::default();
         }
         g
+    }
+
+    /// A diff touching only A/ attributes to A; a diff touching A/ and B/
+    /// attributes to both; the multi-project ship gate requires all touched.
+    #[test]
+    fn subpath_attribution_and_multi_gate() {
+        let _g = isolated();
+        let projects = vec![
+            SubpathProject { slug: "dlx-auth".into(), subpath: Some("dlx-auth".into()) },
+            SubpathProject { slug: "dlx-bus".into(), subpath: Some("dlx-bus".into()) },
+        ];
+
+        // Only A/ touched → attributes to dlx-auth alone.
+        let only_a = attribute_paths_to_projects(
+            &["dlx-auth/main.veil".into(), "dlx-auth/layers/x.layer".into()],
+            &projects,
+        );
+        assert_eq!(only_a, vec!["dlx-auth".to_string()]);
+
+        // A/ and B/ touched → both projects.
+        let both = attribute_paths_to_projects(
+            &["dlx-auth/main.veil".into(), "dlx-bus/main.veil".into()],
+            &projects,
+        );
+        assert_eq!(both, vec!["dlx-auth".to_string(), "dlx-bus".to_string()]);
+
+        // A leading slash + backslash normalise; unrelated path attributes to none.
+        let mixed = attribute_paths_to_projects(
+            &["/dlx-bus\\main.veil".into(), "README.md".into()],
+            &projects,
+        );
+        assert_eq!(mixed, vec!["dlx-bus".to_string()]);
+
+        // Repo-root project owns everything.
+        let root = vec![SubpathProject { slug: "solo".into(), subpath: None }];
+        let all = attribute_paths_to_projects(&["anything/here.veil".into()], &root);
+        assert_eq!(all, vec!["solo".to_string()]);
+
+        // Prefix boundary: "dlx-auth-extra/" must NOT match "dlx-auth".
+        let boundary = attribute_paths_to_projects(
+            &["dlx-auth-extra/main.veil".into()],
+            &projects,
+        );
+        assert!(boundary.is_empty(), "prefix must respect path boundary: {boundary:?}");
+
+        // Multi-project gate: with both touched and neither signed, ship blocks
+        // and the error names both projects.
+        record_file_edit("dlx-auth", "main.veil", None);
+        record_file_edit("dlx-bus", "main.veil", None);
+        let err = may_ship_all(&both, None).unwrap_err();
+        assert!(err.contains("dlx-auth") && err.contains("dlx-bus"), "{err}");
+
+        // Sign off ONLY A → still blocked (B outstanding).
+        sign_off(SignOffRequest {
+            slug: Some("dlx-auth".into()),
+            decision: "approve".into(),
+            actor: "operator".into(),
+            ..Default::default()
+        })
+        .expect("approve A");
+        assert!(may_ship_all(&both, None).is_err(), "must block until ALL touched projects pass");
+
+        // Sign off B too → now shippable.
+        sign_off(SignOffRequest {
+            slug: Some("dlx-bus".into()),
+            decision: "approve".into(),
+            actor: "operator".into(),
+            ..Default::default()
+        })
+        .expect("approve B");
+        assert!(may_ship_all(&both, None).is_ok(), "all touched signed → ship allowed");
     }
 
     #[test]

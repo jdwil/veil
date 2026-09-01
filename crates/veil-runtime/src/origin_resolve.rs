@@ -81,6 +81,19 @@ pub fn origin_subpath(repo: &Repo) -> Option<String> {
     }
 }
 
+/// The provider `org/name` for a git-backed repo (identity of the shared repo),
+/// or `None` for S3-backed repos. Two VEIL projects sharing this string bind the
+/// same physical repo at (distinct) subpaths.
+pub fn origin_repo_full_name(repo: &Repo) -> Option<String> {
+    match &repo.origin {
+        Some(OriginBinding::Git { repo: r, .. }) => {
+            let r = r.trim().trim_matches('/').to_string();
+            if r.is_empty() { None } else { Some(r) }
+        }
+        _ => None,
+    }
+}
+
 /// Resolve a UUID / slug / display name to the full `Repo` record (so callers
 /// can inspect the origin binding).
 pub async fn resolve_repo_full(
