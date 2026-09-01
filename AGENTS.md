@@ -34,6 +34,26 @@ scripts/dev-stack.sh ui
 Logs: `/tmp/veil-product-host.log`, `/tmp/veil-ui.log`.
 Env: `.env` (see `.env.example`). Typical keys: `AWS_PROFILE`, `VEIL_DDB_TABLE`, `BUCKET`.
 
+### Browser automation (rustBrowser MCP)
+
+Live UI diagnosis (navigate / screenshot / get_console_logs) needs a **ChromeDriver
+that matches the installed Google Chrome major version**, or every session fails with
+`session not created: This version of ChromeDriver only supports Chrome version N`.
+The distro `chromium` package's `/usr/bin/chromedriver` lags Chrome, so we pin a
+matching driver into `~/.local/bin` (ahead of `/usr/bin` on PATH; no sudo).
+
+```bash
+scripts/pin-chromedriver.sh          # install/refresh to match current Chrome
+scripts/pin-chromedriver.sh --check  # drift check only
+scripts/dev-stack.sh browser-check   # drift check + clear stale driver on :9515
+```
+
+Re-run `pin-chromedriver.sh` after a Chrome auto-update. If the MCP still reports a
+mismatch, a stale driver may be bound to :9515 — `browser-check` (or the MCP's
+`force_cleanup_orphaned_processes`) clears it so the MCP relaunches the pinned driver.
+Details: palace `sop-pin-chromedriver-for-mcp`, `incident-inner-agent-stale-branch`.
+
+
 ## Where code lives
 
 | Layer | Location | Language |

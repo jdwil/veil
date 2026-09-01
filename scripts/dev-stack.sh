@@ -2,7 +2,7 @@
 # Manage the single ProductHost backend + Vite UI.
 #
 # Usage:
-#   scripts/dev-stack.sh start|stop|restart|status|smoke
+#   scripts/dev-stack.sh start|stop|restart|status|smoke|browser-check
 #
 # Backend:  http://127.0.0.1:8080  (ProductHost — IDE + agent + platform APIs)
 # Frontend: http://127.0.0.1:5180  (Vite → proxies /api to :8080)
@@ -161,6 +161,33 @@ smoke() {
   fi
 }
 
+# Preflight for the rustBrowser MCP browser-automation tools.
+# The MCP launches `chromedriver` (bare name from PATH) to drive Google Chrome; a
+# major-version drift breaks navigate/screenshot/get_console_logs with
+# "session not created: This version of ChromeDriver only supports Chrome version N".
+# A stale old-version driver left listening on the WebDriver port also gets adopted by
+# the MCP as an "external healthy endpoint", reintroducing the mismatch — so we clear it.
+# See scripts/pin-chromedriver.sh and palace: incident-inner-agent-stale-branch.
+WEBDRIVER_PORT="${WEBDRIVER_PORT:-9515}"
+
+browser_check() {
+  local rc=0
+  if [[ -x "$ROOT/scripts/pin-chromedriver.sh" ]]; then
+    if ! "$ROOT/scripts/pin-chromedriver.sh" --check; then
+      echo "==> chromedriver drift detected — run: scripts/pin-chromedriver.sh" >&2
+      rc=1
+    fi
+  else
+    echo "==> (skip) scripts/pin-chromedriver.sh not found" >&2
+  fi
+  # Clear any stale WebDriver bound to the port so the MCP starts a fresh matching one.
+  if ss -tln 2>/dev/null | grep -qE ":${WEBDRIVER_PORT}\\b"; then
+    echo "==> stale WebDriver on :${WEBDRIVER_PORT} — killing so MCP relaunches a matching driver"
+    kill_port "$WEBDRIVER_PORT"
+  fi
+  return "$rc"
+}
+
 status() {
   echo "ports:"
   ss -tlnp 2>/dev/null | grep -E ":(${BACKEND_PORT}|${UI_PORT}|3000|3001|3210)\\b" || echo "  (none matching)"
@@ -184,6 +211,7 @@ case "$cmd" in
     ;;
   status) status ;;
   smoke) smoke ;;
+  browser-check) browser_check ;;
   backend)
     kill_port "$BACKEND_PORT"
     sleep 1
@@ -197,7 +225,7 @@ case "$cmd" in
     smoke
     ;;
   *)
-    echo "usage: $0 start|stop|restart|status|smoke|backend|ui" >&2
+    echo "usage: $0 start|stop|restart|status|smoke|backend|ui|browser-check" >&2
     exit 2
     ;;
 esac
