@@ -207,6 +207,10 @@ pub struct ContributionConfig {
     /// CDN base URL for bundle URLs stored in the registry
     /// (e.g. "https://assets.dev.dashlx.com/contributions").
     pub cdn_base_url: Option<String>,
+    /// Optional CloudFront distribution to invalidate after upload so the new
+    /// bundle serves immediately (configurable — invalidation only runs when
+    /// set). Invalidates the contribution's path (`/{prefix}/{id}/*`).
+    pub cloudfront_distribution_id: Option<String>,
     /// Display order in merged menus.
     pub order: u32,
     /// Slot manifest — maps slot names to their entries (serialized as JSON in TOML).

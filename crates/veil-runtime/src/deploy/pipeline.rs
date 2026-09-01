@@ -1320,6 +1320,7 @@ fn parse_toml_deploy_config(content: &str) -> Result<ProjectDeployConfig, String
                         name: String::new(),
                         bucket: "dlx-ai-contributions".to_string(),
                         cdn_base_url: None,
+                        cloudfront_distribution_id: None,
                         order: 100,
                         slots: serde_json::Value::Object(Default::default()),
                         entry: "src/index.ts".to_string(),
@@ -1331,6 +1332,7 @@ fn parse_toml_deploy_config(content: &str) -> Result<ProjectDeployConfig, String
                         "name" => contrib.name = value.to_string(),
                         "bucket" => contrib.bucket = value.to_string(),
                         "cdn_base_url" => contrib.cdn_base_url = Some(value.to_string()),
+                        "cloudfront_distribution_id" => contrib.cloudfront_distribution_id = Some(value.to_string()),
                         "order" => contrib.order = value.parse().unwrap_or(100),
                         "entry" => contrib.entry = value.to_string(),
                         "externals" => {

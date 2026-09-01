@@ -237,7 +237,9 @@ pub async fn run_contribution_deploy_ws(
     component_deps: &[super::component_deps::ComponentDep],
 ) {
     let job_id = uuid::Uuid::new_v4().to_string();
-    let steps: Vec<&str> = vec!["build", "upload", "register"];
+    let mut steps: Vec<&str> = vec!["build", "upload"];
+    if contribution.cloudfront_distribution_id.is_some() { steps.push("invalidate"); }
+    steps.push("register");
     let _ = send(ws, json!({"type": "started", "job_id": &job_id, "steps": steps})).await;
 
     // ─── BUILD (veil gen ui.veil → vite library bundle) ──────────────────────
@@ -302,6 +304,24 @@ pub async fn run_contribution_deploy_ws(
         Some(key)
     } else { None };
     let _ = send(ws, json!({"type": "step_done", "step": "upload", "ok": true})).await;
+
+    // ─── INVALIDATE (optional, configurable) ─────────────────────────────────
+    // Only when a CloudFront distribution is configured. Invalidates the
+    // contribution's path so the freshly-uploaded bundle serves immediately.
+    if let Some(dist_id) = &contribution.cloudfront_distribution_id {
+        let inval_path = format!("/{key_prefix}{cid}/*");
+        match run_streaming(ws, "invalidate", work, "aws", &[
+            "cloudfront", "create-invalidation",
+            "--distribution-id", dist_id, "--paths", &inval_path,
+        ]).await {
+            Ok(_) => { let _ = send(ws, json!({"type":"progress","step":"invalidate","resource":dist_id,"status":"invalidated"})).await; }
+            Err(e) => {
+                // Non-fatal: the bundle is uploaded; a stale CDN cache clears on
+                // its own TTL. Surface as a warning, don't fail the deploy.
+                let _ = send(ws, json!({"type":"log","step":"invalidate","line":format!("CloudFront invalidation failed (non-fatal): {e}")})).await;
+            }
+        }
+    }
 
     // ─── REGISTER (re-register the manifest on the runtime) ──────────────────
     let _ = send(ws, json!({"type": "step_start", "step": "register"})).await;

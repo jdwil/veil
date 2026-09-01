@@ -83,6 +83,10 @@ pub fn parse_deploy_config(value: &serde_json::Value) -> ProjectDeployConfig {
             .get("cdn_base_url")
             .and_then(|s| s.as_str())
             .map(|s| s.to_string()),
+        cloudfront_distribution_id: v
+            .get("cloudfront_distribution_id")
+            .and_then(|s| s.as_str())
+            .map(|s| s.to_string()),
         order: v
             .get("order")
             .and_then(|n| n.as_u64())
