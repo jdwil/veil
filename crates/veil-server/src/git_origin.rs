@@ -962,6 +962,81 @@ impl GitOrigin {
         sha.map(Some)
     }
 
+    /// Reconcile the git origin with the current `repos/{id}/{branch}/` source
+    /// tree. Unlike `import_legacy_tree` (create-only, bails if the bundle
+    /// exists), this UPDATES an existing bundle: it checks out the branch, syncs
+    /// the current S3 source over the working tree (deleting stale files), and
+    /// commits + pushes a new commit **iff** the tree actually changed. This is
+    /// what keeps the origin bundle tracking the source store instead of frozen
+    /// at first import. Returns Some(sha) if a new commit was pushed, Ok(None)
+    /// if already up to date (no diff), Err on failure. No-op in fs-store /
+    /// GitRemote modes (those are the source of truth themselves).
+    pub fn reconcile_from_repos(&self, branch: &str) -> Result<Option<String>, String> {
+        // GitRemote origins ARE the source of truth; nothing to reconcile.
+        if matches!(self.backend, OriginBackend::GitRemote(_)) {
+            return Ok(None);
+        }
+        if fs_store_root().is_some() {
+            return Ok(None);
+        }
+        // If the bundle doesn't exist yet, this is just the initial import.
+        if !self.exists() {
+            return self.import_legacy_tree(branch);
+        }
+        let tmp = unique_tmp(&format!(
+            "veil-git-reconcile-{}",
+            &self.repo_id[..8.min(self.repo_id.len())]
+        ));
+        // Check out the existing bundle so we commit on top of its history.
+        if let Err(e) = self.checkout(&tmp, branch, CheckoutMode::ResetHard) {
+            let _ = fs::remove_dir_all(&tmp);
+            return Err(format!("reconcile checkout: {e}"));
+        }
+        // Sync current repos/ source over the checkout, deleting files removed
+        // from the source so the git tree matches the source store exactly.
+        // Preserve the .git dir (aws s3 sync --exclude).
+        let src = format!("s3://{}/repos/{}/{branch}/", bucket(), self.repo_id);
+        let out = aws_base()
+            .args([
+                "s3",
+                "sync",
+                &src,
+                &tmp.to_string_lossy(),
+                "--exact-timestamps",
+                "--delete",
+                "--exclude",
+                ".git/*",
+            ])
+            .output()
+            .map_err(|e| format!("aws s3 sync reconcile: {e}"))?;
+        if !out.status.success() {
+            let _ = fs::remove_dir_all(&tmp);
+            return Err(format!(
+                "aws s3 sync reconcile failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            ));
+        }
+        if !has_source_files(&tmp) {
+            // Source store empty/unreachable — do NOT wipe the bundle.
+            let _ = fs::remove_dir_all(&tmp);
+            return Ok(None);
+        }
+        ensure_gitignore(&tmp)?;
+        // Stage everything; if nothing changed vs the bundle HEAD, we're done.
+        git(&tmp, &["add", "-A"])?;
+        if !status_dirty_under(&tmp, None)? {
+            let _ = fs::remove_dir_all(&tmp);
+            return Ok(None);
+        }
+        git(
+            &tmp,
+            &["commit", "-m", "Reconcile origin with source store"],
+        )?;
+        let sha = self.push(&tmp, branch);
+        let _ = fs::remove_dir_all(&tmp);
+        sha.map(Some)
+    }
+
     /// Ensure origin exists (import legacy tree or seed workdir).
     pub fn ensure(&self, seed: Option<&Path>, branch: &str) -> Result<(), String> {
         if let OriginBackend::GitRemote(cfg) = &self.backend {

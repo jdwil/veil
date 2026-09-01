@@ -860,17 +860,16 @@ pub fn backfill_git_origins() -> Vec<(String, String, Result<String, String>)> {
     let mut out = Vec::new();
     for (slug, repo_id) in pairs {
         let origin = crate::git_origin::GitOrigin::for_repo(&repo_id);
-        if origin.exists() {
-            out.push((slug, repo_id, Ok("already".into())));
-            continue;
-        }
-        let r = origin.import_legacy_tree(&br).and_then(|sha| match sha {
-            Some(s) => Ok(s),
-            None => Err("no legacy tree".into()),
+        // Reconcile the bundle with the current repos/ source, whether it
+        // exists (update) or not (initial import). This keeps the git origin
+        // tracking the source store instead of freezing at first import.
+        let r = origin.reconcile_from_repos(&br).map(|sha| match sha {
+            Some(s) => s,
+            None => "up-to-date".into(),
         });
         match &r {
-            Ok(sha) => tracing::info!(%slug, %repo_id, %sha, "backfilled git origin"),
-            Err(e) => tracing::warn!(%slug, %repo_id, error = %e, "git origin backfill skipped"),
+            Ok(sha) => tracing::info!(%slug, %repo_id, %sha, "reconciled git origin"),
+            Err(e) => tracing::warn!(%slug, %repo_id, error = %e, "git origin reconcile skipped"),
         }
         out.push((slug, repo_id, r));
     }
@@ -901,6 +900,24 @@ fn materialize_repo_with(repo_id: &str, work: &Path, delete: bool) -> Result<(),
             crate::git_origin::CheckoutMode::FetchKeepDirty
         };
         if origin.exists() {
+            // Read-side guarantee: before handing the agent a checkout, make the
+            // origin bundle reflect the current repos/ source store. Edits that
+            // reached repos/ without a session_commit (or a hand-refreshed store)
+            // would otherwise leave the bundle stale and the agent would
+            // materialize an old project. reconcile is a no-op (cheap) when the
+            // bundle already matches; best-effort — a reconcile failure must not
+            // block materialization, so we fall through to checkout regardless.
+            if !matches!(ide_source_mode(), IdeSourceMode::Local) {
+                match origin.reconcile_from_repos(&br) {
+                    Ok(Some(sha)) => {
+                        tracing::info!(%repo_id, %sha, "reconciled origin before materialize")
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        tracing::warn!(%repo_id, error = %e, "reconcile before materialize skipped")
+                    }
+                }
+            }
             return origin.checkout(work, &br, mode).map(|_| ());
         }
         if matches!(ide_source_mode(), IdeSourceMode::Local) {
