@@ -13,6 +13,25 @@
 //!   `~/.kiro/agents/veil.json` exists; see `config/kiro-agent-veil.json`)
 //! - `VEIL_ACP_TIMEOUT_SECS` (default 300)
 //!
+//! ## Inner-agent session tagging (Core Fix C)
+//!
+//! Kiro session transcripts live in `~/.kiro/sessions/cli/{id}.jsonl` (+
+//! `{id}.json` meta) and are **shared** across every Kiro on the box — the
+//! core/dev agent (`agent=hive`, cwd=repo) *and* this runtime's inner agent
+//! (`agent=veil`, cwd=`$TMP/veil-acp-cwd`). To find the inner agent's turn
+//! deterministically (not by a fragile cwd/agent heuristic) we tag it two ways:
+//!
+//! 1. **Env markers** on the spawned child — `VEIL_INNER_AGENT=1`,
+//!    `VEIL_INNER_PROJECT={slug}`, `VEIL_INNER_SESSION_TAG={tag}`. Queryable
+//!    while the child is alive via `/proc/{pid}/environ`.
+//! 2. **Sidecar mapping record** — when `session/new` returns a `sessionId`,
+//!    the runtime writes `~/.kiro/sessions/cli/{id}.veil-inner.json`
+//!    ({inner_agent, project, tag, kiro_session_id, created_at, runtime_pid})
+//!    **and** appends to `$TMP/veil-acp-cwd/.veil-inner-sessions.jsonl`. A
+//!    reader locates the inner agent's transcript by the presence of the
+//!    `*.veil-inner.json` sidecar — no cwd guessing. See palace
+//!    `incident-inner-agent-stale-branch`.
+//!
 //! VEIL does **not** rewrite `~/.kiro/agents/hive.json`. Use a dedicated
 //! `veil` agent that includes mind-palace/jira **and** `veil-ide-tools`.
 
@@ -92,20 +111,24 @@ impl AcpProcess {
         // Prefer project materialize / hub path so session cwd matches open product.
         let cwd = resolve_acp_cwd();
 
-        let mut child = Command::new(&cmd)
+        let mut command = Command::new(&cmd);
+        command
             .args(&args)
             .current_dir(&cwd)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|e| {
-                format!(
-                    "failed to spawn ACP agent `{cmd} {}`: {e}\n\
-                     Install Kiro CLI and ensure it is on PATH (or set VEIL_ACP_COMMAND).",
-                    args.join(" ")
-                )
-            })?;
+            .stderr(Stdio::piped());
+        // Core Fix C: tag this child as the inner (veil/ACP) agent so its Kiro
+        // session is identifiable without a cwd heuristic.
+        apply_inner_agent_env(&mut command);
+
+        let mut child = command.spawn().map_err(|e| {
+            format!(
+                "failed to spawn ACP agent `{cmd} {}`: {e}\n\
+                 Install Kiro CLI and ensure it is on PATH (or set VEIL_ACP_COMMAND).",
+                args.join(" ")
+            )
+        })?;
 
         let stdin = child.stdin.take().ok_or("ACP stdin missing")?;
         let stdout = child.stdout.take().ok_or("ACP stdout missing")?;
@@ -301,6 +324,13 @@ impl AcpProcess {
             .and_then(|v| v.as_str())
             .ok_or_else(|| format!("session/new missing sessionId: {result}"))?
             .to_string();
+        // Core Fix C: emit the deterministic inner-agent discriminator now that
+        // Kiro has minted the session id. Only when this is the sandboxed inner
+        // agent (remote source mode) — disk `veil serve` shares the operator's
+        // own cwd and needs no marker.
+        if acp_should_sandbox() {
+            record_inner_session(&sid);
+        }
         self.session_id = Some(sid.clone());
         Ok(sid)
     }
@@ -615,6 +645,97 @@ fn ensure_acp_sandbox() -> PathBuf {
         );
     }
     dir
+}
+
+/// Project slug baked into the inner-agent tag (`(none)` when hub-scoped).
+fn inner_project_slug() -> String {
+    get_acp_project().unwrap_or_else(|| "(none)".into())
+}
+
+/// Recognizable session tag for the inner (veil/ACP) agent.
+///
+/// Shape: `veil-runtime-inner:{project}:{kiro_session_id}`. Written into the
+/// sidecar record and the child env so a reader never has to guess on cwd.
+fn inner_session_tag(project: &str, kiro_session_id: &str) -> String {
+    format!("veil-runtime-inner:{project}:{kiro_session_id}")
+}
+
+/// Apply inner-agent env markers to the spawned Kiro child.
+///
+/// These land in the child's environment (queryable via `/proc/{pid}/environ`
+/// while alive) so the inner agent is identifiable without a cwd heuristic.
+/// The session id isn't known until `session/new`, so the tag env carries the
+/// project-scoped prefix; the full tag (with session id) is in the sidecar.
+fn apply_inner_agent_env(cmd: &mut Command) {
+    let project = inner_project_slug();
+    cmd.env("VEIL_INNER_AGENT", "1");
+    cmd.env("VEIL_INNER_PROJECT", &project);
+    cmd.env(
+        "VEIL_INNER_SESSION_TAG",
+        format!("veil-runtime-inner:{project}"),
+    );
+}
+
+/// Kiro session directory (`~/.kiro/sessions/cli`).
+fn kiro_sessions_dir() -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+    PathBuf::from(home).join(".kiro/sessions/cli")
+}
+
+/// Deterministic sidecar mapping so the inner agent's transcript is findable
+/// by marker (not cwd): given a kiro `session_id`, write
+/// `~/.kiro/sessions/cli/{id}.veil-inner.json` and append a line to
+/// `$TMP/veil-acp-cwd/.veil-inner-sessions.jsonl`.
+///
+/// A reader lists `*.veil-inner.json` (most-recent by mtime) → reads the paired
+/// `{id}.jsonl` transcript. No `agent_name`/`cwd` guessing required.
+fn record_inner_session(kiro_session_id: &str) {
+    let project = inner_project_slug();
+    let tag = inner_session_tag(&project, kiro_session_id);
+    let created_at = crate::session::chrono_now();
+    let record = json!({
+        "inner_agent": true,
+        "kiro_session_id": kiro_session_id,
+        "project": project,
+        "tag": tag,
+        "created_at": created_at,
+        "runtime_pid": std::process::id(),
+    });
+
+    // 1) Sidecar next to the Kiro session files (primary discriminator).
+    let dir = kiro_sessions_dir();
+    if std::fs::create_dir_all(&dir).is_ok() {
+        let sidecar = dir.join(format!("{kiro_session_id}.veil-inner.json"));
+        if let Ok(s) = serde_json::to_string_pretty(&record) {
+            if let Err(e) = std::fs::write(&sidecar, s) {
+                tracing::warn!(error = %e, path = %sidecar.display(),
+                    "failed to write inner-agent session sidecar");
+            }
+        }
+    } else {
+        tracing::warn!(dir = %dir.display(),
+            "could not create Kiro sessions dir for inner-agent sidecar");
+    }
+
+    // 2) Append to the runtime-owned log in the ACP sandbox (audit trail).
+    let log = ensure_acp_sandbox().join(".veil-inner-sessions.jsonl");
+    if let Ok(line) = serde_json::to_string(&record) {
+        use std::io::Write as _;
+        match std::fs::OpenOptions::new().create(true).append(true).open(&log) {
+            Ok(mut f) => {
+                let _ = writeln!(f, "{line}");
+            }
+            Err(e) => tracing::warn!(error = %e, path = %log.display(),
+                "failed to append inner-agent session log"),
+        }
+    }
+
+    tracing::info!(
+        kiro_session_id = %kiro_session_id,
+        project = %project,
+        tag = %tag,
+        "tagged inner-agent Kiro session (sidecar + log)"
+    );
 }
 
 /// Resolve the cwd for ACP sessions.
@@ -1014,5 +1135,99 @@ mod tests {
             "s3 mode cwd must be sandbox, got {cwd}"
         );
         assert!(!cwd.contains("veil-s3-ws"), "got {cwd}");
+    }
+
+    #[test]
+    fn inner_session_tag_is_recognizable_and_scoped() {
+        let tag = inner_session_tag("shop", "abc-123");
+        assert_eq!(tag, "veil-runtime-inner:shop:abc-123");
+        // Prefix is stable so a reader can match on `veil-runtime-inner:` alone.
+        assert!(tag.starts_with("veil-runtime-inner:"), "{tag}");
+        // Hub-scoped (no project) still tags unambiguously.
+        let none = inner_session_tag("(none)", "sid-9");
+        assert_eq!(none, "veil-runtime-inner:(none):sid-9");
+    }
+
+    #[test]
+    fn record_inner_session_writes_sidecar_and_log() {
+        let _t = TEST.lock().unwrap();
+        // Isolate HOME + TMP so we don't touch the real Kiro sessions dir.
+        let tmp = std::env::temp_dir().join(format!("veil-acp-tag-test-{}", std::process::id()));
+        let home = tmp.join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let prev_home = std::env::var("HOME").ok();
+        let prev_tmp = std::env::var("TMPDIR").ok();
+        // SAFETY: single-threaded test region guarded by TEST mutex.
+        unsafe {
+            std::env::set_var("HOME", &home);
+            std::env::set_var("TMPDIR", &tmp);
+        }
+        set_acp_project(Some("shop".into()));
+
+        let sid = "sess-tag-1234";
+        record_inner_session(sid);
+
+        // 1) Sidecar next to Kiro session files.
+        let sidecar = home
+            .join(".kiro/sessions/cli")
+            .join(format!("{sid}.veil-inner.json"));
+        assert!(sidecar.is_file(), "missing sidecar: {}", sidecar.display());
+        let doc: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&sidecar).unwrap()).unwrap();
+        assert_eq!(doc["inner_agent"], serde_json::json!(true));
+        assert_eq!(doc["kiro_session_id"], serde_json::json!(sid));
+        assert_eq!(doc["project"], serde_json::json!("shop"));
+        assert_eq!(doc["tag"], serde_json::json!("veil-runtime-inner:shop:sess-tag-1234"));
+        assert!(doc["created_at"].as_str().is_some());
+        assert!(doc["runtime_pid"].as_u64().is_some());
+
+        // 2) Append-only audit log in the ACP sandbox.
+        let log = tmp.join("veil-acp-cwd").join(".veil-inner-sessions.jsonl");
+        assert!(log.is_file(), "missing log: {}", log.display());
+        let line = std::fs::read_to_string(&log).unwrap();
+        assert!(line.contains(sid), "log missing session id: {line}");
+        assert!(line.contains("veil-runtime-inner:shop"), "log missing tag: {line}");
+
+        // Restore env.
+        set_acp_project(None);
+        unsafe {
+            match prev_home {
+                Some(h) => std::env::set_var("HOME", h),
+                None => std::env::remove_var("HOME"),
+            }
+            match prev_tmp {
+                Some(t) => std::env::set_var("TMPDIR", t),
+                None => std::env::remove_var("TMPDIR"),
+            }
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn apply_inner_agent_env_sets_markers() {
+        let _t = TEST.lock().unwrap();
+        set_acp_project(Some("relay".into()));
+        let mut cmd = Command::new("true");
+        apply_inner_agent_env(&mut cmd);
+        // Command exposes configured envs via get_envs().
+        let envs: std::collections::HashMap<String, Option<String>> = cmd
+            .get_envs()
+            .map(|(k, v)| {
+                (
+                    k.to_string_lossy().to_string(),
+                    v.map(|s| s.to_string_lossy().to_string()),
+                )
+            })
+            .collect();
+        assert_eq!(envs.get("VEIL_INNER_AGENT").unwrap().as_deref(), Some("1"));
+        assert_eq!(
+            envs.get("VEIL_INNER_PROJECT").unwrap().as_deref(),
+            Some("relay")
+        );
+        assert_eq!(
+            envs.get("VEIL_INNER_SESSION_TAG").unwrap().as_deref(),
+            Some("veil-runtime-inner:relay")
+        );
+        set_acp_project(None);
     }
 }
