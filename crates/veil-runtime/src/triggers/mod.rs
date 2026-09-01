@@ -78,6 +78,13 @@ pub struct TriggerRecord {
     /// Whether the trigger is active. Disabled triggers are stored but never fire.
     #[serde(default = "default_enabled")]
     pub enabled: bool,
+    /// Execution topology of the target artifact — where a fire is routed
+    /// (shared VEIL Execution Host vs. this project's dedicated
+    /// `veil-<slug>-executor`). Persisted here so the fire-routing path invokes
+    /// the RIGHT executor. `#[serde(default)]` ⇒ legacy rows (written before
+    /// topology existed) deserialize as [`ExecutionTopology::Shared`].
+    #[serde(default)]
+    pub topology: crate::execution_topology::ExecutionTopology,
     /// When this record was created.
     #[serde(default = "Utc::now")]
     pub created_at: DateTime<Utc>,
@@ -150,8 +157,15 @@ pub struct TriggerDeclaration {
 
 impl TriggerDeclaration {
     /// Promote a declaration into a stored [`TriggerRecord`] for `tenant` +
-    /// `artifact_id`, minting an id if the declaration did not supply one.
-    pub fn into_record(self, tenant_id: &str, artifact_id: &str) -> TriggerRecord {
+    /// `artifact_id`, minting an id if the declaration did not supply one and
+    /// stamping the project's execution `topology` (shared vs dedicated) so the
+    /// fire-routing path invokes the right executor.
+    pub fn into_record(
+        self,
+        tenant_id: &str,
+        artifact_id: &str,
+        topology: crate::execution_topology::ExecutionTopology,
+    ) -> TriggerRecord {
         let now = Utc::now();
         TriggerRecord {
             id: self
@@ -166,6 +180,7 @@ impl TriggerDeclaration {
             filter: self.filter,
             payload_template: self.payload_template,
             enabled: self.enabled,
+            topology,
             created_at: now,
             updated_at: now,
         }

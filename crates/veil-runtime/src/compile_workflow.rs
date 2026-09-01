@@ -225,11 +225,20 @@ pub async fn compile_and_register_with_triggers(
 ) -> Result<(CompiledWorkflow, usize), CompileError> {
     let compiled = compile_and_register(store, workflow_id, veil_source_path, work_dir).await?;
 
+    // Resolve the project's execution topology from `veil.toml [execution]`.
+    // The slug used to name a dedicated `veil-<slug>-executor` is the tenant's
+    // project slug; we derive it from the workflow id's last path segment (the
+    // deploy pipeline passes an explicit slug where it has one). A parse error
+    // (e.g. an unknown mode) fails the registration loudly.
+    let slug = topology_slug_for(workflow_id, tenant_id);
+    let topology = crate::execution_topology::parse_execution_from_file(veil_toml_path, &slug)
+        .map_err(CompileError::Registry)?;
+
     let declarations = crate::triggers::parse_triggers_from_file(veil_toml_path)
         .map_err(CompileError::Registry)?;
     let records: Vec<_> = declarations
         .into_iter()
-        .map(|d| d.into_record(tenant_id, workflow_id))
+        .map(|d| d.into_record(tenant_id, workflow_id, topology.clone()))
         .collect();
     let n = records.len();
     trigger_store
@@ -238,6 +247,21 @@ pub async fn compile_and_register_with_triggers(
         .map_err(|e| CompileError::Registry(format!("register triggers: {e}")))?;
 
     Ok((compiled, n))
+}
+
+/// Derive the project slug used to name a dedicated `veil-<slug>-executor` from
+/// the workflow/artifact id. Workflow ids look like `wf:tenant/onboarding`; the
+/// slug is the final path segment (`onboarding`). Falls back to the tenant id
+/// when the id has no path segment.
+fn topology_slug_for(workflow_id: &str, tenant_id: &str) -> String {
+    let after_scheme = workflow_id.split(':').next_back().unwrap_or(workflow_id);
+    let last = after_scheme.rsplit('/').next().unwrap_or(after_scheme);
+    let slug = last.trim();
+    if slug.is_empty() {
+        tenant_id.to_string()
+    } else {
+        slug.to_string()
+    }
 }
 
 /// Find the first `.so` (Linux) or `.dylib` (macOS) in a directory.

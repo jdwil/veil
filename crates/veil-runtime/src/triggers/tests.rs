@@ -4,6 +4,7 @@
 //! need no DDB. Store CRUD is gated behind `VEIL_SKIP_DDB_TESTS` / live creds.
 
 use super::*;
+use crate::execution_topology::ExecutionTopology;
 use serde_json::json;
 
 fn base_record(kind: TriggerKind) -> TriggerRecord {
@@ -18,6 +19,7 @@ fn base_record(kind: TriggerKind) -> TriggerRecord {
         filter: None,
         payload_template: None,
         enabled: true,
+        topology: crate::execution_topology::ExecutionTopology::Shared,
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
     }
@@ -79,12 +81,13 @@ fn declaration_promotes_and_mints_id() {
         payload_template: Some(json!({ "job": "sync" })),
         enabled: true,
     };
-    let rec = decl.into_record("acme", "wf:acme/sync");
+    let rec = decl.into_record("acme", "wf:acme/sync", ExecutionTopology::Shared);
     assert_eq!(rec.tenant_id, "acme");
     assert_eq!(rec.artifact_id, "wf:acme/sync");
     assert_eq!(rec.kind, TriggerKind::Schedule);
     assert_eq!(rec.schedule_expr.as_deref(), Some("rate(5 minutes)"));
     assert!(!rec.id.is_empty(), "id should be minted");
+    assert!(rec.topology.is_shared());
 }
 
 #[test]
@@ -99,9 +102,22 @@ fn declaration_preserves_supplied_id() {
         payload_template: None,
         enabled: false,
     };
-    let rec = decl.into_record("t", "a");
+    let rec = decl.into_record(
+        "t",
+        "a",
+        ExecutionTopology::Dedicated {
+            slug: "a".into(),
+            sizing: crate::execution_topology::DedicatedSizing::default(),
+        },
+    );
     assert_eq!(rec.id, "my-trigger");
     assert!(!rec.enabled);
+    // Topology is persisted onto the record for fire-routing.
+    assert!(rec.topology.is_dedicated());
+    assert_eq!(
+        rec.topology.dedicated_service_name().as_deref(),
+        Some("veil-a-executor")
+    );
 }
 
 #[test]
@@ -293,7 +309,7 @@ async fn trigger_resolve_then_invoke_runs_artifact() {
         payload_template: Some(json!({ "x": 21 })),
         enabled: true,
     };
-    let trigger = decl.into_record(&tenant, &artifact_id);
+    let trigger = decl.into_record(&tenant, &artifact_id, ExecutionTopology::Shared);
     let trigger_id = trigger.id.clone();
     trigger_store.put(&trigger).await.unwrap();
 

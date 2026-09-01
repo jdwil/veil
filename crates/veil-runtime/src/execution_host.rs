@@ -121,6 +121,11 @@ struct RegisterRequest {
     /// caller may override for a cross-built artifact.
     #[serde(default)]
     toolchain_fingerprint: Option<String>,
+    /// Execution topology for this artifact's triggers — shared (default) vs a
+    /// project-scoped dedicated executor. Persisted on each trigger row so the
+    /// fire-routing path targets the right executor. Absent ⇒ shared.
+    #[serde(default)]
+    topology: crate::execution_topology::ExecutionTopology,
     /// Trigger declarations flowing into registration.
     #[serde(default)]
     triggers: Vec<TriggerDeclaration>,
@@ -182,11 +187,12 @@ async fn register(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("put_artifact: {e}")))?;
 
-    // Promote + upsert trigger rows.
+    // Promote + upsert trigger rows, stamping the project's execution topology
+    // so fire-routing targets the shared host vs. a dedicated executor.
     let records: Vec<_> = req
         .triggers
         .into_iter()
-        .map(|d| d.into_record(&req.tenant_id, &req.artifact_id))
+        .map(|d| d.into_record(&req.tenant_id, &req.artifact_id, req.topology.clone()))
         .collect();
     let n = records.len();
     host.trigger_store
