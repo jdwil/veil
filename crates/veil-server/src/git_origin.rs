@@ -1130,6 +1130,46 @@ impl GitOrigin {
         .filter(|s| !s.is_empty())
     }
 
+    /// All branch names known to this origin.
+    ///
+    /// - `GitRemote`: `git ls-remote --heads` (the provider is source of truth).
+    /// - `S3Bundle`: enumerate `git/{repo}/refs/heads/{branch}/TIP` keys.
+    ///
+    /// Best-effort: returns `Ok(vec![])` rather than erroring when the origin
+    /// has no heads yet, so callers (list_files/session_status) can degrade to
+    /// "only the current branch is known" instead of failing the whole tool.
+    /// The result is sorted, de-duplicated, and always includes the default
+    /// branch first when present.
+    pub fn list_branches(&self) -> Result<Vec<String>, String> {
+        let mut names: Vec<String> = match &self.backend {
+            OriginBackend::GitRemote(cfg) => {
+                let out = git_ls_remote(&cfg.remote_url(), &cfg.auth_args())?;
+                out.lines()
+                    .filter_map(|line| {
+                        let refname = line.split_whitespace().nth(1)?;
+                        refname
+                            .strip_prefix("refs/heads/")
+                            .map(|s| s.to_string())
+                            .filter(|s| !s.is_empty())
+                    })
+                    .collect()
+            }
+            OriginBackend::S3Bundle => {
+                let prefix = format!("{}refs/heads/", origin_prefix(&self.repo_id));
+                store_list_branch_tips(&prefix)
+            }
+        };
+        names.sort();
+        names.dedup();
+        // Surface the default branch first when it exists.
+        let def = default_git_branch();
+        if let Some(pos) = names.iter().position(|b| b == &def) {
+            names.remove(pos);
+            names.insert(0, def);
+        }
+        Ok(names)
+    }
+
     pub fn log(&self, work: &Path, n: usize) -> Result<Vec<LogEntry>, String> {
         let n = n.max(1).min(100).to_string();
         let out = git(
@@ -2016,6 +2056,77 @@ fn store_get(key: &str) -> Option<Vec<u8>> {
     Some(out.stdout)
 }
 
+/// Enumerate branch names under a `git/{repo}/refs/heads/` prefix by finding
+/// each `{branch}/TIP` marker. Branch names may themselves contain `/`
+/// (`feat/foo`), so we strip the trailing `/TIP` rather than splitting.
+///
+/// - fs store: walk the directory tree.
+/// - S3: `aws s3 ls --recursive` under the prefix.
+///
+/// Returns an empty vec on any failure (best-effort; see `list_branches`).
+fn store_list_branch_tips(prefix: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Some(root) = fs_store_root() {
+        let base = root.join(prefix);
+        collect_tip_dirs(&base, &base, &mut out);
+        return out;
+    }
+    let s3_prefix = format!("s3://{}/{prefix}", bucket());
+    let Ok(cmd_out) = aws_base()
+        .args(["s3", "ls", "--recursive", &s3_prefix])
+        .output()
+    else {
+        return out;
+    };
+    if !cmd_out.status.success() {
+        return out;
+    }
+    // Lines: `2026-01-01 00:00:00       41 git/{repo}/refs/heads/{branch}/TIP`
+    for line in String::from_utf8_lossy(&cmd_out.stdout).lines() {
+        let Some(key) = line.split_whitespace().last() else {
+            continue;
+        };
+        if let Some(rest) = key.split(&format!("{prefix}")).nth(1) {
+            if let Some(branch) = rest.strip_suffix("/TIP") {
+                if !branch.is_empty() {
+                    out.push(branch.to_string());
+                }
+            }
+        } else if let Some(idx) = key.find("refs/heads/") {
+            // Fallback when the ls key is not prefixed exactly as expected.
+            let tail = &key[idx + "refs/heads/".len()..];
+            if let Some(branch) = tail.strip_suffix("/TIP") {
+                if !branch.is_empty() {
+                    out.push(branch.to_string());
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Recursively find directories containing a `TIP` file under `base`, emitting
+/// the path relative to `base` (slash-joined) as the branch name.
+fn collect_tip_dirs(base: &Path, dir: &Path, out: &mut Vec<String>) {
+    let Ok(rd) = fs::read_dir(dir) else {
+        return;
+    };
+    for e in rd.flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            if p.join("TIP").is_file() {
+                if let Ok(rel) = p.strip_prefix(base) {
+                    let name = rel.to_string_lossy().replace('\\', "/");
+                    if !name.is_empty() {
+                        out.push(name);
+                    }
+                }
+            }
+            collect_tip_dirs(base, &p, out);
+        }
+    }
+}
+
 fn store_delete(key: &str) -> Result<(), String> {
     if let Some(root) = fs_store_root() {
         let _ = fs::remove_file(root.join(key));
@@ -2147,7 +2258,113 @@ mod tests {
         });
     }
 
-    /// A `file://` bare repo stands in for a provider remote (GitHub/Bitbucket),
+    #[test]
+    fn list_branches_enumerates_s3_bundle_refs() {
+        with_store(|_| {
+            let origin = GitOrigin::new("99999999-8888-7777-6666-555555555555");
+            let seed = seed_tree();
+            origin.ensure_from_workdir(&seed, "main").unwrap();
+
+            // Only main exists so far.
+            let mut branches = origin.list_branches().unwrap();
+            assert_eq!(branches, vec!["main".to_string()], "just main initially");
+
+            // Push a feature branch and a slash-named branch.
+            let work = unique_tmp("lb-work");
+            origin
+                .checkout(&work, "main", CheckoutMode::ResetHard)
+                .unwrap();
+            origin.create_branch(&work, "feat-execution-runtime").unwrap();
+            fs::write(work.join("main.veil"), "pkg Shop\n  rec A\n").unwrap();
+            origin
+                .commit_and_push(&work, "feat: a", "feat-execution-runtime")
+                .unwrap();
+
+            origin.create_branch(&work, "work/deadbeef").unwrap();
+            fs::write(work.join("main.veil"), "pkg Shop\n  rec B\n").unwrap();
+            origin
+                .commit_and_push(&work, "wip", "work/deadbeef")
+                .unwrap();
+
+            branches = origin.list_branches().unwrap();
+            // Default branch is first, others present (slash-branch preserved).
+            assert_eq!(branches.first().map(String::as_str), Some("main"));
+            assert!(
+                branches.contains(&"feat-execution-runtime".to_string()),
+                "got {branches:?}"
+            );
+            assert!(
+                branches.contains(&"work/deadbeef".to_string()),
+                "slash branch preserved, got {branches:?}"
+            );
+            assert_eq!(branches.len(), 3, "no dupes: {branches:?}");
+
+            let _ = fs::remove_dir_all(&seed);
+            let _ = fs::remove_dir_all(&work);
+        });
+    }
+
+    /// Regression for `incident-inner-agent-stale-branch`: `main` holds the
+    /// full tree (incl. `ui.veil`) while a stale feature branch has only a
+    /// subset. Seating a fresh session on the resolved default (`main`) MUST
+    /// yield the full tree — not the stale branch's partial view — so the agent
+    /// never concludes a package is "absent" when it lives on main.
+    #[test]
+    fn mainline_checkout_has_ui_stale_feature_branch_does_not() {
+        with_store(|_| {
+            let origin = GitOrigin::new("deadbeef-0000-1111-2222-333344445555");
+            let seed = seed_tree();
+            // main additionally carries ui.veil (the /agents UI package).
+            fs::write(seed.join("ui.veil"), "pkg Ui\n  page Agents\n").unwrap();
+            origin.ensure_from_workdir(&seed, "main").unwrap();
+
+            // Create a stale feature branch WITHOUT ui.veil (5-file view).
+            let work = unique_tmp("stale");
+            origin
+                .checkout(&work, "main", CheckoutMode::ResetHard)
+                .unwrap();
+            origin
+                .create_branch(&work, "feat-execution-runtime")
+                .unwrap();
+            fs::remove_file(work.join("ui.veil")).unwrap();
+            origin
+                .commit_and_push(&work, "drop ui", "feat-execution-runtime")
+                .unwrap();
+
+            // Fresh session seated on the DEFAULT branch (main).
+            let fresh_main = unique_tmp("fresh-main");
+            origin
+                .checkout(&fresh_main, "main", CheckoutMode::ResetHard)
+                .unwrap();
+            assert!(
+                fresh_main.join("ui.veil").is_file(),
+                "mainline seat must include ui.veil (the /agents UI)"
+            );
+
+            // The stale branch genuinely lacks it — proving the incident's
+            // partial view, and why defaulting to it was the bug.
+            let stale = unique_tmp("stale-view");
+            origin
+                .checkout(&stale, "feat-execution-runtime", CheckoutMode::ResetHard)
+                .unwrap();
+            assert!(
+                !stale.join("ui.veil").is_file(),
+                "stale feature branch has no ui.veil"
+            );
+
+            // Both branches are enumerable so tools can surface the other.
+            let branches = origin.list_branches().unwrap();
+            assert!(branches.contains(&"main".to_string()));
+            assert!(branches.contains(&"feat-execution-runtime".to_string()));
+
+            let _ = fs::remove_dir_all(&seed);
+            let _ = fs::remove_dir_all(&work);
+            let _ = fs::remove_dir_all(&fresh_main);
+            let _ = fs::remove_dir_all(&stale);
+        });
+    }
+
+
     /// exercising the GitRemote transport: clone → branch → commit → push →
     /// re-checkout in a second workdir → diff → merge → verify on the remote.
     #[test]

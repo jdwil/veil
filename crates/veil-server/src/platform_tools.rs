@@ -595,6 +595,14 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                 "execution": { "domain": "none", "present": "goto" }
             });
             if let Ok(info) = bind {
+                out["branch"] = info
+                    .get("branch")
+                    .cloned()
+                    .unwrap_or(Value::Null);
+                out["other_branches"] = info
+                    .get("other_branches")
+                    .cloned()
+                    .unwrap_or_else(|| json!([]));
                 out["session"] = info;
                 out["bound"] = json!(true);
             }

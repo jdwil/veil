@@ -1284,20 +1284,8 @@ async fn dispatch_tool_scoped<P: SourceProvider>(
 
         "list_files" => {
             let files = provider.list_files().await;
-            if files.is_empty() {
-                return Ok("No files loaded in this project.".into());
-            }
-            let mut lines = vec!["files:".to_string()];
-            for f in &files {
-                let mark = if f.active { " ●" } else { "" };
-                let kind = f.kind.as_str();
-                lines.push(format!(
-                    "  [{idx}] {name} ({kind}){mark}",
-                    idx = f.index,
-                    name = f.name,
-                ));
-            }
-            Ok(lines.join("\n"))
+            let branch_ctx = current_branch_context();
+            Ok(format_list_files(branch_ctx.as_ref(), &files))
         }
 
         "select_file" => {
@@ -1477,12 +1465,20 @@ async fn resolve_session_for_ws(
 fn session_status_json(h: &std::sync::Arc<crate::session::SessionHandle>) -> Value {
     let meta = h.snapshot_meta();
     let uncommitted = h.has_uncommitted();
+    let current_branch = meta.branch_name.clone().unwrap_or_else(|| {
+        if meta.draft_mode {
+            "work".into()
+        } else {
+            meta.branch.clone()
+        }
+    });
+    let (all_branches, other_branches) = branches_for_repo(&meta.repo_id, &current_branch);
     json!({
         "session_id": meta.session_id,
         "slug": meta.slug,
-        "branch_name": meta.branch_name.clone().unwrap_or_else(|| {
-            if meta.draft_mode { "work".into() } else { meta.branch.clone() }
-        }),
+        "branch_name": current_branch,
+        "branches": all_branches,
+        "other_branches": other_branches,
         "base_branch": meta.base_branch.clone().unwrap_or_else(|| meta.branch.clone()),
         "draft_mode": meta.draft_mode,
         "on_feature_branch": meta.draft_mode,
@@ -1498,6 +1494,103 @@ fn session_status_json(h: &std::sync::Arc<crate::session::SessionHandle>) -> Val
         "git_status": h.git_status_files(),
         "host_check": crate::coding_gates::host_check_value(&meta),
     })
+}
+
+/// Render `list_files` output with branch context so the agent always knows
+/// which branch it is viewing and that other branches exist. Pure (testable).
+fn format_list_files(
+    branch_ctx: Option<&(String, Vec<String>)>,
+    files: &[crate::provider::FileInfo],
+) -> String {
+    if files.is_empty() {
+        return match branch_ctx {
+            Some((branch, others)) if !others.is_empty() => format!(
+                "No files loaded on branch '{branch}'. Other branches exist: {}. \
+                 The files you want may be on another branch — use switch_main \
+                 (mainline) or open the relevant branch before concluding they are absent.",
+                others.join(", ")
+            ),
+            Some((branch, _)) => format!("No files loaded on branch '{branch}'."),
+            None => "No files loaded in this project.".into(),
+        };
+    }
+    let mut lines = Vec::new();
+    match branch_ctx {
+        Some((branch, others)) if !others.is_empty() => {
+            lines.push(format!("branch: {branch}"));
+            lines.push(format!(
+                "other branches (files may live here — switch_main / open branch to check): {}",
+                others.join(", ")
+            ));
+        }
+        Some((branch, _)) => lines.push(format!("branch: {branch}")),
+        None => {}
+    }
+    lines.push("files:".to_string());
+    for f in files {
+        let mark = if f.active { " ●" } else { "" };
+        let kind = f.kind.as_str();
+        lines.push(format!(
+            "  [{idx}] {name} ({kind}){mark}",
+            idx = f.index,
+            name = f.name,
+        ));
+    }
+    lines.join("\n")
+}
+
+/// Branch visibility for a repo: `(all_branches, other_branches)` where
+/// `other_branches` excludes `current`.
+///
+/// Best-effort — an origin with no enumerable heads yet returns
+/// `([current], [])` so tools always report at least the current branch.
+/// Surfacing OTHER branches lets the agent consider "the thing I'm looking for
+/// may live on another branch" and `switch_main` / ask, instead of reasoning
+/// from a partial view as if it were the whole project (palace
+/// `incident-inner-agent-stale-branch`).
+pub(crate) fn branches_for_repo(repo_id: &str, current: &str) -> (Vec<String>, Vec<String>) {
+    if repo_id.is_empty() || !crate::git_origin::origin_enabled() {
+        return (vec![current.to_string()], vec![]);
+    }
+    let mut all = crate::git_origin::GitOrigin::for_repo(repo_id)
+        .list_branches()
+        .unwrap_or_default();
+    if !all.iter().any(|b| b == current) {
+        all.push(current.to_string());
+    }
+    let others: Vec<String> = all.iter().filter(|b| *b != current).cloned().collect();
+    (all, others)
+}
+
+/// Resolve the current bound project's `(current_branch, other_branches)` for
+/// file/IDE tools, so `list_files` never presents a single branch's tree as the
+/// whole project. Best-effort: `None` when no project is scoped or sessions are
+/// disabled (disk mode).
+fn current_branch_context() -> Option<(String, Vec<String>)> {
+    if !crate::session::sessions_enabled() {
+        return None;
+    }
+    let slug = crate::coding_gates::current_project_slug()
+        .or_else(|| {
+            crate::provider::hub::CURRENT_PROJECT
+                .try_with(|n| n.clone())
+                .ok()
+        })
+        .or_else(crate::acp::get_acp_project)
+        .filter(|s| !s.is_empty())?;
+    let h = crate::session::SessionManager::global()
+        .resolve_for_project(&slug)
+        .ok()?;
+    let meta = h.snapshot_meta();
+    let current = meta.branch_name.clone().unwrap_or_else(|| {
+        if meta.draft_mode {
+            "work".into()
+        } else {
+            meta.branch.clone()
+        }
+    });
+    let (_all, others) = branches_for_repo(&meta.repo_id, &current);
+    Some((current, others))
 }
 
 async fn dispatch_session_git_tool<P: SourceProvider>(
@@ -1784,5 +1877,149 @@ pub async fn post_mcp<P: SourceProvider>(
         (StatusCode::NO_CONTENT, Json(Value::Null)).into_response()
     } else {
         Json(resp).into_response()
+    }
+}
+
+#[cfg(test)]
+mod branch_visibility_tests {
+    use super::*;
+    use crate::git_origin::{CheckoutMode, GitOrigin};
+    use std::path::{Path, PathBuf};
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn tmp(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "veil-mcp-test-{name}-{}",
+            uuid::Uuid::new_v4().simple()
+        ))
+    }
+
+    fn seed(root: &Path) {
+        std::fs::create_dir_all(root.join("layers")).unwrap();
+        std::fs::write(root.join("main.veil"), "pkg Shop\n").unwrap();
+        std::fs::write(root.join("MISSION.md"), "# Shop\n").unwrap();
+        std::fs::write(root.join("veil.toml"), "[package]\nname=\"shop\"\n").unwrap();
+        std::fs::write(root.join("layers/main.layer"), "layer Main\n").unwrap();
+    }
+
+    /// `branches_for_repo` returns every branch and correctly partitions
+    /// `other_branches` (all except current) — this is the data that
+    /// `session_status_json` / `list_files` surface so the agent knows other
+    /// branches exist. Regression guard for `incident-inner-agent-stale-branch`.
+    #[test]
+    fn branches_for_repo_lists_others_excluding_current() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let store = tmp("store");
+        std::fs::create_dir_all(&store).unwrap();
+        // SAFETY: serialized by ENV_LOCK; sole writer for this process window.
+        unsafe {
+            std::env::set_var("VEIL_GIT_STORE_ROOT", &store);
+            std::env::set_var("VEIL_GIT_ORIGIN", "1");
+        }
+        crate::git_origin::clear_origin_cache();
+
+        let repo_id = "cafe0000-1111-2222-3333-444455556666";
+        let origin = GitOrigin::new(repo_id);
+        let s = tmp("seed");
+        seed(&s);
+        origin.ensure_from_workdir(&s, "main").unwrap();
+
+        // Add a stale feature branch (mirrors feat-execution-runtime).
+        let work = tmp("work");
+        origin.checkout(&work, "main", CheckoutMode::ResetHard).unwrap();
+        origin.create_branch(&work, "feat-execution-runtime").unwrap();
+        std::fs::write(work.join("main.veil"), "pkg Shop\n  rec Old\n").unwrap();
+        origin
+            .commit_and_push(&work, "stale", "feat-execution-runtime")
+            .unwrap();
+
+        // Viewing from main: the feature branch is an "other".
+        let (all, others) = branches_for_repo(repo_id, "main");
+        assert!(all.contains(&"main".to_string()), "all={all:?}");
+        assert!(
+            all.contains(&"feat-execution-runtime".to_string()),
+            "all={all:?}"
+        );
+        assert_eq!(others, vec!["feat-execution-runtime".to_string()]);
+
+        // Viewing from the feature branch: main is the "other".
+        let (_all2, others2) = branches_for_repo(repo_id, "feat-execution-runtime");
+        assert_eq!(others2, vec!["main".to_string()]);
+
+        // SAFETY: serialized by ENV_LOCK.
+        unsafe {
+            std::env::remove_var("VEIL_GIT_STORE_ROOT");
+            std::env::remove_var("VEIL_GIT_ORIGIN");
+        }
+        crate::git_origin::clear_origin_cache();
+        let _ = std::fs::remove_dir_all(&store);
+        let _ = std::fs::remove_dir_all(&s);
+        let _ = std::fs::remove_dir_all(&work);
+    }
+
+    /// With no git origin (disk mode), `branches_for_repo` degrades to just the
+    /// current branch and never errors.
+    #[test]
+    fn branches_for_repo_degrades_without_origin() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // SAFETY: serialized by ENV_LOCK.
+        unsafe {
+            std::env::set_var("VEIL_GIT_ORIGIN", "0");
+        }
+        let (all, others) = branches_for_repo("some-repo", "main");
+        assert_eq!(all, vec!["main".to_string()]);
+        assert!(others.is_empty());
+        unsafe {
+            std::env::remove_var("VEIL_GIT_ORIGIN");
+        }
+    }
+
+    fn file(index: usize, name: &str, active: bool) -> crate::provider::FileInfo {
+        crate::provider::FileInfo {
+            index,
+            name: name.into(),
+            path: format!("/tmp/{name}"),
+            editable: true,
+            active,
+            kind: crate::provider::FileKind::Package,
+            adapts: None,
+        }
+    }
+
+    /// `list_files` output names the current branch and lists other branches so
+    /// the agent never treats one branch's tree as the whole project.
+    #[test]
+    fn format_list_files_includes_branch_and_others() {
+        let ctx = (
+            "main".to_string(),
+            vec!["feat-execution-runtime".to_string()],
+        );
+        let files = vec![file(0, "main.veil", true), file(1, "ui.veil", false)];
+        let out = format_list_files(Some(&ctx), &files);
+        assert!(out.contains("branch: main"), "{out}");
+        assert!(out.contains("other branches"), "{out}");
+        assert!(out.contains("feat-execution-runtime"), "{out}");
+        assert!(out.contains("ui.veil"), "{out}");
+    }
+
+    /// Even with no files, the branch + other-branches signal is present so a
+    /// fresh/empty checkout does not read as "package absent".
+    #[test]
+    fn format_list_files_empty_names_branch_and_others() {
+        let ctx = ("feat-execution-runtime".to_string(), vec!["main".to_string()]);
+        let out = format_list_files(Some(&ctx), &[]);
+        assert!(out.contains("feat-execution-runtime"), "{out}");
+        assert!(out.contains("main"), "{out}");
+        assert!(out.contains("another branch"), "{out}");
+    }
+
+    /// No branch context (disk mode) — plain listing, no branch noise.
+    #[test]
+    fn format_list_files_no_ctx_plain() {
+        let out = format_list_files(None, &[file(0, "main.veil", true)]);
+        assert!(out.starts_with("files:"), "{out}");
+        assert!(!out.contains("branch:"), "{out}");
     }
 }

@@ -70,8 +70,16 @@ pub fn prepare_project(
 
     let mgr = SessionManager::global();
 
-    // Rematerialize mainline only. Never drop an active feature-branch workdir —
-    // that wiped agent commits and forced writes back onto main (empty PR diffs).
+    // Seat on the project MAINLINE by default. Only preserve a feature branch
+    // when the operator/session EXPLICITLY made it the active work line this
+    // process lifetime (create_branch / switch, tracked in active_by_project).
+    //
+    // A fresh turn must NOT inherit a stale leftover DRAFT session from DDB just
+    // because it is the most-recent draft — that seated the inner agent on
+    // `feat-execution-runtime` (5 files, no ui.veil) while `main` held the /agents
+    // UI, and it reasoned soundly from a partial view and gave up. See palace
+    // `incident-inner-agent-stale-branch`. Feature work is preserved on S3/DDB;
+    // we simply do not DEFAULT to it.
     let active_is_feature = [&slug, &ident.repo_id, slug_raw]
         .iter()
         .find_map(|key| {
@@ -85,7 +93,12 @@ pub fn prepare_project(
         })
         .unwrap_or(false);
 
-    if !active_is_feature {
+    let h = if active_is_feature {
+        // Explicit feature work line — keep it (never drop its dirty workdir).
+        mgr.resolve_for_project(&slug)?
+    } else {
+        // Default: mainline. Drop warm mainline handles first so open_mainline
+        // cold-attaches and re-syncs S3 (picks up merges from feature branches).
         if let Ok(list) = session::list_sessions_for_user(&session::current_user_id()) {
             for m in list
                 .into_iter()
@@ -94,9 +107,10 @@ pub fn prepare_project(
                 mgr.drop_handle(&m.session_id);
             }
         }
-    }
-
-    let h = mgr.resolve_for_project(&slug)?;
+        // open_mainline ignores feature-branch active preference and open draft
+        // handles, resolving/creating the mainline sticky session for this repo.
+        mgr.open_mainline(&slug)?
+    };
     let sid = h.session_id();
     if !h.snapshot_meta().draft_mode {
         let _ = h.pull_remote();
@@ -134,24 +148,63 @@ pub fn prepare_project(
         }),
     );
 
+    let meta = h.snapshot_meta();
+    let current_branch = meta
+        .branch_name
+        .clone()
+        .unwrap_or_else(|| if meta.draft_mode { "work".into() } else { meta.branch.clone() });
+    // Branch visibility: the agent MUST know which branch it is viewing and that
+    // others exist, so it never reasons from a partial view as if complete.
+    let all_branches: Vec<String> = if crate::git_origin::origin_enabled() {
+        let mut b = crate::git_origin::GitOrigin::for_repo(&meta.repo_id)
+            .list_branches()
+            .unwrap_or_default();
+        if !b.iter().any(|x| x == &current_branch) {
+            b.push(current_branch.clone());
+        }
+        b
+    } else {
+        vec![current_branch.clone()]
+    };
+    let other_branches: Vec<Value> = all_branches
+        .iter()
+        .filter(|b| *b != &current_branch)
+        .map(|b| Value::String(b.clone()))
+        .collect();
+
     Ok(json!({
         "ok": true,
         "slug": slug,
         "session_id": h.session_id(),
         "codingSessionId": h.session_id(),
-        "repo_id": h.snapshot_meta().repo_id,
-        "draft_mode": h.snapshot_meta().draft_mode,
-        "branch_name": h.snapshot_meta().branch_name,
-        "on_feature_branch": h.snapshot_meta().draft_mode,
+        "repo_id": meta.repo_id,
+        "draft_mode": meta.draft_mode,
+        "branch": current_branch,
+        "branch_name": current_branch,
+        "branches": all_branches,
+        "other_branches": other_branches,
+        "on_feature_branch": meta.draft_mode,
         "files": files,
         "file_count": files.len(),
         "active_file": if active.is_empty() { Value::Null } else { json!(active) },
         "message": format!(
-            "Bound project `{slug}` ({} files, branch={}, draft={}). \
-             Use write_source / read_source / veil_check — scope is set.",
+            "Bound project `{slug}` ({} files, branch={current_branch}, draft={}). \
+             {}Use write_source / read_source / veil_check — scope is set.",
             files.len(),
-            h.snapshot_meta().branch_name.as_deref().unwrap_or("main"),
-            h.snapshot_meta().draft_mode,
+            meta.draft_mode,
+            if other_branches.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    "Other branches exist ({}) — if a file/package you expect is missing, \
+                     it may be on another branch; use switch_main or open that branch. ",
+                    other_branches
+                        .iter()
+                        .filter_map(|v| v.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            },
         ),
     }))
 }
