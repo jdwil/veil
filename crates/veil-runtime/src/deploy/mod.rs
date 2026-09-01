@@ -12,6 +12,7 @@
 pub mod build_contribution;
 pub mod build_frontend;
 pub mod build_rust;
+pub mod component_deps;
 pub mod config;
 pub mod deploy_frontend;
 pub mod deploy_lambda;

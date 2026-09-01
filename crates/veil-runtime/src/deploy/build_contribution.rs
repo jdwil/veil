@@ -1,5 +1,6 @@
-//! Contribution build step — veil gen TypeScript → generate vite.config.ts (library mode) →
-//! npm install → vite build → single ES module bundle (dist/index.js + optional dist/style.css).
+//! Contribution build step — veil gen TypeScript → materialize cross-project UI
+//! components → generate vite.config.ts (library mode) → npm install → vite build
+//! → single ES module bundle (dist/index.js + optional dist/style.css).
 //!
 //! Unlike `build_frontend.rs` which builds a full SPA, this builds a **library bundle**:
 //! - Entry: src/index.ts (re-exports named Svelte components)
@@ -125,6 +126,7 @@ pub async fn run(
     veil_file: &str,
     source_dir: &Path,
     contribution: &ContributionConfig,
+    component_deps: &[super::component_deps::ComponentDep],
 ) -> Result<ContributionBuildResult, String> {
     let gen_dir = config::generated_dir(slug);
 
@@ -154,6 +156,21 @@ pub async fn run(
         return Err(format!("veil gen (typescript) failed: {stderr}"));
     }
     info!(slug, "veil gen (typescript) complete for contribution build");
+
+    // Step 1b: Materialize cross-project UI components. Any component-provider
+    // layer the consumer `use`s contributes its exported `$lib/components/*.svelte`
+    // (+ transitive deps) into the generated tree so emitted imports resolve.
+    // No-op when there are no external component deps (regression-safe).
+    super::component_deps::materialize_component_deps(&gen_dir, component_deps)
+        .await
+        .map_err(|e| format!("materialize component deps: {e}"))?;
+    if !component_deps.is_empty() {
+        info!(
+            slug,
+            n_providers = component_deps.len(),
+            "cross-project components materialized into contribution build tree"
+        );
+    }
 
     // Step 2: Write build config files (overwrite any codegen-produced ones)
     let vite_config = generate_vite_library_config(contribution);

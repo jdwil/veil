@@ -234,6 +234,7 @@ pub async fn run_contribution_deploy_ws(
     slug: &str,
     source_dir: &Path,
     contribution: &super::types::ContributionConfig,
+    component_deps: &[super::component_deps::ComponentDep],
 ) {
     let job_id = uuid::Uuid::new_v4().to_string();
     let steps: Vec<&str> = vec!["build", "upload", "register"];
@@ -242,7 +243,9 @@ pub async fn run_contribution_deploy_ws(
     // ─── BUILD (veil gen ui.veil → vite library bundle) ──────────────────────
     let _ = send(ws, json!({"type": "step_start", "step": "build"})).await;
     let veil_file = "ui.veil";
-    let build_res = super::build_contribution::run(slug, veil_file, source_dir, contribution).await;
+    let build_res =
+        super::build_contribution::run(slug, veil_file, source_dir, contribution, component_deps)
+            .await;
     let build = match build_res {
         Ok(b) => {
             let _ = send(ws, json!({"type": "step_done", "step": "build", "ok": true})).await;

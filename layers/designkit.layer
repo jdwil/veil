@@ -24,6 +24,13 @@ pkg designkit v1
   author "VEIL"
   use sveltekit5
 
+  # Cross-project component provider: designkit vocabulary is implemented in a
+  # separate library project. Any project that `use designkit` gets these
+  # components materialized into its build tree automatically.
+  implemented_by dlx-designkit
+  provides CollectionView StatusPill EntityIdentity ViewModeToggle PageHeader EmptyState
+  provides CreateFormShell DetailShell DetailField FormProgress FormSection FormField
+
   # ─── Collection / list chrome ───────────────────────────────────────────
 
   construct CollectionView

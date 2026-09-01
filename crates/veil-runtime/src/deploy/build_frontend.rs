@@ -18,7 +18,12 @@ pub struct FrontendBuildResult {
 /// 2. npm install
 /// 3. npm run build
 /// Output: generated/build/ or generated/dist/ directory with static files.
-pub async fn run(slug: &str, veil_file: &str, source_dir: &Path) -> Result<FrontendBuildResult, String> {
+pub async fn run(
+    slug: &str,
+    veil_file: &str,
+    source_dir: &Path,
+    component_deps: &[super::component_deps::ComponentDep],
+) -> Result<FrontendBuildResult, String> {
     let gen_dir = config::generated_dir(slug);
 
     tokio::fs::create_dir_all(&gen_dir)
@@ -47,6 +52,19 @@ pub async fn run(slug: &str, veil_file: &str, source_dir: &Path) -> Result<Front
         return Err(format!("veil gen (typescript) failed: {stderr}"));
     }
     info!(slug, "veil gen (typescript) complete");
+
+    // Step 1b: Materialize cross-project UI components (data-driven; no-op when
+    // there are no external component deps). See deploy::component_deps.
+    super::component_deps::materialize_component_deps(&gen_dir, component_deps)
+        .await
+        .map_err(|e| format!("materialize component deps: {e}"))?;
+    if !component_deps.is_empty() {
+        info!(
+            slug,
+            n_providers = component_deps.len(),
+            "cross-project components materialized into frontend build tree"
+        );
+    }
 
     // Step 2: npm install
     let npm_install = Command::new("npm")

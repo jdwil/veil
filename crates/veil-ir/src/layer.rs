@@ -3181,6 +3181,36 @@ pub struct RawLayer {
     /// When present, the layer acts as a library: the companion is parsed and its
     /// constructs are merged into consuming projects.
     pub library: Option<String>,
+    /// Cross-project UI component provider metadata, if this layer declares one.
+    /// Present when the layer declares `implemented_by <project-slug>` and one or
+    /// more `provides <Comp> …` directives. Enables the ProductHost UI build to
+    /// materialize the implementing project's Svelte components into a consumer's
+    /// generated tree. Fully data-driven — no project names in the engine.
+    pub component_provider: Option<ComponentProvider>,
+}
+
+/// Cross-project UI component provider declared by a vocabulary layer.
+///
+/// A layer that provides component *vocabulary* (e.g. a design-kit layer) may
+/// declare the separate project that *implements* those components plus the
+/// exported component names. When a consumer `use`s such a layer, the UI build
+/// resolves the implementing project, generates it, and copies the exported
+/// `src/lib/components/<Name>.svelte` into the consumer's generated tree so the
+/// emitted `$lib/components/<Name>.svelte` imports resolve.
+///
+/// Declared in the `.layer` file (top-level, inside the `pkg` body) as:
+/// ```text
+///   implemented_by dlx-designkit
+///   provides CollectionView StatusPill DetailShell
+///   provides FormField FormSection
+/// ```
+/// `provides` is repeatable; names accumulate.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ComponentProvider {
+    /// Slug of the project that implements the exported components.
+    pub implemented_by: String,
+    /// Exported component names (PascalCase, matching `<Name>.svelte`).
+    pub provides: Vec<String>,
 }
 
 /// Pkg-level `use` names in a layer body (`use deploy`, `use harness`, …).
@@ -3196,6 +3226,61 @@ fn collect_layer_use_names(content: &str) -> Vec<String> {
         }
     }
     deps
+}
+
+/// Extract the cross-project UI component provider declaration from raw `.layer`
+/// content, if present. Lightweight standalone parse (no LayerRegistry needed) so
+/// hosts (e.g. the ProductHost UI build) can resolve component dependencies from
+/// materialized layer files.
+///
+/// Reads top-level `implemented_by <slug>` and `provides <Comp> …` directives
+/// inside the `pkg` body. `provides` is repeatable; names accumulate and are
+/// de-duplicated. Returns `None` unless BOTH an implementing project and at least
+/// one exported component are declared. Fully data-driven — no project names in
+/// the engine.
+pub fn parse_layer_component_provider(content: &str) -> Option<ComponentProvider> {
+    let mut implemented_by: Option<String> = None;
+    let mut provides: Vec<String> = Vec::new();
+    for line in content.lines() {
+        let t = line.trim();
+        if let Some(slug) = t.strip_prefix("implemented_by ") {
+            let slug = slug.trim();
+            if !slug.is_empty() {
+                implemented_by = Some(slug.to_string());
+            }
+        } else if let Some(rest) = t.strip_prefix("provides ") {
+            for name in rest.split_whitespace() {
+                let name = name.trim();
+                if !name.is_empty() && !provides.iter().any(|n| n == name) {
+                    provides.push(name.to_string());
+                }
+            }
+        }
+    }
+    match (implemented_by, provides.is_empty()) {
+        (Some(implemented_by), false) => Some(ComponentProvider {
+            implemented_by,
+            provides,
+        }),
+        _ => None,
+    }
+}
+
+/// Collect top-level `use <name>` package/layer names from `.veil` source.
+/// Lightweight standalone parse used by hosts to determine which layers a
+/// consumer depends on without building a full IR. De-duplicates in order.
+pub fn collect_veil_use_names(content: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    for line in content.lines() {
+        let t = line.trim();
+        if let Some(rest) = t.strip_prefix("use ") {
+            let name = rest.split_whitespace().next().unwrap_or("").trim();
+            if !name.is_empty() && !names.iter().any(|n| n == name) {
+                names.push(name.to_string());
+            }
+        }
+    }
+    names
 }
 
 /// Parse a `.layer` file (public for IDE / check; DSL-003).
@@ -3266,6 +3351,9 @@ pub fn parse_layer_file(content: &str, layer_name: &str) -> Result<RawLayer, Str
     let mut pass_current_actions: Vec<RuleAction> = Vec::new();
     // Library companion file path (from `library <path>` directive)
     let mut library_path: Option<String> = None;
+    // Cross-project component provider metadata (from `implemented_by` + `provides`)
+    let mut cp_implemented_by: Option<String> = None;
+    let mut cp_provides: Vec<String> = Vec::new();
     // In-progress `view` under `present` (flushed on next view / role / section).
     let mut present_view: Option<crate::presentation::ViewSpec> = None;
     let mut errors: Vec<String> = Vec::new();
@@ -3875,6 +3963,30 @@ pub fn parse_layer_file(content: &str, layer_name: &str) -> Result<RawLayer, Str
             continue;
         }
 
+        // Handle `implemented_by <project-slug>` directive: the separate project
+        // that implements this layer's exported UI components (cross-project
+        // component resolution). Data-driven — no project names in the engine.
+        if let Some(slug) = trimmed.strip_prefix("implemented_by ") {
+            let slug = slug.trim();
+            if !slug.is_empty() {
+                cp_implemented_by = Some(slug.to_string());
+            }
+            continue;
+        }
+
+        // Handle `provides <Comp1> <Comp2> …` directive: exported component names
+        // this layer's implementing project makes available. Repeatable; names
+        // accumulate. Matches the emitted `$lib/components/<Name>.svelte` imports.
+        if let Some(rest) = trimmed.strip_prefix("provides ") {
+            for name in rest.split_whitespace() {
+                let name = name.trim();
+                if !name.is_empty() && !cp_provides.iter().any(|n| n == name) {
+                    cp_provides.push(name.to_string());
+                }
+            }
+            continue;
+        }
+
         if trimmed.starts_with("construct ") {
             flush_present_view(&mut current, &mut present_view);
             if let Some(item) = current.take() {
@@ -4339,6 +4451,15 @@ pub fn parse_layer_file(content: &str, layer_name: &str) -> Result<RawLayer, Str
         shared_emit,
         harness_render_templates,
         library: library_path,
+        component_provider: match (cp_implemented_by, cp_provides.is_empty()) {
+            // A provider is only meaningful when it names an implementing project
+            // AND exports at least one component. Otherwise leave it None.
+            (Some(implemented_by), false) => Some(ComponentProvider {
+                implemented_by,
+                provides: cp_provides,
+            }),
+            _ => None,
+        },
     })
 }
 
@@ -5204,6 +5325,56 @@ mod tests {
     use std::sync::Mutex;
 
     static STUBS_DIR_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn parse_component_provider_directives() {
+        let src = r#"
+pkg widgetkit v1
+  desc "Widget vocabulary"
+  implemented_by acme-widgetkit
+  provides CollectionView StatusPill
+  provides DetailShell
+
+  construct CollectionView
+    kw collection_view
+    mt struct
+"#;
+        let raw = parse_layer_file(src, "widgetkit").expect("parse");
+        let cp = raw.component_provider.expect("component_provider present");
+        assert_eq!(cp.implemented_by, "acme-widgetkit");
+        assert_eq!(cp.provides, vec!["CollectionView", "StatusPill", "DetailShell"]);
+    }
+
+    #[test]
+    fn component_provider_absent_without_directives() {
+        let src = "pkg plain v1\n  construct Foo\n    kw foo\n    mt struct\n";
+        let raw = parse_layer_file(src, "plain").expect("parse");
+        assert!(raw.component_provider.is_none());
+    }
+
+    #[test]
+    fn component_provider_requires_both_implementer_and_exports() {
+        // implemented_by only → None
+        let a = parse_layer_component_provider("pkg x v1\n  implemented_by acme-x\n");
+        assert!(a.is_none(), "implementer without provides must be None");
+        // provides only → None
+        let b = parse_layer_component_provider("pkg x v1\n  provides Foo Bar\n");
+        assert!(b.is_none(), "provides without implementer must be None");
+        // both → Some
+        let c = parse_layer_component_provider(
+            "pkg x v1\n  implemented_by acme-x\n  provides Foo Bar\n",
+        )
+        .expect("both present → Some");
+        assert_eq!(c.implemented_by, "acme-x");
+        assert_eq!(c.provides, vec!["Foo", "Bar"]);
+    }
+
+    #[test]
+    fn collect_veil_use_names_dedups_in_order() {
+        let src = "pkg app\n  use designkit\n  use ddd\n  use designkit\n\n  agg Foo\n";
+        let names = collect_veil_use_names(src);
+        assert_eq!(names, vec!["designkit", "ddd"]);
+    }
 
     #[test]
     fn parse_review_policy_svelte_block() {

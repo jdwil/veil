@@ -691,8 +691,14 @@ impl PipelineState {
             let contribution = config.contribution.as_ref().ok_or(
                 "deploy type is 'contribution' but [deploy.contribution] section is missing"
             )?;
+            // Resolve cross-project UI component dependencies (data-driven via the
+            // consumer's component-provider layers). Empty when there are none.
+            let component_deps = super::component_deps::resolve_component_deps(
+                &self.storage_deps, source_dir, veil_file,
+            ).await;
             let result =
-                build_contribution::run(slug, veil_file, source_dir, contribution).await?;
+                build_contribution::run(slug, veil_file, source_dir, contribution, &component_deps)
+                    .await?;
             // Store artifact hash in the job
             {
                 let mut jobs = self.jobs.lock().await;
@@ -739,7 +745,12 @@ impl PipelineState {
                 ))
             }
             BuildTarget::Typescript => {
-                let result = build_frontend::run(slug, veil_file, source_dir).await?;
+                // Resolve cross-project UI component dependencies (data-driven).
+                let component_deps = super::component_deps::resolve_component_deps(
+                    &self.storage_deps, source_dir, veil_file,
+                ).await;
+                let result =
+                    build_frontend::run(slug, veil_file, source_dir, &component_deps).await?;
                 Ok(format!("Frontend build complete. Output: {}", result.build_dir))
             }
         }

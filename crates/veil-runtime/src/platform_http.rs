@@ -3455,9 +3455,9 @@ async fn deploy_ws_session(
             // bucket → re-register manifest. Reads [deploy.contribution] and
             // materializes the full project (ui.veil + layers) so veil gen works.
             match read_contribution_config(&st.deps, &repo_id, &slug).await {
-                Ok((contribution, source_dir)) => {
+                Ok((contribution, source_dir, component_deps)) => {
                     crate::deploy::ws::run_contribution_deploy_ws(
-                        &mut socket, &slug, &source_dir, &contribution,
+                        &mut socket, &slug, &source_dir, &contribution, &component_deps,
                     ).await;
                 }
                 Err(e) => {
@@ -3664,7 +3664,14 @@ async fn read_contribution_config(
     deps: &storage::application::Deps,
     repo_id: &str,
     slug: &str,
-) -> Result<(crate::deploy::types::ContributionConfig, std::path::PathBuf), String> {
+) -> Result<
+    (
+        crate::deploy::types::ContributionConfig,
+        std::path::PathBuf,
+        Vec<crate::deploy::component_deps::ComponentDep>,
+    ),
+    String,
+> {
     let rid = || storage::domain::types::RepoId { value: repo_id.to_string() };
     let bytes = storage::application::read_file(
         deps, rid(), "main".to_string(), "veil.toml".to_string(),
@@ -3698,7 +3705,16 @@ async fn read_contribution_config(
             tokio::fs::write(&dest, &fbytes).await.ok();
         }
     }
-    Ok((contribution, dir))
+
+    // Resolve cross-project UI component dependencies: any component-provider
+    // layer the consumer `use`s (data-driven via the layer's `implemented_by` +
+    // `provides` declaration) has its implementing project fetched from the store
+    // and materialized so the build step can generate + copy its components.
+    let component_deps = crate::deploy::component_deps::resolve_component_deps(
+        deps, &dir, "ui.veil",
+    ).await;
+
+    Ok((contribution, dir, component_deps))
 }
 
 async fn fetch_terraform_files_s3(

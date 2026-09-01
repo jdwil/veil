@@ -77,9 +77,9 @@ pub use edit::{
 pub use ir::*;
 pub use layer::{
     palette_from_registry, parse_layer_file, parse_review_policy, parse_stub_file, CodegenRule,
-    CodegenTemplate, ConstructSpec, ConstructorPolicy, LayerRegistry, RawLayer, ReactivityPolicy,
-    ReviewPolicy, Shape, StatementSpec, StmtShape, StubCrate, StubImpl, StubMethod, StubProvenance,
-    StubStruct,
+    CodegenTemplate, ComponentProvider, ConstructSpec, ConstructorPolicy, LayerRegistry, RawLayer,
+    ReactivityPolicy, ReviewPolicy, Shape, StatementSpec, StmtShape, StubCrate, StubImpl,
+    StubMethod, StubProvenance, StubStruct, collect_veil_use_names, parse_layer_component_provider,
 };
 pub use stub_catalog::{
     content_fingerprint, generated_stub_header, list_catalog, list_platform_stubs,
