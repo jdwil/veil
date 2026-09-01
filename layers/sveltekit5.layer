@@ -178,6 +178,36 @@ pkg sveltekit5 v1
             if (!r.ok) { const e: any = new Error(await r.text()); e.status = r.status; throw e; }
             const t = await r.text(); return t ? JSON.parse(t) : null;
           },
+          // Non-throwing transport. Returns an envelope { ok, data, error, status }
+          // and NEVER rejects. Use from declarative components (e.g. designkit
+          // CrudResource) that cannot express try/catch in structured VEIL — an
+          // unguarded `await ApiClient.fetch(...)` on mount surfaces as an
+          // "Uncaught (in promise) Error" in the harness bundle when the backend
+          // errors or is unreachable. `send` folds every failure (non-2xx,
+          // network, or JSON parse) into the envelope so the caller can drive a
+          // visible error/loading state instead of crashing the page.
+          send: async (method: string, endpoint: string, body: any) => {
+            const m = (method || 'GET').toUpperCase();
+            try {
+              let url = endpoint;
+              const init: any = { method: m, headers: authHeaders() };
+              if (m === 'POST' || m === 'PUT' || m === 'PATCH') {
+                init.headers = authHeaders({ 'Content-Type': 'application/json' });
+                init.body = JSON.stringify(body ?? {});
+              } else if (m === 'GET' && body && typeof body === 'object') {
+                const u = new URL(endpoint, window.location.origin);
+                for (const [k, v] of Object.entries(body as Record<string, unknown>)) if (v != null && v !== '') u.searchParams.set(k, String(v));
+                url = u.toString();
+              }
+              const r = await fetch(url, init);
+              const t = await r.text();
+              if (!r.ok) return { ok: false, data: null, error: t || ('HTTP ' + r.status), status: r.status };
+              const data = t ? JSON.parse(t) : null;
+              return { ok: true, data, error: '', status: r.status };
+            } catch (e: any) {
+              return { ok: false, data: null, error: (e && e.message) ? e.message : String(e), status: 0 };
+            }
+          },
         };
 
         // JWT expiry check: true if the stored token is missing/expired (with 30s skew).
@@ -249,6 +279,7 @@ pkg sveltekit5 v1
           mutate(endpoint: string, body: any): Promise<any>;
           put(endpoint: string, body: any): Promise<any>;
           delete(endpoint: string): Promise<any>;
+          send(method: string, endpoint: string, body: any): Promise<{ ok: boolean; data: any; error: string; status: number }>;
         };
         declare function oauth_pkce_login(authorizeBase: string, clientId: string, redirectUri: string, scope: string, idp: string): void;
         declare function oauth_pkce_exchange(tokenEndpoint: string, clientId: string, redirectUri: string, code: string): any;

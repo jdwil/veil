@@ -282,6 +282,15 @@ pkg svelte5 v1
       delete(endpoint: Str) -> Res!<Json>
         lowers_to
           typescript: "(async () => { const __r = await fetch({arg0}, { method: 'DELETE' }); if (!__r.ok) throw new Error(await __r.text()); const __t = await __r.text(); return __t ? JSON.parse(__t) : null; })()"
+      # Non-throwing transport. Returns an envelope { ok, data, error, status }
+      # and NEVER rejects — folds non-2xx, network, and JSON-parse failures into
+      # the envelope. Declarative components (e.g. designkit CrudResource) that
+      # cannot express try/catch in structured VEIL use this to drive a visible
+      # error/loading state on an on-mount load instead of leaking an
+      # "Uncaught (in promise)" out of the harness bundle when the backend errors.
+      send(method: Str, endpoint: Str, body: Json) -> Json
+        lowers_to
+          typescript: "(async () => { const __m = ({arg0} || 'GET').toUpperCase(); try { let __url = {arg1}; const __h: Record<string,string> = {}; const __tok = typeof localStorage !== 'undefined' ? localStorage.getItem('veil_auth_token') : null; if (__tok) __h['Authorization'] = 'Bearer ' + __tok; const __init: any = { method: __m, headers: __h }; if (__m === 'POST' || __m === 'PUT' || __m === 'PATCH') { __h['Content-Type'] = 'application/json'; __init.body = JSON.stringify({arg2} ?? {}); } else if (__m === 'GET' && {arg2} && typeof {arg2} === 'object') { const __u = new URL({arg1}, typeof window !== 'undefined' ? window.location.origin : 'http://localhost'); for (const [k, v] of Object.entries({arg2} as Record<string, unknown>)) { if (v != null && v !== '') __u.searchParams.set(k, String(v)); } __url = __u.toString(); } const __r = await fetch(__url, __init); const __t = await __r.text(); if (!__r.ok) return { ok: false, data: null, error: __t || ('HTTP ' + __r.status), status: __r.status }; return { ok: true, data: __t ? JSON.parse(__t) : null, error: '', status: __r.status }; } catch (__e: any) { return { ok: false, data: null, error: (__e && __e.message) ? __e.message : String(__e), status: 0 }; } })()"
 
     # Browser localStorage — lowered to localStorage.* in TS
     struct LocalStorage
