@@ -30,6 +30,8 @@ pkg designkit v1
   implemented_by dlx-designkit
   provides CollectionView StatusPill EntityIdentity ViewModeToggle PageHeader EmptyState
   provides CreateFormShell DetailShell DetailField FormProgress FormSection FormField
+  provides CrudResource Modal ConfirmDialog AlertDialog PromptDialog ContextMenu
+  provides WizardShell ChoiceCards AgentSurface RepeatEditor
 
   # ─── Collection / list chrome ───────────────────────────────────────────
 

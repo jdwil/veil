@@ -50,6 +50,14 @@ export default defineConfig({{
       }},
     }}),
   ],
+  resolve: {{
+    alias: {{
+      // SvelteKit provides $lib automatically; a bare vite library build does
+      // not, so generated `$lib/components/*.svelte` imports (incl. cross-project
+      // materialized components) resolve to src/lib here.
+      '$lib': path.resolve(__dirname, 'src/lib'),
+    }},
+  }},
   build: {{
     lib: {{
       entry: path.resolve(__dirname, '{entry}'),

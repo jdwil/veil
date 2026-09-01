@@ -263,7 +263,19 @@ pub async fn run_contribution_deploy_ws(
     let version = chrono::Utc::now().format("%Y%m%d%H%M%S").to_string();
     let bucket = &contribution.bucket;
     let cid = &contribution.contribution_id;
-    let js_key = format!("{cid}/{version}/index.js");
+    // The CDN behavior for the contributions path does NOT strip the prefix, so
+    // the S3 key must include the same path segment as cdn_base_url (e.g.
+    // "https://ai.dev.dashlx.com/contributions" → keys under "contributions/").
+    // Derive that prefix from cdn_base_url's path; empty when serving from bucket root.
+    let key_prefix = contribution
+        .cdn_base_url
+        .as_deref()
+        .and_then(|u| u.splitn(4, '/').nth(3))   // scheme//host/<path...>
+        .map(|p| p.trim_matches('/').to_string())
+        .filter(|p| !p.is_empty())
+        .map(|p| format!("{p}/"))
+        .unwrap_or_default();
+    let js_key = format!("{key_prefix}{cid}/{version}/index.js");
     let work = std::path::Path::new(&build.bundle_path)
         .parent()
         .unwrap_or(Path::new("."));
@@ -281,7 +293,7 @@ pub async fn run_contribution_deploy_ws(
         }
     }
     let css_key = if let Some(css_path) = &build.css_path {
-        let key = format!("{cid}/{version}/style.css");
+        let key = format!("{key_prefix}{cid}/{version}/style.css");
         let _ = run_streaming(ws, "upload", work, "aws", &[
             "s3", "cp", css_path, &format!("s3://{bucket}/{key}"),
             "--content-type", "text/css",
@@ -293,10 +305,20 @@ pub async fn run_contribution_deploy_ws(
 
     // ─── REGISTER (re-register the manifest on the runtime) ──────────────────
     let _ = send(ws, json!({"type": "step_start", "step": "register"})).await;
-    let base = contribution.cdn_base_url.clone()
+    // js_key already carries the full path prefix (e.g. "contributions/..."),
+    // so build the URL from the origin (scheme://host) of cdn_base_url + js_key.
+    // Falls back to the S3 website origin when no CDN is configured.
+    let origin = contribution.cdn_base_url.as_deref()
+        .and_then(|u| {
+            let mut parts = u.splitn(4, '/');   // scheme, "", host, rest
+            let scheme = parts.next()?;
+            let _empty = parts.next()?;
+            let host = parts.next()?;
+            Some(format!("{scheme}//{host}"))
+        })
         .unwrap_or_else(|| format!("https://{bucket}.s3.amazonaws.com"));
-    let bundle_url = format!("{base}/{js_key}");
-    let css_url = css_key.as_ref().map(|k| format!("{base}/{k}"));
+    let bundle_url = format!("{origin}/{js_key}");
+    let css_url = css_key.as_ref().map(|k| format!("{origin}/{k}"));
     let mut body = json!({
         "app_id": contribution.app_id,
         "id": contribution.contribution_id,
