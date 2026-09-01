@@ -3281,6 +3281,64 @@ async fn get_provision_job(
         Err(e) => Err(domain_status(e)),
     }
 }
+/// GET /api/projects/{slug}/deploy/gate?environment=dev
+///
+/// Returns the approval gate policy for a project + environment, read from the
+/// project's `veil.toml [deploy.gates]`. `gate = "none"` means the environment
+/// can be shipped in one action once the change set is signed off; `sign_off`
+/// keeps the environment behind the explicit sign-off ceremony (prod).
+/// Unknown / missing config defaults to `none` (matches GatePolicy::from_str).
+async fn deploy_gate_handler(
+    State(st): State<StorageState>,
+    axum::extract::Path(slug): axum::extract::Path<String>,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+) -> Json<Value> {
+    let environment = q
+        .get("environment")
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "dev".to_string());
+
+    // Read veil.toml [deploy.gates] from the project's main branch. Any failure
+    // (no repo, no file, parse error) falls back to the permissive default so
+    // dev flows keep working; prod gating is opt-in via explicit `sign_off`.
+    let gate = async {
+        let repo = storage::application::resolve_repo(&st.deps, &slug).await.ok()?;
+        let rid = storage::domain::types::RepoId { value: repo.id.value };
+        let bytes = storage::application::read_file(
+            &st.deps,
+            rid,
+            "main".to_string(),
+            "veil.toml".to_string(),
+        )
+        .await
+        .ok()?;
+        let content = String::from_utf8_lossy(&bytes);
+        let parsed = content.parse::<toml::Value>().ok()?;
+        let policy = parsed
+            .get("deploy")
+            .and_then(|d| d.get("gates"))
+            .and_then(|g| g.get(&environment))
+            .and_then(|v| v.as_str())
+            .unwrap_or("none");
+        Some(match policy {
+            "sign_off" | "signoff" => "sign_off",
+            _ => "none",
+        })
+    }
+    .await
+    .unwrap_or("none");
+
+    Json(json!({
+        "ok": true,
+        "slug": slug,
+        "environment": environment,
+        "gate": gate,
+        // Convenience flag for the UI: dev-gated (gate=none) projects can offer
+        // one-action Approve & Deploy; sign_off keeps the ceremony.
+        "one_action_ship": gate == "none",
+    }))
+}
 
 /// WebSocket endpoint for streaming terraform deploy.
 /// Client connects, sends {"action":"start","environment":"dev"}, gets live events.
@@ -5006,6 +5064,7 @@ pub async fn build_platform_router(
         .route("/api/write-file", post(write_file_api))
         .route("/api/list-files", post(list_files_api))
         .route("/api/projects/{slug}/deploy/ws", get(deploy_ws_handler))
+        .route("/api/projects/{slug}/deploy/gate", get(deploy_gate_handler))
         .route(
             "/api/project_infras/{id}",
             get(get_project_infra),

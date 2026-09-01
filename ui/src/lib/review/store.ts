@@ -30,6 +30,16 @@ export type ProjectReview = {
 	last_kind?: string | null;
 };
 
+export type ChangeSummary = {
+	headline: string;
+	files: string[];
+	why: string[];
+	file_changes: number;
+	error_count: number;
+	warning_count: number;
+	check_status: string;
+};
+
 export type ChangeSet = {
 	id: string;
 	slug: string;
@@ -40,6 +50,7 @@ export type ChangeSet = {
 	item_ids: string[];
 	outstanding: number;
 	summary: string;
+	change_summary?: ChangeSummary | null;
 	host_check?: {
 		severity?: string;
 		error_count?: number;
@@ -82,6 +93,22 @@ export const reviewLoadError = writable('');
 export const reviewOutstandingCount = derived(reviewItems, (items) =>
 	items.filter((i) => i.status === 'outstanding').length
 );
+
+/**
+ * Turn-completion review prompt. Set by the agent session when a turn finishes
+ * with unreviewed work (from the 'done' event's needsReview/reviewSlug), consumed
+ * by a global banner. `null` means no pending prompt.
+ */
+export const reviewPrompt = writable<{ slug: string; count: number } | null>(null);
+
+export function setReviewPrompt(slug: string, count: number): void {
+	if (!slug) return;
+	reviewPrompt.set({ slug, count: Math.max(1, count || 1) });
+}
+
+export function clearReviewPrompt(): void {
+	reviewPrompt.set(null);
+}
 
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 let inFlight = 0;
@@ -257,6 +284,32 @@ export async function reconcileReviewWithCatalog(): Promise<void> {
 		await reconcileReview([...live].filter(Boolean));
 	} catch {
 		catalogReconcileStarted = false;
+	}
+}
+
+/**
+ * Fetch the approval gate policy for a project + environment.
+ * `gate: 'none'` → dev-gated, one-action Approve & Deploy allowed.
+ * `gate: 'sign_off'` → prod ceremony; combined action is NOT offered.
+ * Any failure falls back to the permissive default so dev flows keep working.
+ */
+export async function fetchDeployGate(
+	slug: string,
+	environment = 'dev'
+): Promise<{ gate: 'none' | 'sign_off'; one_action_ship: boolean }> {
+	try {
+		const u = new URL(
+			`/api/projects/${encodeURIComponent(slug)}/deploy/gate`,
+			typeof window !== 'undefined' ? window.location.origin : 'http://localhost'
+		);
+		u.searchParams.set('environment', environment);
+		const r = await fetch(u.toString());
+		if (!r.ok) return { gate: 'none', one_action_ship: true };
+		const data = await r.json();
+		const gate = data.gate === 'sign_off' ? 'sign_off' : 'none';
+		return { gate, one_action_ship: gate === 'none' };
+	} catch {
+		return { gate: 'none', one_action_ship: true };
 	}
 }
 

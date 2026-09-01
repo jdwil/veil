@@ -189,6 +189,29 @@ pub struct RepoReviewSummary {
     pub last_kind: Option<String>,
 }
 
+/// Condensed, operator-facing "what changed & why" for a change set.
+///
+/// This is a PRESENTATION synthesis of intent the agent already captured
+/// (`OutstandingItem.rationale` / `.summary`) — not new agent work. It lets the
+/// operator decide from a headline without reading the diff or the transcript.
+#[derive(Debug, Clone, Serialize)]
+pub struct ChangeSummary {
+    /// 1–3 sentence "what changed & why", plain prose.
+    pub headline: String,
+    /// Distinct files touched (repo-relative), for the "files touched" line.
+    pub files: Vec<String>,
+    /// Distinct rationale/why lines gathered from the items (deduped, short).
+    pub why: Vec<String>,
+    /// Count of file-level edits/creations in the set.
+    pub file_changes: usize,
+    /// Host check error count (0 when clean / unknown).
+    pub error_count: u32,
+    /// Host check warning count (0 when clean / unknown).
+    pub warning_count: u32,
+    /// One-line check status, e.g. "0 errors / 2 warnings" or "checks clean".
+    pub check_status: String,
+}
+
 /// One human-reviewable unit of work for a product slug.
 #[derive(Debug, Clone, Serialize)]
 pub struct ChangeSet {
@@ -205,6 +228,8 @@ pub struct ChangeSet {
     pub item_ids: Vec<String>,
     pub outstanding: usize,
     pub summary: String,
+    /// Condensed operator-facing headline synthesized from item intent.
+    pub change_summary: ChangeSummary,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub host_check: Option<Value>,
     pub host_has_errors: bool,
@@ -984,6 +1009,105 @@ fn host_check_for_slug(slug: &str) -> (Option<Value>, bool) {
     (Some(v), errs)
 }
 
+/// Synthesize a condensed, operator-facing summary from the intent the agent
+/// already captured on the outstanding items (rationale / summary / kind) plus
+/// the host check counts. Pure + testable — no I/O.
+pub fn synthesize_change_summary(
+    slug: &str,
+    rows: &[OutstandingItem],
+    host_check: Option<&Value>,
+) -> ChangeSummary {
+    // Distinct files touched (repo-relative), preserving first-seen order.
+    let mut files: Vec<String> = Vec::new();
+    for it in rows {
+        if let Some(p) = it.path.as_deref().filter(|p| !p.trim().is_empty()) {
+            if !files.iter().any(|f| f == p) {
+                files.push(p.to_string());
+            }
+        }
+    }
+
+    // Distinct "why" lines: prefer rationale, fall back to non-boilerplate
+    // summaries. Keep them short and deduped so the headline stays scannable.
+    fn push_why(why: &mut Vec<String>, raw: &str) {
+        let line = raw.trim();
+        if line.is_empty() {
+            return;
+        }
+        // First line only; rationales/commit messages can be multi-line.
+        let line = line.lines().next().unwrap_or(line).trim();
+        if line.is_empty() {
+            return;
+        }
+        if !why.iter().any(|w| w.eq_ignore_ascii_case(line)) {
+            why.push(line.to_string());
+        }
+    }
+    let mut why: Vec<String> = Vec::new();
+    for it in rows {
+        if let Some(r) = it.rationale.as_deref() {
+            push_why(&mut why, r);
+        }
+    }
+    // If no rationale at all, fall back to summaries so the headline is not empty.
+    if why.is_empty() {
+        for it in rows {
+            push_why(&mut why, &it.summary);
+        }
+    }
+
+    let file_changes = rows
+        .iter()
+        .filter(|it| matches!(it.kind, ItemKind::FileEdit | ItemKind::FileCreated))
+        .count();
+
+    // Check status from host_check (0/unknown → treated as clean).
+    let error_count = host_check
+        .and_then(|v| v.get("error_count"))
+        .and_then(|x| x.as_u64())
+        .unwrap_or(0) as u32;
+    let warning_count = host_check
+        .and_then(|v| v.get("warning_count"))
+        .and_then(|x| x.as_u64())
+        .unwrap_or(0) as u32;
+    let check_status = if error_count == 0 && warning_count == 0 {
+        "checks clean".to_string()
+    } else {
+        format!(
+            "{error_count} error{} / {warning_count} warning{}",
+            if error_count == 1 { "" } else { "s" },
+            if warning_count == 1 { "" } else { "s" }
+        )
+    };
+
+    // Compose a 1–3 sentence headline: what (count/files) + why (first reason).
+    let n = rows.len();
+    let what = if file_changes > 0 {
+        let file_bit = if files.len() == 1 {
+            format!("{} file", 1)
+        } else {
+            format!("{} files", files.len().max(file_changes))
+        };
+        format!("{n} change(s) across {file_bit} in {slug}")
+    } else {
+        format!("{n} change(s) in {slug}")
+    };
+    let mut headline = what;
+    if let Some(first_why) = why.first() {
+        headline = format!("{headline} — {first_why}");
+    }
+
+    ChangeSummary {
+        headline,
+        files,
+        why,
+        file_changes,
+        error_count,
+        warning_count,
+        check_status,
+    }
+}
+
 pub fn change_sets(slug: Option<&str>) -> Vec<ChangeSet> {
     let items = list_items(ListFilter {
         slug: slug.map(|s| s.to_string()),
@@ -1001,6 +1125,7 @@ pub fn change_sets(slug: Option<&str>) -> Vec<ChangeSet> {
         let session_id = rows.iter().rev().find_map(|i| i.session_id.clone());
         let repo_id = rows.iter().find_map(|i| i.repo_id.clone());
         let (host_check, host_has_errors) = host_check_for_slug(&slug);
+        let change_summary = synthesize_change_summary(&slug, &rows, host_check.as_ref());
         let n = rows.len();
         let summary = format!("{n} unreviewed change(s) in {slug}");
         out.push(ChangeSet {
@@ -1013,6 +1138,7 @@ pub fn change_sets(slug: Option<&str>) -> Vec<ChangeSet> {
             item_ids: rows.iter().map(|i| i.id.clone()).collect(),
             outstanding: n,
             summary,
+            change_summary,
             host_check,
             host_has_errors,
         });
@@ -1545,6 +1671,55 @@ mod tests {
             may_ship("acme", None).is_err(),
             "post-approval edits must re-block ship"
         );
+    }
+
+    /// The condensed summary synthesizes what/why/files/check-status from the
+    /// intent already captured on the items — no new agent work required.
+    #[test]
+    fn synthesize_change_summary_from_captured_intent() {
+        let _g = isolated();
+        record_file_edit("acme", "main.veil", Some("Add rate-limit guard to checkout"));
+        record_file_created("acme", "layers/limits.layer");
+        let rows = list_items(ListFilter {
+            slug: Some("acme".into()),
+            status: Some(ItemStatus::Outstanding),
+            ..Default::default()
+        });
+        // Clean check.
+        let clean = super::synthesize_change_summary("acme", &rows, None);
+        assert!(clean.headline.contains("acme"), "headline: {}", clean.headline);
+        assert!(
+            clean.headline.contains("rate-limit guard"),
+            "headline carries the captured why: {}",
+            clean.headline
+        );
+        assert_eq!(clean.file_changes, 2);
+        assert!(clean.files.iter().any(|f| f == "main.veil"));
+        assert!(clean.files.iter().any(|f| f == "layers/limits.layer"));
+        assert!(clean.why.iter().any(|w| w.contains("rate-limit guard")));
+        assert_eq!(clean.error_count, 0);
+        assert_eq!(clean.warning_count, 0);
+        assert_eq!(clean.check_status, "checks clean");
+
+        // With host check counts, the status line reflects errors/warnings.
+        let hc = json!({ "error_count": 0, "warning_count": 2, "severity": "warnings" });
+        let warned = super::synthesize_change_summary("acme", &rows, Some(&hc));
+        assert_eq!(warned.error_count, 0);
+        assert_eq!(warned.warning_count, 2);
+        assert_eq!(warned.check_status, "0 errors / 2 warnings");
+    }
+
+    /// change_sets() exposes the condensed summary on every set.
+    #[test]
+    fn change_sets_carry_condensed_summary() {
+        let _g = isolated();
+        record_file_edit("beta", "main.veil", Some("Wire the ports"));
+        let sets = change_sets(Some("beta"));
+        assert_eq!(sets.len(), 1);
+        let cs = &sets[0];
+        assert!(!cs.change_summary.headline.is_empty());
+        assert!(cs.change_summary.headline.contains("Wire the ports"));
+        assert!(cs.change_summary.files.iter().any(|f| f == "main.veil"));
     }
 
     fn sample_spec(name: &str, crit: veil_ir::Criticality) -> EditRecordSpec {

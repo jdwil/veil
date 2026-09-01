@@ -735,12 +735,25 @@ async fn handle_socket<P: SourceProvider + 'static>(socket: WebSocket, provider:
             })
             .filter(|s| !s.is_empty());
         if let Some(slug) = slug {
+            // Turn-completion → review prompt: if this turn left unreviewed work
+            // for the project, surface a lightweight signal so the operator is
+            // prompted to review (condensed summary) rather than hunting for it.
+            let outstanding = crate::review::change_sets(Some(&slug))
+                .into_iter()
+                .find(|cs| cs.slug.eq_ignore_ascii_case(&slug))
+                .map(|cs| cs.outstanding)
+                .unwrap_or(0);
             done["navigation"] = json!({
                 "action": "open-ide",
                 "path": format!("/projects/{slug}/ide"),
                 "project": slug,
             });
             done["project"] = json!(slug);
+            if outstanding > 0 {
+                done["needsReview"] = json!(true);
+                done["reviewSlug"] = json!(slug);
+                done["reviewCount"] = json!(outstanding);
+            }
         }
     }
     let _ = send_event(&mut sender, "done", done).await;

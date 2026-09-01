@@ -618,6 +618,15 @@ function handleEvent(event: StreamEvent) {
 				// Coarse navigation in done payload when no code edits
 				emitNavigation(data.navigation as NavigationAction);
 			}
+			// Turn-completion → review prompt: surface a lightweight banner when
+			// the turn left unreviewed work for the project. Non-blocking.
+			if (data.needsReview === true && typeof data.reviewSlug === 'string') {
+				const count =
+					typeof data.reviewCount === 'number' ? (data.reviewCount as number) : 1;
+				void import('$lib/review/store').then(({ setReviewPrompt }) => {
+					setReviewPrompt(data.reviewSlug as string, count);
+				});
+			}
 			// Persist after each complete turn
 			persistSession();
 			break;

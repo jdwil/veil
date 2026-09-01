@@ -13,6 +13,7 @@
 		submitSignOff,
 		exportAuditPack,
 		changeSetForSlug,
+		fetchDeployGate,
 		type OutstandingItem,
 		type ChangeSet
 	} from '$lib/review/store';
@@ -76,6 +77,8 @@
 	let selectedKey = $state('overview');
 	let showFiles = $state(false);
 	let seen = $state<Record<string, boolean>>({});
+	/** Per-project dev deploy gate: true when gate=none (one-action allowed). */
+	let devOneAction = $state<Record<string, boolean>>({});
 
 	const liveNames = $derived.by(() => {
 		const set = new Set<string>();
@@ -424,6 +427,17 @@
 		});
 	});
 
+	// Resolve the dev deploy gate for the project(s) in view so the UI can
+	// offer one-action "Approve & Deploy" only when dev gate=none.
+	$effect(() => {
+		const name = ceremonySlug;
+		if (!name || !catalogReady) return;
+		if (name in devOneAction) return;
+		void fetchDeployGate(name, 'dev').then((g) => {
+			devOneAction = { ...devOneAction, [name]: g.one_action_ship };
+		});
+	});
+
 	async function approvePrIfAny(prId?: string | null) {
 		if (!prId) return;
 		try {
@@ -526,6 +540,37 @@
 		}
 	}
 
+	/**
+	 * One-action Approve & Deploy for dev-gated projects: record the human
+	 * sign-off, then ship to the lower env — reusing the existing sign-off and
+	 * deploy code paths behind a single confirm. Only offered when the dev gate
+	 * is `none` (see devOneAction); prod stays behind the explicit ceremony.
+	 */
+	async function approveAndDeploy(proj: string) {
+		if (busy || shipping) return;
+		const ok = window.confirm(
+			`Approve and deploy ${proj} to dev in one action?\n\nThis records your sign-off and ships to the dev environment.`
+		);
+		if (!ok) return;
+		await act('approve', proj);
+		if (error) return; // sign-off failed — do not ship
+		await ship(proj);
+	}
+
+	/**
+	 * Non-destructive decline: leave the change OUTSTANDING (no reject, no
+	 * mutation) so the agent can keep iterating and the operator reviews again
+	 * later. Just returns to the IDE.
+	 */
+	function keepWorking(proj: string) {
+		message = `Left ${proj} open — keep working. It stays in review until you approve.`;
+		error = '';
+		note = '';
+		if (projectExists(proj)) {
+			window.location.href = ideReviewHref(proj, ideOpts(proj));
+		}
+	}
+
 	function sessionFor(name: string): string {
 		return setFor(name)?.session_id || '';
 	}
@@ -583,12 +628,17 @@
 		entity: 'ChangeSet',
 		notes: [
 			'Human walks the story (intent + domain constructs), then Approve or Request changes. File diffs are optional.',
+			'The condensed change summary headline lets the human decide without reading the diff or transcript.',
 			'That record unlocks merge and deploy.',
+			'For dev-gated projects (gate=none) the human may Approve & Deploy in one action; prod stays behind the sign-off ceremony.',
+			'"Not yet — keep working" leaves the change outstanding (non-destructive) so the agent can iterate.',
 			'The agent must not press Approve.',
 		],
 		actions: [
 			{ id: 'approve', label: 'Approve', method: 'api' },
+			{ id: 'approve-and-deploy', label: 'Approve & Deploy', method: 'api' },
 			{ id: 'reject', label: 'Request changes', method: 'api' },
+			{ id: 'keep-working', label: 'Not yet — keep working', method: 'ui' },
 			{ id: 'ship', label: 'Deploy', method: 'api' },
 		],
 		api: {
@@ -721,7 +771,51 @@
 
 				{#if isOverview}
 					<article class="story">
-						<h2 class="story-h">{headline}</h2>
+						{#if cs?.change_summary}
+							{@const sum = cs.change_summary}
+							<section class="condensed" data-veil-role="change-summary">
+								<h2 class="story-h">{sum.headline || headline}</h2>
+								<div class="condensed-meta">
+									<span
+										class="check-chip"
+										class:check-chip--clean={sum.error_count === 0}
+										class:check-chip--err={sum.error_count > 0}
+										class:check-chip--warn={sum.error_count === 0 && sum.warning_count > 0}
+									>
+										{sum.check_status || 'checks clean'}
+									</span>
+									{#if sum.files.length}
+										<span class="files-chip" title={sum.files.join('\n')}>
+											{sum.files.length}
+											{sum.files.length === 1 ? 'file' : 'files'} touched
+										</span>
+									{/if}
+								</div>
+								{#if sum.files.length}
+									<ul class="files-list">
+										{#each sum.files.slice(0, 8) as f}
+											<li><code>{f}</code></li>
+										{/each}
+										{#if sum.files.length > 8}
+											<li class="dim">+{sum.files.length - 8} more</li>
+										{/if}
+									</ul>
+								{/if}
+								{#if sum.why.length > 1}
+									<ul class="why-list">
+										{#each sum.why.slice(0, 5) as w}
+											<li>{w}</li>
+										{/each}
+									</ul>
+								{/if}
+								<p class="condensed-hint">
+									Decide from this summary — expand the diff below only if you need the exact
+									changes.
+								</p>
+							</section>
+						{:else}
+							<h2 class="story-h">{headline}</h2>
+						{/if}
 						{#if ceremony.pr?.title}
 							<p class="pr-title">{ceremony.pr.title}</p>
 						{/if}
@@ -827,14 +921,48 @@
 						<textarea class="input" bind:value={note} rows="2" placeholder="Why you approve or request changes"></textarea>
 					</label>
 					<div class="btns">
+						{#if devOneAction[proj]}
+							<button
+								type="button"
+								class="btn-primary"
+								data-veil-action="approve-and-deploy"
+								disabled={busy || shipping || cs?.host_has_errors}
+								title={cs?.host_has_errors
+									? 'Fix compile errors before deploying'
+									: 'Sign off and ship to dev in one action'}
+								onclick={() => approveAndDeploy(proj)}
+							>
+								{shipping ? 'Deploying…' : busy ? 'Approving…' : 'Approve & Deploy'}
+							</button>
+							<button
+								type="button"
+								class="btn-outline"
+								data-veil-action="sign-off"
+								disabled={busy || shipping}
+								onclick={() => act('approve', proj)}
+							>
+								{busy ? 'Saving…' : 'Approve only'}
+							</button>
+						{:else}
+							<button
+								type="button"
+								class="btn-primary"
+								data-veil-action="sign-off"
+								disabled={busy}
+								onclick={() => act('approve', proj)}
+							>
+								{busy ? 'Saving…' : 'Approve'}
+							</button>
+						{/if}
 						<button
 							type="button"
-							class="btn-primary"
-							data-veil-action="sign-off"
-							disabled={busy}
-							onclick={() => act('approve', proj)}
+							class="btn-ghost"
+							data-veil-action="keep-working"
+							disabled={busy || shipping}
+							onclick={() => keepWorking(proj)}
+							title="Leave this change open so the agent can keep iterating"
 						>
-							{busy ? 'Saving…' : 'Approve'}
+							Not yet — keep working
 						</button>
 						<button
 							type="button"
@@ -845,7 +973,7 @@
 						>
 							Request changes
 						</button>
-						{#if slug === proj}
+						{#if slug === proj && !devOneAction[proj]}
 							<button type="button" class="btn-outline" disabled={shipping} onclick={() => ship(proj)}>
 								{shipping ? 'Deploying…' : 'Deploy'}
 							</button>
@@ -995,6 +1123,51 @@
 	.drill { min-width: 0; min-height: 0; overflow: auto; }
 	.story { margin-bottom: 1rem; }
 	.story-h { margin: 0 0 0.4rem; font-size: 1.25rem; }
+	.condensed {
+		border: 1px solid var(--dk-border-soft, #27272a);
+		border-left-width: 3px;
+		border-left-color: var(--dk-accent, #6366f1);
+		border-radius: 10px;
+		padding: 0.85rem 1rem;
+		margin-bottom: 1rem;
+		background: color-mix(in oklab, var(--dk-surface-2, #242424) 55%, transparent);
+	}
+	.condensed .story-h { margin-bottom: 0.5rem; line-height: 1.35; }
+	.condensed-meta {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.5rem;
+		align-items: center;
+		margin-bottom: 0.5rem;
+	}
+	.check-chip, .files-chip {
+		font-size: 0.72rem;
+		padding: 0.15rem 0.5rem;
+		border-radius: 999px;
+		letter-spacing: 0.02em;
+		font-weight: 600;
+	}
+	.check-chip--clean { background: color-mix(in oklab, #34d399 20%, transparent); color: #6ee7b7; }
+	.check-chip--warn { background: color-mix(in oklab, #f59e0b 20%, transparent); color: #fbbf24; }
+	.check-chip--err { background: color-mix(in oklab, #f87171 22%, transparent); color: #fca5a5; }
+	.files-chip {
+		background: color-mix(in oklab, var(--dk-surface, #1a1a1a) 80%, transparent);
+		color: var(--dk-text-muted, #a1a1aa);
+		cursor: default;
+	}
+	.files-list {
+		list-style: none;
+		margin: 0 0 0.5rem;
+		padding: 0;
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.3rem 0.75rem;
+	}
+	.files-list li { font-size: 0.8rem; }
+	.files-list code { font-size: 0.78rem; opacity: 0.85; }
+	.why-list { margin: 0 0 0.5rem; padding-left: 1.15rem; }
+	.why-list li { margin: 0.15rem 0; font-size: 0.88rem; }
+	.condensed-hint { margin: 0.25rem 0 0; font-size: 0.78rem; opacity: 0.6; }
 	.story-why { margin: 0 0 0.65rem; line-height: 1.5; white-space: pre-wrap; }
 	.beats { margin: 0; padding-left: 1.15rem; }
 	.beats li { margin: 0.2rem 0; }
