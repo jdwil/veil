@@ -18,6 +18,7 @@
 pub mod acp;
 pub mod aether_chat;
 pub mod agent;
+pub mod agent_capture;
 pub mod agent_context;
 pub mod agent_runtime_tools;
 pub mod agent_scope;

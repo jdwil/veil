@@ -452,7 +452,7 @@ async fn stream_acp_turn<P: SourceProvider>(
         }
     };
 
-    let (content_base, tool_hints, session_id, acp_ok, acp_err) = match turn_result {
+    let (content_base, tool_hints, session_id, acp_ok, acp_err, tool_records) = match turn_result {
         Ok(turn) => {
             // Prefer the authoritative joined text from ACP; fall back to what we streamed.
             let text = if !turn.text.is_empty() {
@@ -474,7 +474,7 @@ async fn stream_acp_turn<P: SourceProvider>(
             if hints.is_empty() {
                 hints = streamed_tools.clone();
             }
-            (text, hints, turn.session_id, true, None)
+            (text, hints, turn.session_id, true, None, turn.tool_calls)
         }
         Err(e) => {
             tracing::warn!(error = %e, "ACP stream turn failed — finalizing with partial stream");
@@ -496,7 +496,7 @@ async fn stream_acp_turn<P: SourceProvider>(
                 emit_live(tx, &note).await;
                 text.push_str(&note);
             }
-            (text, streamed_tools.clone(), String::new(), false, Some(e))
+            (text, streamed_tools.clone(), String::new(), false, Some(e), Vec::new())
         }
     };
 
@@ -584,21 +584,41 @@ async fn stream_acp_turn<P: SourceProvider>(
         })
     });
     if let Some(sid) = persist_sid {
+        let turn_stamp = chrono_id();
+        // User prompt turn (first message) — so the durable audit shows the
+        // request that drove the assistant turn + its tool calls.
+        if let Some(user_msg) = resp.messages.iter().find(|m| m.role == "user") {
+            if !user_msg.content.trim().is_empty() {
+                let _ = crate::session::append_turn(
+                    &sid,
+                    &crate::session::SessionTurn {
+                        turn_id: format!("u_{turn_stamp}"),
+                        role: "user".into(),
+                        content: crate::agent_capture::redact(&user_msg.content),
+                        tool_calls: Vec::new(),
+                        project: slug.clone(),
+                        active_file: active_name_for_capture(),
+                        ts: crate::session::chrono_now(),
+                        backend: Some(resp.backend.clone()),
+                    },
+                );
+            }
+        }
+        // Assistant turn with FULL-fidelity tool calls (name+args+result),
+        // secrets redacted, large results offloaded to S3 (Part 1).
+        let durable_tool_calls = crate::agent_capture::durable_tool_calls(
+            &sid,
+            &format!("a_{turn_stamp}"),
+            &tool_records,
+            &tool_calls,
+        );
         let _ = crate::session::append_turn(
             &sid,
             &crate::session::SessionTurn {
-                turn_id: format!("a_{}", chrono_id()),
+                turn_id: format!("a_{turn_stamp}"),
                 role: "assistant".into(),
-                content: content.clone(),
-                tool_calls: tool_calls
-                    .iter()
-                    .map(|t| {
-                        json!({
-                            "name": t.name,
-                            "detail": t.detail,
-                        })
-                    })
-                    .collect(),
+                content: crate::agent_capture::redact(&content),
+                tool_calls: durable_tool_calls,
                 project: slug.clone(),
                 active_file: None,
                 ts: crate::session::chrono_now(),
@@ -608,6 +628,11 @@ async fn stream_acp_turn<P: SourceProvider>(
     }
     emit(tx, "done", serde_json::to_value(&resp).unwrap_or(json!({}))).await;
     Ok(())
+}
+
+/// Best-effort active file name for capture context.
+fn active_name_for_capture() -> Option<String> {
+    None
 }
 
 async fn stream_response_typed(tx: &StreamTx, resp: AgentTurnResponse) {

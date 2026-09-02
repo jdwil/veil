@@ -44,6 +44,37 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
+/// Full-fidelity record of ONE tool invocation within an ACP turn.
+///
+/// The ACP protocol streams a `tool_call` update (initial: name/kind/input,
+/// status `pending`/`in_progress`) followed by one or more `tool_call_update`
+/// updates (status `completed`/`failed`, plus `content`/`rawOutput`). We
+/// coalesce those by `tool_call_id` into a single record so the durable turn
+/// captures name + arguments + result + status + ordering (audit-logging
+/// Part 1). Content is captured raw here; secret redaction + S3 offload happen
+/// at persist time in `agent_stream`.
+#[derive(Debug, Clone, Default)]
+pub struct AcpToolRecord {
+    /// ACP `toolCallId` (coalescing key). May be empty for agents that omit it.
+    pub tool_call_id: String,
+    /// Tool name (`title` / `toolName` / `name` / `kind`).
+    pub name: String,
+    /// Tool category/kind when the agent supplies one (`read`/`edit`/`execute`…).
+    pub kind: Option<String>,
+    /// Latest status: `pending` | `in_progress` | `completed` | `failed`.
+    pub status: Option<String>,
+    /// Tool arguments (`rawInput`) as sent by the model.
+    pub input: Option<Value>,
+    /// Structured tool output (`rawOutput`) when the agent provides it.
+    pub output: Option<Value>,
+    /// Flattened human-readable result text from `content` blocks.
+    pub content: String,
+    /// Monotonic order index (first-seen order within the turn).
+    pub order: usize,
+    /// RFC3339 timestamp when this record was first observed.
+    pub started_at: String,
+}
+
 /// Result of one ACP prompt turn.
 #[derive(Debug, Clone)]
 pub struct AcpTurnResult {
@@ -51,6 +82,8 @@ pub struct AcpTurnResult {
     pub session_id: String,
     pub stop_reason: Option<String>,
     pub tool_hints: Vec<String>,
+    /// Full-fidelity tool call+result records, in invocation order.
+    pub tool_calls: Vec<AcpToolRecord>,
 }
 
 /// Extra `session/prompt` content blocks (raster diagrams from the chat pane).
@@ -216,6 +249,7 @@ impl AcpProcess {
         let mut deadline = Instant::now() + timeout;
         let mut text_chunks: Vec<String> = Vec::new();
         let mut tool_hints: Vec<String> = Vec::new();
+        let mut tool_records: Vec<AcpToolRecord> = Vec::new();
         loop {
             let line = self.read_line_timeout(deadline)?;
             deadline = Instant::now() + timeout;
@@ -227,7 +261,12 @@ impl AcpProcess {
                 if method == "session/update" || method.ends_with("/update") {
                     let before_text = text_chunks.len();
                     let before_tools = tool_hints.len();
-                    collect_update(&msg, &mut text_chunks, &mut tool_hints);
+                    collect_update_full(
+                        &msg,
+                        &mut text_chunks,
+                        &mut tool_hints,
+                        &mut tool_records,
+                    );
                     if let Some(cb) = on_text.as_mut() {
                         for t in &text_chunks[before_text..] {
                             cb(t);
@@ -277,6 +316,13 @@ impl AcpProcess {
                                 "_veil_tools".into(),
                                 Value::Array(tool_hints.into_iter().map(Value::String).collect()),
                             );
+                        }
+                        if !tool_records.is_empty() {
+                            let recs: Vec<Value> = tool_records
+                                .iter()
+                                .map(acp_tool_record_to_json)
+                                .collect();
+                            map.insert("_veil_tool_calls".into(), Value::Array(recs));
                         }
                     }
                 }
@@ -381,6 +427,11 @@ impl AcpProcess {
                     .collect()
             })
             .unwrap_or_default();
+        let tool_calls = result
+            .get("_veil_tool_calls")
+            .and_then(|v| v.as_array())
+            .map(|a| a.iter().map(acp_tool_record_from_json).collect())
+            .unwrap_or_default();
         let text = if streamed.is_empty() {
             // Some agents only put text in result
             result
@@ -396,11 +447,20 @@ impl AcpProcess {
             session_id: sid,
             stop_reason: stop,
             tool_hints: tools,
+            tool_calls,
         })
     }
 }
 
-fn collect_update(msg: &Value, text: &mut Vec<String>, tools: &mut Vec<String>) {
+/// Collect assistant text + tool name hints from a `session/update`, and
+/// coalesce full tool call+result records into `records` (keyed by
+/// `toolCallId`) for durable audit capture (Part 1).
+fn collect_update_full(
+    msg: &Value,
+    text: &mut Vec<String>,
+    tools: &mut Vec<String>,
+    records: &mut Vec<AcpToolRecord>,
+) {
     let params = msg.get("params").cloned().unwrap_or(Value::Null);
     let update = params.get("update").cloned().unwrap_or(params.clone());
     // Kiro: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "…" } }
@@ -423,14 +483,161 @@ fn collect_update(msg: &Value, text: &mut Vec<String>, tools: &mut Vec<String>) 
             .or_else(|| update.get("name"))
             .and_then(|v| v.as_str())
             .unwrap_or("tool");
-        tools.push(name.to_string());
-        if let Some(t) = extract_text(&update) {
+        // First observation of a NEW tool_call → push a name hint (the marker
+        // stream that drives live UI chips). A `tool_call_update` for an
+        // already-seen id must NOT re-emit the chip.
+        let call_id = update
+            .get("toolCallId")
+            .or_else(|| update.get("toolCallID"))
+            .or_else(|| update.get("id"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let existing = if call_id.is_empty() {
+            None
+        } else {
+            records.iter_mut().position(|r| r.tool_call_id == call_id)
+        };
+        let tool_kind = update
+            .get("kind")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let status = update
+            .get("status")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let raw_input = update
+            .get("rawInput")
+            .or_else(|| update.get("input"))
+            .cloned()
+            .filter(|v| !v.is_null());
+        let raw_output = update
+            .get("rawOutput")
+            .or_else(|| update.get("output"))
+            .cloned()
+            .filter(|v| !v.is_null());
+        let content_text = extract_text(&update);
+        match existing {
+            Some(idx) => {
+                // Coalesce a later tool_call_update onto the initial record.
+                let rec = &mut records[idx];
+                if tool_kind.is_some() {
+                    rec.kind = tool_kind;
+                }
+                if status.is_some() {
+                    rec.status = status;
+                }
+                if raw_input.is_some() {
+                    rec.input = raw_input;
+                }
+                if raw_output.is_some() {
+                    rec.output = raw_output;
+                }
+                if let Some(ref t) = content_text {
+                    if !t.is_empty() {
+                        if !rec.content.is_empty() {
+                            rec.content.push('\n');
+                        }
+                        rec.content.push_str(t);
+                    }
+                }
+            }
+            None => {
+                tools.push(name.to_string());
+                let order = records.len();
+                records.push(AcpToolRecord {
+                    tool_call_id: call_id,
+                    name: name.to_string(),
+                    kind: tool_kind,
+                    status,
+                    input: raw_input,
+                    output: raw_output,
+                    content: content_text.clone().unwrap_or_default(),
+                    order,
+                    started_at: chrono_now_rfc3339(),
+                });
+            }
+        }
+        if let Some(t) = content_text {
             text.push(format!("\n[{name}] {t}\n"));
         }
         return;
     }
     if let Some(t) = extract_text(&update) {
         text.push(t);
+    }
+}
+
+/// RFC3339 timestamp (UTC) for capture records without pulling chrono here.
+fn chrono_now_rfc3339() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+    let secs = now.as_secs();
+    let millis = now.subsec_millis();
+    // Minimal epoch→RFC3339 (UTC) without a date lib. Days since 1970.
+    let days = secs / 86_400;
+    let rem = secs % 86_400;
+    let (h, mi, s) = (rem / 3600, (rem % 3600) / 60, rem % 60);
+    // civil_from_days (Howard Hinnant's algorithm).
+    let z = days as i64 + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!("{y:04}-{m:02}-{d:02}T{h:02}:{mi:02}:{s:02}.{millis:03}Z")
+}
+
+/// Serialize an [`AcpToolRecord`] to the transport JSON used on the prompt
+/// result (`_veil_tool_calls`) and, ultimately, the durable turn.
+fn acp_tool_record_to_json(r: &AcpToolRecord) -> Value {
+    json!({
+        "tool_call_id": r.tool_call_id,
+        "name": r.name,
+        "kind": r.kind,
+        "status": r.status,
+        "input": r.input,
+        "output": r.output,
+        "content": r.content,
+        "order": r.order,
+        "started_at": r.started_at,
+    })
+}
+
+/// Parse a transport JSON tool-call record back into an [`AcpToolRecord`].
+fn acp_tool_record_from_json(v: &Value) -> AcpToolRecord {
+    AcpToolRecord {
+        tool_call_id: v
+            .get("tool_call_id")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string(),
+        name: v
+            .get("name")
+            .and_then(|x| x.as_str())
+            .unwrap_or("tool")
+            .to_string(),
+        kind: v.get("kind").and_then(|x| x.as_str()).map(String::from),
+        status: v.get("status").and_then(|x| x.as_str()).map(String::from),
+        input: v.get("input").cloned().filter(|x| !x.is_null()),
+        output: v.get("output").cloned().filter(|x| !x.is_null()),
+        content: v
+            .get("content")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string(),
+        order: v.get("order").and_then(|x| x.as_u64()).unwrap_or(0) as usize,
+        started_at: v
+            .get("started_at")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string(),
     }
 }
 
@@ -1029,6 +1236,51 @@ mod tests {
     use std::time::Instant;
 
     static TEST: StdMutex<()> = StdMutex::new(());
+
+    #[test]
+    fn collect_update_coalesces_tool_call_and_update_into_one_record() {
+        let mut text = Vec::new();
+        let mut tools = Vec::new();
+        let mut records = Vec::new();
+        // Initial tool_call: name + rawInput, pending.
+        let call = json!({
+            "method": "session/update",
+            "params": { "update": {
+                "sessionUpdate": "tool_call",
+                "toolCallId": "tc_1",
+                "title": "write_source",
+                "kind": "edit",
+                "status": "pending",
+                "rawInput": { "path": "a.veil", "content": "..." }
+            }}
+        });
+        collect_update_full(&call, &mut text, &mut tools, &mut records);
+        // Later tool_call_update: completed + content result.
+        let upd = json!({
+            "method": "session/update",
+            "params": { "update": {
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "tc_1",
+                "status": "completed",
+                "content": [{ "type": "text", "text": "wrote 12 lines" }]
+            }}
+        });
+        collect_update_full(&upd, &mut text, &mut tools, &mut records);
+
+        // ONE coalesced record; name-hint emitted once (not on the update).
+        assert_eq!(records.len(), 1, "updates must coalesce by toolCallId");
+        assert_eq!(tools, vec!["write_source".to_string()]);
+        let r = &records[0];
+        assert_eq!(r.name, "write_source");
+        assert_eq!(r.tool_call_id, "tc_1");
+        assert_eq!(r.status.as_deref(), Some("completed"));
+        assert_eq!(r.kind.as_deref(), Some("edit"));
+        assert_eq!(
+            r.input.as_ref().and_then(|v| v.get("path")).and_then(|v| v.as_str()),
+            Some("a.veil")
+        );
+        assert!(r.content.contains("wrote 12 lines"));
+    }
 
     fn reset_turn_flags() {
         ACP_TURN_ACTIVE.store(false, Ordering::SeqCst);
