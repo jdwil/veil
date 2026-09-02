@@ -55,6 +55,7 @@ pub fn session_routes() -> Router<Arc<MultiProjectProvider>> {
         .route("/api/review/summary", get(review_summary))
         .route("/api/review/sign_off", post(review_sign_off))
         .route("/api/review/changeset", get(review_changeset))
+        .route("/api/review/bundles", get(review_bundles))
         .route("/api/review/reconcile", post(review_reconcile))
         .route("/api/review/export", get(review_export))
 }
@@ -1030,6 +1031,18 @@ async fn review_changeset(Query(q): Query<ReviewQuery>) -> axum::response::Respo
     json_ok(json!({
         "ok": true,
         "change_sets": crate::review::change_sets(slug.as_deref()),
+        "audit_env": crate::review::audit_env_json(),
+    }))
+}
+
+/// GET /api/review/bundles?slug= — the multi-project ReviewBundle rollup
+/// (Part B). Each bundle groups N per-project change sets for one task with a
+/// rolled-up headline; a single-project task is a one-project bundle.
+async fn review_bundles(Query(q): Query<ReviewQuery>) -> axum::response::Response {
+    let slug = q.slug.filter(|s| !s.is_empty());
+    json_ok(json!({
+        "ok": true,
+        "bundles": crate::review::bundles(slug.as_deref()),
         "audit_env": crate::review::audit_env_json(),
     }))
 }

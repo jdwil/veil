@@ -60,6 +60,12 @@ pub struct OutstandingItem {
     pub session_id: Option<String>,
     #[serde(default)]
     pub pr_id: Option<String>,
+    /// Task grouping key: all per-project changes produced for ONE operator task
+    /// share a `bundle_id` so they review + ship together as a single
+    /// [`ReviewBundle`]. `None` on legacy items / single-project ad-hoc edits;
+    /// such items fall back to a synthesized one-project bundle keyed by slug.
+    #[serde(default)]
+    pub bundle_id: Option<String>,
     pub created_at: String,
     pub status: ItemStatus,
     #[serde(default)]
@@ -225,6 +231,10 @@ pub struct ChangeSet {
     pub pr_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub git_sha: Option<String>,
+    /// Task grouping key (Part B). All change sets sharing a `bundle_id` roll up
+    /// to one [`ReviewBundle`]. `None` → its own single-project bundle.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bundle_id: Option<String>,
     pub item_ids: Vec<String>,
     pub outstanding: usize,
     pub summary: String,
@@ -233,6 +243,52 @@ pub struct ChangeSet {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub host_check: Option<Value>,
     pub host_has_errors: bool,
+}
+
+/// One project's slice of a [`ReviewBundle`] — a per-repo change set the
+/// operator reviews as one section of the task. Wraps the project's `ChangeSet`
+/// with the branch/PR transport identity needed to merge + deploy it.
+#[derive(Debug, Clone, Serialize)]
+pub struct BundleProject {
+    pub slug: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repo_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pr_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub git_sha: Option<String>,
+    pub outstanding: usize,
+    /// The project's condensed change summary (its section headline).
+    pub change_summary: ChangeSummary,
+    pub item_ids: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host_check: Option<Value>,
+    pub host_has_errors: bool,
+}
+
+/// A **ReviewBundle** is ONE operator task's set of per-project changes,
+/// reviewed and shipped together. It groups N per-project [`ChangeSet`]s under
+/// one review: one rolled-up headline + per-project sections + a single
+/// decision surface. This is the multi-project aggregate the operator sees as a
+/// single review (Part B). Provider PRs remain per-repo (transport); the bundle
+/// is the human-facing unit.
+#[derive(Debug, Clone, Serialize)]
+pub struct ReviewBundle {
+    pub id: String,
+    /// Human-readable task title (best-effort from item intent).
+    pub title: String,
+    /// Rolled-up "what changed across which projects" headline.
+    pub summary: String,
+    pub projects: Vec<BundleProject>,
+    /// Aggregate outstanding item count across all projects.
+    pub outstanding: usize,
+    /// True when ANY project in the bundle still has host-check errors.
+    pub host_has_errors: bool,
+    /// Distinct project slugs the task touched (sorted).
+    pub project_slugs: Vec<String>,
+    pub created_at: String,
 }
 
 #[derive(Debug, Clone)]
@@ -249,9 +305,77 @@ pub struct RecordSpec {
     pub pr_id: Option<String>,
 }
 
+impl RecordSpec {
+    /// Task grouping key threaded onto the recorded item (Part B: ReviewBundle).
+    /// Set by the agent flow when it knows the active task/bundle.
+    pub fn bundle_id() -> Option<String> {
+        // Resolved from the active bundle context when recording (see
+        // `active_bundle_id`); kept as a helper so callers stay terse.
+        active_bundle_id()
+    }
+}
+
 fn store() -> &'static Mutex<ReviewState> {
     static S: OnceLock<Mutex<ReviewState>> = OnceLock::new();
     S.get_or_init(|| Mutex::new(load_from_disk()))
+}
+
+// ─── Active review bundle (Part B: task grouping) ─────────────────────────
+//
+// A ReviewBundle is ONE operator task's set of per-project changes, reviewed
+// and shipped together. The agent stamps a `bundle_id` on every item it records
+// for a task so N projects roll up to a single review. We thread the active
+// bundle id via a tokio task-local (like CURRENT_SESSION / CURRENT_TURN) set by
+// the agent turn, with a process-global fallback so non-async record paths and
+// tests can set it deterministically.
+tokio::task_local! {
+    static CURRENT_BUNDLE: String;
+}
+
+fn bundle_fallback() -> &'static Mutex<Option<String>> {
+    static B: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+    B.get_or_init(|| Mutex::new(None))
+}
+
+/// The active task/bundle id, if one is set for this turn (task-local first,
+/// then the process-global fallback). `None` when no task is scoped — such
+/// items fall back to a synthesized one-project bundle keyed by slug/session.
+pub fn active_bundle_id() -> Option<String> {
+    if let Ok(v) = CURRENT_BUNDLE.try_with(|s| s.clone()) {
+        if !v.trim().is_empty() {
+            return Some(v);
+        }
+    }
+    bundle_fallback()
+        .lock()
+        .ok()
+        .and_then(|g| g.clone())
+        .filter(|s| !s.trim().is_empty())
+}
+
+/// Set (or clear) the process-global active bundle id. Used by the agent flow
+/// when it opens/continues a task outside a task-local scope, and by tests.
+pub fn set_active_bundle_id(id: Option<String>) {
+    if let Ok(mut g) = bundle_fallback().lock() {
+        *g = id.filter(|s| !s.trim().is_empty());
+    }
+}
+
+/// Run `f` with the active bundle id scoped to this async task.
+pub async fn with_bundle_scope<F, T>(id: String, f: F) -> T
+where
+    F: std::future::Future<Output = T>,
+{
+    CURRENT_BUNDLE.scope(id, f).await
+}
+
+/// Derive a stable bundle id for a task from a human-readable title. Deterministic
+/// so repeated calls for the same task produce the same id (revision intent).
+pub fn bundle_id_from_title(title: &str) -> String {
+    let slug = crate::project_layout::slugify_name(title);
+    let slug = if slug.is_empty() { "task".to_string() } else { slug };
+    let cut = slug.len().min(32);
+    format!("bnd_{}_{}", &slug[..cut], hash_diff_spec(&[title.to_string()]))
 }
 
 fn store_path() -> PathBuf {
@@ -358,6 +482,7 @@ pub fn record(spec: RecordSpec) -> OutstandingItem {
     let slug = infer_slug(spec.slug);
     let session_id = infer_session(spec.session_id);
     let repo_id = infer_repo_id(&slug, spec.repo_id);
+    let bundle_id = active_bundle_id();
     let now = now_rfc3339();
     let mut item = OutstandingItem {
         id: short_id(),
@@ -371,6 +496,7 @@ pub fn record(spec: RecordSpec) -> OutstandingItem {
         git_sha: spec.git_sha,
         session_id,
         pr_id: spec.pr_id,
+        bundle_id,
         created_at: now,
         status: ItemStatus::Outstanding,
         decided_at: None,
@@ -393,6 +519,9 @@ pub fn record(spec: RecordSpec) -> OutstandingItem {
             }
             if item.git_sha.is_some() {
                 existing.git_sha = item.git_sha.clone();
+            }
+            if item.bundle_id.is_some() {
+                existing.bundle_id = item.bundle_id.clone();
             }
             existing.created_at = item.created_at.clone();
             item = existing.clone();
@@ -962,12 +1091,14 @@ pub fn snapshot_json(filter: ListFilter) -> Value {
         v
     };
     let sets = change_sets(filter.slug.as_deref());
+    let bundle_list = bundles(filter.slug.as_deref());
     let edits = list_edits(filter.slug.as_deref(), None, 200);
     json!({
         "ok": true,
         "outstanding": items.iter().filter(|i| i.status == ItemStatus::Outstanding).count(),
         "items": items,
         "change_sets": sets,
+        "bundles": bundle_list,
         "by_project": summaries,
         "audits": audits(40),
         "edits": edits,
@@ -1124,6 +1255,7 @@ pub fn change_sets(slug: Option<&str>) -> Vec<ChangeSet> {
         let pr_id = rows.iter().rev().find_map(|i| i.pr_id.clone());
         let session_id = rows.iter().rev().find_map(|i| i.session_id.clone());
         let repo_id = rows.iter().find_map(|i| i.repo_id.clone());
+        let bundle_id = rows.iter().rev().find_map(|i| i.bundle_id.clone());
         let (host_check, host_has_errors) = host_check_for_slug(&slug);
         let change_summary = synthesize_change_summary(&slug, &rows, host_check.as_ref());
         let n = rows.len();
@@ -1135,6 +1267,7 @@ pub fn change_sets(slug: Option<&str>) -> Vec<ChangeSet> {
             session_id,
             pr_id,
             git_sha,
+            bundle_id,
             item_ids: rows.iter().map(|i| i.id.clone()).collect(),
             outstanding: n,
             summary,
@@ -1147,7 +1280,128 @@ pub fn change_sets(slug: Option<&str>) -> Vec<ChangeSet> {
     out
 }
 
-/// Latest approve audit that covers this product (and SHA when given).
+/// Grouping key for a change set into a bundle. Prefers the explicit
+/// `bundle_id` the agent stamped for a task; falls back to the shared coding
+/// session (subpath projects share one session in a task); finally the slug
+/// (ad-hoc single-project edit → its own one-project bundle).
+fn bundle_key_for(cs: &ChangeSet) -> String {
+    if let Some(b) = cs.bundle_id.as_deref().filter(|s| !s.trim().is_empty()) {
+        return format!("b:{b}");
+    }
+    if let Some(sid) = cs.session_id.as_deref().filter(|s| !s.trim().is_empty()) {
+        return format!("s:{sid}");
+    }
+    format!("p:{}", cs.slug)
+}
+
+/// Roll N per-project change sets into [`ReviewBundle`]s (Part B). Change sets
+/// sharing a task grouping key ([`bundle_key_for`]) become one bundle the
+/// operator reviews + ships together. A single-project task is a one-project
+/// bundle — the common case — so this is a strict generalization of
+/// `change_sets()`.
+pub fn bundles(slug: Option<&str>) -> Vec<ReviewBundle> {
+    let sets = change_sets(slug);
+    let mut by: HashMap<String, Vec<ChangeSet>> = HashMap::new();
+    let mut order: Vec<String> = Vec::new();
+    for cs in sets {
+        let key = bundle_key_for(&cs);
+        if !by.contains_key(&key) {
+            order.push(key.clone());
+        }
+        by.entry(key).or_default().push(cs);
+    }
+
+    let mut out = Vec::new();
+    for key in order {
+        let mut group = match by.remove(&key) {
+            Some(g) => g,
+            None => continue,
+        };
+        // Stable per-bundle ordering: most-outstanding project first.
+        group.sort_by(|a, b| b.outstanding.cmp(&a.outstanding));
+
+        let explicit_bundle = group.iter().find_map(|c| c.bundle_id.clone());
+        let created_at = now_rfc3339();
+        let mut project_slugs: Vec<String> = group.iter().map(|c| c.slug.clone()).collect();
+        project_slugs.sort();
+        project_slugs.dedup();
+        let outstanding: usize = group.iter().map(|c| c.outstanding).sum();
+        let host_has_errors = group.iter().any(|c| c.host_has_errors);
+
+        // Rolled-up title/summary. Prefer the richest single-project headline as
+        // the task title; the summary names all touched projects + aggregate check.
+        let title = group
+            .iter()
+            .find_map(|c| {
+                let h = c.change_summary.headline.trim();
+                if h.is_empty() { None } else { Some(h.to_string()) }
+            })
+            .unwrap_or_else(|| {
+                if project_slugs.len() == 1 {
+                    format!("Changes in {}", project_slugs[0])
+                } else {
+                    format!("Task across {} projects", project_slugs.len())
+                }
+            });
+        let total_errors: u32 = group.iter().map(|c| c.change_summary.error_count).sum();
+        let total_warnings: u32 = group.iter().map(|c| c.change_summary.warning_count).sum();
+        let check_bit = if total_errors == 0 && total_warnings == 0 {
+            "checks clean".to_string()
+        } else {
+            format!(
+                "{total_errors} error{} / {total_warnings} warning{}",
+                if total_errors == 1 { "" } else { "s" },
+                if total_warnings == 1 { "" } else { "s" }
+            )
+        };
+        let summary = if project_slugs.len() == 1 {
+            format!(
+                "{outstanding} change(s) in {} — {check_bit}",
+                project_slugs[0]
+            )
+        } else {
+            format!(
+                "{outstanding} change(s) across {} projects ({}) — {check_bit}",
+                project_slugs.len(),
+                project_slugs.join(", ")
+            )
+        };
+
+        let id = explicit_bundle.unwrap_or_else(|| {
+            // Derive a stable id from the key so the same task keeps the same id.
+            format!("bnd_{}", hash_diff_spec(&[key.clone()]))
+        });
+
+        let projects = group
+            .into_iter()
+            .map(|c| BundleProject {
+                slug: c.slug,
+                repo_id: c.repo_id,
+                session_id: c.session_id,
+                pr_id: c.pr_id,
+                git_sha: c.git_sha,
+                outstanding: c.outstanding,
+                change_summary: c.change_summary,
+                item_ids: c.item_ids,
+                host_check: c.host_check,
+                host_has_errors: c.host_has_errors,
+            })
+            .collect();
+
+        out.push(ReviewBundle {
+            id,
+            title,
+            summary,
+            projects,
+            outstanding,
+            host_has_errors,
+            project_slugs,
+            created_at,
+        });
+    }
+    out.sort_by(|a, b| b.outstanding.cmp(&a.outstanding));
+    out
+}
 pub fn latest_approve(slug: &str, sha: Option<&str>) -> Option<SignOffRecord> {
     let slug = slug.trim();
     if slug.is_empty() {
@@ -1226,6 +1480,52 @@ pub fn attribute_paths_to_projects(
     let mut out: Vec<String> = touched.into_iter().collect();
     out.sort();
     out
+}
+
+/// Look up a bundle by its id (from the current outstanding grouping).
+pub fn bundle_by_id(id: &str) -> Option<ReviewBundle> {
+    let id = id.trim();
+    if id.is_empty() {
+        return None;
+    }
+    bundles(None).into_iter().find(|b| b.id == id)
+}
+
+/// All distinct project slugs an item bundle touches, across ANY status. Used
+/// by the ship gate: after sign-off the items are Approved (no longer in the
+/// outstanding-derived bundle list), but the task's project set is unchanged.
+pub fn bundle_project_slugs(id: &str) -> Vec<String> {
+    let id = id.trim();
+    if id.is_empty() {
+        return Vec::new();
+    }
+    let guard = store().lock().unwrap_or_else(|e| e.into_inner());
+    let mut slugs: Vec<String> = guard
+        .items
+        .iter()
+        .filter(|it| it.bundle_id.as_deref() == Some(id))
+        .map(|it| it.slug.clone())
+        .collect();
+    slugs.sort();
+    slugs.dedup();
+    slugs
+}
+
+/// Ship gate for an entire bundle: EVERY project in the bundle must pass
+/// [`may_ship`]. This is the bundle-level analog of [`may_ship_all`] — it
+/// resolves the bundle's project slugs (from recorded items, any status) and
+/// requires all of them signed off before the task can merge / deploy.
+pub fn may_ship_bundle(id: &str) -> Result<(), String> {
+    let slugs = bundle_project_slugs(id);
+    if slugs.is_empty() {
+        // No explicit-bundle items: fall back to a one-project bundle whose id
+        // was derived from a single slug's change set.
+        if let Some(bundle) = bundle_by_id(id) {
+            return may_ship_all(&bundle.project_slugs, None);
+        }
+        return Err(format!("no review bundle `{id}`"));
+    }
+    may_ship_all(&slugs, None)
 }
 
 /// Ship gate for a set of touched project slugs: EVERY project must pass
@@ -1393,6 +1693,7 @@ mod tests {
             let mut s = store().lock().unwrap_or_else(|e| e.into_inner());
             *s = ReviewState::default();
         }
+        set_active_bundle_id(None);
         g
     }
 
@@ -1720,6 +2021,97 @@ mod tests {
         assert!(!cs.change_summary.headline.is_empty());
         assert!(cs.change_summary.headline.contains("Wire the ports"));
         assert!(cs.change_summary.files.iter().any(|f| f == "main.veil"));
+    }
+
+    /// A single-project task rolls into a one-project bundle whose headline
+    /// carries the project's condensed summary.
+    #[test]
+    fn single_project_bundle_from_change_set() {
+        let _g = isolated();
+        set_active_bundle_id(None);
+        record_file_edit("beta", "main.veil", Some("Wire the ports"));
+        let bs = bundles(None);
+        assert_eq!(bs.len(), 1, "one project → one bundle");
+        assert_eq!(bs[0].projects.len(), 1);
+        assert_eq!(bs[0].project_slugs, vec!["beta".to_string()]);
+        assert!(bs[0].summary.contains("beta"), "summary: {}", bs[0].summary);
+        assert!(!bs[0].host_has_errors);
+    }
+
+    /// A task that stamps ONE bundle_id across TWO projects rolls up to a SINGLE
+    /// bundle with two per-project sections and an aggregate outstanding count.
+    #[test]
+    fn multi_project_task_rolls_into_one_bundle() {
+        let _g = isolated();
+        set_active_bundle_id(Some("bnd_test_task".into()));
+        record_file_edit("dlx-auth", "main.veil", Some("Add login flow"));
+        record_file_edit("dlx-bus", "main.veil", Some("Publish auth events"));
+        set_active_bundle_id(None);
+
+        let bs = bundles(None);
+        assert_eq!(bs.len(), 1, "one task → one bundle across two projects: {bs:?}");
+        let b = &bs[0];
+        assert_eq!(b.id, "bnd_test_task");
+        assert_eq!(b.projects.len(), 2);
+        assert_eq!(b.outstanding, 2);
+        assert_eq!(
+            b.project_slugs,
+            vec!["dlx-auth".to_string(), "dlx-bus".to_string()]
+        );
+        assert!(
+            b.summary.contains("2 projects") || b.summary.contains("dlx-auth"),
+            "rolled-up summary names projects: {}",
+            b.summary
+        );
+
+        // Bundle ship gate blocks until BOTH projects are signed off.
+        assert!(may_ship_bundle("bnd_test_task").is_err());
+        sign_off(SignOffRequest {
+            slug: Some("dlx-auth".into()),
+            decision: "approve".into(),
+            actor: "operator".into(),
+            ..Default::default()
+        })
+        .expect("approve auth");
+        // Still blocked — dlx-bus outstanding.
+        assert!(may_ship_bundle("bnd_test_task").is_err());
+        sign_off(SignOffRequest {
+            slug: Some("dlx-bus".into()),
+            decision: "approve".into(),
+            actor: "operator".into(),
+            ..Default::default()
+        })
+        .expect("approve bus");
+        assert!(
+            may_ship_bundle("bnd_test_task").is_ok(),
+            "all projects signed → bundle ships"
+        );
+    }
+
+    /// Two DIFFERENT tasks (distinct bundle ids) do NOT merge into one bundle
+    /// even for the same project — closed/other-task work stays separate.
+    #[test]
+    fn distinct_bundle_ids_stay_separate() {
+        let _g = isolated();
+        set_active_bundle_id(Some("bnd_a".into()));
+        record_file_edit("proj-x", "a.veil", Some("task A"));
+        set_active_bundle_id(Some("bnd_b".into()));
+        record_file_edit("proj-y", "b.veil", Some("task B"));
+        set_active_bundle_id(None);
+        let bs = bundles(None);
+        assert_eq!(bs.len(), 2, "two tasks → two bundles: {bs:?}");
+    }
+
+    /// snapshot_json exposes the bundles array (Part B).
+    #[test]
+    fn snapshot_exposes_bundles() {
+        let _g = isolated();
+        set_active_bundle_id(None);
+        record_file_edit("gamma", "main.veil", Some("x"));
+        let snap = snapshot_json(ListFilter::default());
+        let arr = snap["bundles"].as_array().expect("bundles array");
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["projects"].as_array().map(|a| a.len()), Some(1));
     }
 
     fn sample_spec(name: &str, crit: veil_ir::Criticality) -> EditRecordSpec {
