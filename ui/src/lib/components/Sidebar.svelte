@@ -18,6 +18,7 @@
 		{ href: '/dashboard', label: 'Dashboard', icon: '⌂' },
 		{ href: '/projects', label: 'Projects', icon: '▣' },
 		{ href: '/review', label: 'Review', icon: '✓', badge: 'review' as const },
+		{ href: '/history', label: 'History', icon: '≡' },
 		{ href: '/deploy', label: 'Deploy', icon: '☁' },
 		{ href: '/registry', label: 'Registry', icon: '⧉' },
 		{ href: '/agents', label: 'Agents', icon: '◆' },
