@@ -1854,6 +1854,15 @@ impl LayerRegistry {
         if let Some(h) = crate::deps::load_harness_overrides_for(veil_path) {
             reg.apply_harness_overrides(&h);
         }
+        // Developer/edit mode (preview windows): auto-inject the `developer`
+        // layer so HTML/CSS-lowering codegen stamps provenance + injects the
+        // overlay. Gated by env so a normal build/deploy never ships it.
+        // Generic — no product opt-in, no per-project hardcoding.
+        if crate::platform_layers::developer_mode_enabled()
+            && !reg.layers.iter().any(|l| l == "developer")
+        {
+            let _ = reg.load_layer("developer", dir);
+        }
         Ok(reg)
     }
 

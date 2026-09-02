@@ -19,6 +19,7 @@ pub mod deploy_lambda;
 pub mod drift;
 pub mod gates;
 pub mod pipeline;
+pub mod preview;
 pub mod terraform;
 pub mod types;
 pub mod ws;

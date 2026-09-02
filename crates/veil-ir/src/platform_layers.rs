@@ -37,6 +37,7 @@ pub fn is_platform_layer_name(stem: &str) -> bool {
             | "rest_rpc"
             | "auth_local"
             | "deploy"
+            | "developer"
     )
 }
 
@@ -123,6 +124,17 @@ pub fn sibling_product_layer_scan_enabled() -> bool {
             .as_str(),
         "disk"
     )
+}
+
+/// Whether developer/edit mode is active for this codegen run.
+///
+/// Set by the runtime preview builder (`VEIL_DEVELOPER_MODE=1`) so the
+/// `developer` layer is auto-injected and provenance/overlay stamping turns on.
+/// Never set for a normal build/deploy, so production output is unaffected.
+pub fn developer_mode_enabled() -> bool {
+    std::env::var("VEIL_DEVELOPER_MODE")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
 }
 
 /// True when layer body is a ghost stub (e.g. unit-test `pkg ddd v1\n`).

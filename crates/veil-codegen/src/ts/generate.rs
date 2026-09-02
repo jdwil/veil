@@ -609,7 +609,16 @@ fn collect_construct_files(
         let path = construct_output_path(c, registry);
         // For .svelte files: auto-inject imports for referenced components
         let content = if path.ends_with(".svelte") {
-            inject_svelte_component_imports(&content, &path)
+            let content = inject_svelte_component_imports(&content, &path);
+            // Developer/edit mode: stamp provenance attributes onto the emitted
+            // markup so a clicked DOM node maps back to this construct. Pure
+            // property of the `developer` layer being active — never present in
+            // a normal build. Generic across any HTML/CSS-lowering layer.
+            if developer_layer_active(registry) {
+                stamp_provenance(&content, c, &provenance_project_slug())
+            } else {
+                content
+            }
         } else {
             content
         };
@@ -948,6 +957,107 @@ fn inject_svelte_component_imports(content: &str, file_path: &str) -> String {
     content.to_string()
 }
 
+// ─── Developer Overlay: Provenance Stamping ──────────────────────────────────
+
+/// True when the `developer` (edit-mode) layer is active in this registry.
+/// Stamping is a pure property of the layer being present — the runtime injects
+/// it only in preview/developer mode, so a normal build never stamps.
+fn developer_layer_active(registry: &LayerRegistry) -> bool {
+    registry.layers.iter().any(|l| l == "developer")
+}
+
+/// Project slug for provenance, from `VEIL_PROJECT_SLUG` (set by the runtime
+/// preview builder) or a neutral default. Generic — no hardcoded project.
+fn provenance_project_slug() -> String {
+    std::env::var("VEIL_PROJECT_SLUG").unwrap_or_else(|_| "project".to_string())
+}
+
+/// Stamp provenance attributes onto emitted Svelte/HTML markup so a clicked or
+/// selected DOM node maps back to its authoring VEIL construct.
+///
+/// Adds, to each top-level element open tag in the `template` region:
+/// - `data-veil-project` — project slug
+/// - `data-veil-construct` — the construct name
+/// - `data-veil-el` — a 0-based element hint (order within the construct)
+///
+/// Deliberately conservative: only stamps plain lowercase HTML element open
+/// tags (`<div`, `<section`, …), skipping Svelte control blocks (`{#if}`),
+/// components (`<Header`), closing tags, comments, and already-stamped tags.
+/// This is v1 string-level stamping over raw template blocks; the structured
+/// HTML/CSS lowering is the future home (palace: structured-html-css-targets).
+fn stamp_provenance(content: &str, c: &Construct, project: &str) -> String {
+    let construct = &c.name;
+
+    // Locate the template region: the markup after the closing </script> (and
+    // any {{...}}-free area). Stamp within [start, style_start) so we do not
+    // touch <script> or <style> blocks.
+    let start = content
+        .find("</script>")
+        .map(|i| i + "</script>".len())
+        .unwrap_or(0);
+    let style_start = content[start..]
+        .find("<style")
+        .map(|i| start + i)
+        .unwrap_or(content.len());
+
+    let head = &content[..start];
+    let body = &content[start..style_start];
+    let tail = &content[style_start..];
+
+    let bytes = body.as_bytes();
+    let mut out = String::with_capacity(body.len() + 96);
+    let mut i = 0;
+    let mut el_index = 0usize;
+    while i < bytes.len() {
+        let ch = bytes[i];
+        if ch == b'<' && i + 1 < bytes.len() && bytes[i + 1].is_ascii_lowercase() {
+            // Plain lowercase HTML element open tag. Extract tag name (ASCII).
+            let name_start = i + 1;
+            let mut j = name_start;
+            while j < bytes.len() && (bytes[j].is_ascii_alphanumeric() || bytes[j] == b'-') {
+                j += 1;
+            }
+            out.push('<');
+            out.push_str(&body[name_start..j]);
+            out.push_str(&format!(
+                " data-veil-project=\"{}\" data-veil-construct=\"{}\" data-veil-el=\"{}\"",
+                escape_attr(project),
+                escape_attr(construct),
+                el_index
+            ));
+            el_index += 1;
+            i = j;
+            continue;
+        }
+        // Advance by one full UTF-8 char to stay on a boundary.
+        let width = utf8_char_width(ch);
+        out.push_str(&body[i..i + width]);
+        i += width;
+    }
+
+    format!("{}{}{}", head, out, tail)
+}
+
+/// Byte-width of a UTF-8 sequence given its leading byte.
+fn utf8_char_width(b: u8) -> usize {
+    if b < 0x80 {
+        1
+    } else if b >> 5 == 0b110 {
+        2
+    } else if b >> 4 == 0b1110 {
+        3
+    } else if b >> 3 == 0b11110 {
+        4
+    } else {
+        1
+    }
+}
+
+/// Minimal HTML-attribute escaping for provenance values.
+fn escape_attr(s: &str) -> String {
+    s.replace('&', "&amp;").replace('"', "&quot;").replace('<', "&lt;")
+}
+
 /// Process `{{#if name}}...{{/if}}` conditionals.
 fn process_conditionals(input: &str, name: &str, condition: bool) -> String {
     let open_tag = format!("{{{{#if {}}}}}", name);
@@ -1259,5 +1369,56 @@ fn ts_default_for_type(ty: &veil_ir::TypeExpr) -> String {
         TypeExpr::Map(_, _) => "{}".into(),
         TypeExpr::Optional(_) => "null".into(),
         _ => "undefined as any".into(),
+    }
+}
+
+#[cfg(test)]
+mod provenance_tests {
+    use super::*;
+    use veil_ir::ast::Construct;
+
+    fn construct(name: &str) -> Construct {
+        Construct::new("comp", "Component", Shape::Struct, name.to_string(), Default::default())
+    }
+
+    #[test]
+    fn stamps_html_open_tags_with_provenance() {
+        let content = "<script lang=\"ts\">\n  let x = 1;\n</script>\n\n<div class=\"a\">\n  <span>hi</span>\n</div>\n\n<style>\n  div { color: red }\n</style>\n";
+        let out = stamp_provenance(content, &construct("AgentsPage"), "agent-core");
+        // Each HTML open tag carries the full provenance triple.
+        assert!(out.contains("<div data-veil-project=\"agent-core\" data-veil-construct=\"AgentsPage\" data-veil-el=\"0\" class=\"a\">"), "div not stamped:\n{out}");
+        assert!(out.contains("<span data-veil-project=\"agent-core\" data-veil-construct=\"AgentsPage\" data-veil-el=\"1\">"), "span not stamped:\n{out}");
+        // <script> and <style> regions are never stamped.
+        assert!(out.contains("<script lang=\"ts\">"), "script tag was mutated:\n{out}");
+        assert!(out.contains("div { color: red }"), "style body mutated:\n{out}");
+    }
+
+    #[test]
+    fn skips_components_control_blocks_and_closing_tags() {
+        let content = "<script></script>\n<Header />\n{#if ok}\n<p>x</p>\n{/if}\n";
+        let out = stamp_provenance(content, &construct("Home"), "proj");
+        // Component tags (PascalCase) are not stamped.
+        assert!(!out.contains("<Header data-veil"), "component wrongly stamped:\n{out}");
+        // Svelte control blocks untouched.
+        assert!(out.contains("{#if ok}"), "control block mutated:\n{out}");
+        // Plain <p> IS stamped; its closing tag </p> is not.
+        assert!(out.contains("<p data-veil-project=\"proj\" data-veil-construct=\"Home\""), "p not stamped:\n{out}");
+        assert!(!out.contains("</p data-veil"), "closing tag stamped:\n{out}");
+    }
+
+    #[test]
+    fn utf8_content_is_preserved() {
+        let content = "<script></script>\n<button>Café ☕ 日本語</button>\n";
+        let out = stamp_provenance(content, &construct("Menu"), "proj");
+        assert!(out.contains("Café ☕ 日本語"), "utf8 mangled:\n{out}");
+        assert!(out.contains("<button data-veil-project=\"proj\" data-veil-construct=\"Menu\""), "button not stamped:\n{out}");
+    }
+
+    #[test]
+    fn developer_layer_active_reflects_registry() {
+        let mut reg = LayerRegistry::builtin();
+        assert!(!developer_layer_active(&reg), "should be inactive by default");
+        reg.layers.push("developer".to_string());
+        assert!(developer_layer_active(&reg), "should be active when layer present");
     }
 }

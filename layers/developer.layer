@@ -1,0 +1,41 @@
+pkg developer v1
+  desc "Developer/edit-mode overlay — provenance stamping + select/right-click → edit-intent. Auto-injected by the runtime ONLY in preview/developer mode; never in a production build."
+  author "VEIL"
+
+  # This layer carries NO product vocabulary. It is a behavioral marker: when
+  # present in a registry's active layer set, the HTML/CSS-lowering codegen
+  # stamps provenance attributes (data-veil-project / data-veil-construct /
+  # data-veil-el) onto emitted DOM and injects the overlay client script that
+  # turns text-selection + right-click into an "edit intent" event.
+  #
+  # Generic across ANY layer that lowers to HTML/CSS (svelte5, sveltekit5, …).
+  # v1 stamps in the current Svelte/TS codegen pass (raw template blocks);
+  # structured-html-css-targets is the future home (palace).
+
+  prompt
+    You are looking at a VEIL UI running in DEVELOPER (edit) mode.
+
+    ## What this layer does
+    The `developer` layer is not a vocabulary layer — you never author with it.
+    The runtime auto-injects it when it opens a project's UI in a preview/edit
+    window. Two effects, both generic:
+
+    1. **Provenance stamping.** Every emitted top-level DOM element in a page /
+       component / layout carries attributes that point back to the authoring
+       VEIL construct:
+       - `data-veil-project` — the project slug
+       - `data-veil-construct` — the construct name (page / component / layout)
+       - `data-veil-el` — an element hint (index/role within the construct)
+       This is an EXACT pointer from a clicked DOM node to its source construct.
+
+    2. **Overlay behavior.** A small client script adds select-text and
+       right-click-element handlers. On interaction it reads the nearest
+       `data-veil-*` provenance and raises a `veil:edit-intent` event carrying
+       { project, construct, el, selection, label }. The Open-UI window listens
+       and opens the agent pane pre-filled with that reference.
+
+    ## Do NOT
+    - Do not author `use developer` in a product package — the platform owns this
+      name and injects it only in developer mode. A normal build/deploy never
+      includes it, so provenance attributes never ship to production.
+    - Do not hand-add data-veil-* attributes to generated output.

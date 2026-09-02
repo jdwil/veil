@@ -5510,6 +5510,154 @@ pub(crate) fn build_artifact_cors_layer() -> tower_http::cors::CorsLayer {
         .max_age(std::time::Duration::from_secs(86400))
 }
 
+// ─── Static Preview ("Open UI" vibe-code window) ─────────────────────────────
+
+/// Materialize a project's source (ui.veil + layers/ + stubs/ + …) into `dir`
+/// from the storage layer, mirroring the contribution build materialization.
+/// Returns the entry `.veil` file name for the preview build.
+async fn materialize_preview_source(
+    deps: &storage::application::Deps,
+    repo_id: &str,
+    dir: &std::path::Path,
+) -> Result<String, String> {
+    let rid = || storage::domain::types::RepoId { value: repo_id.to_string() };
+    let files = storage::application::list_files(deps, rid(), "main".to_string(), String::new())
+        .await
+        .map_err(|e| format!("list project files: {e:?}"))?;
+    for file_path in &files {
+        if let Ok(fbytes) =
+            storage::application::read_file(deps, rid(), "main".to_string(), file_path.clone())
+                .await
+        {
+            let dest = dir.join(file_path);
+            if let Some(parent) = dest.parent() {
+                tokio::fs::create_dir_all(parent).await.ok();
+            }
+            tokio::fs::write(&dest, &fbytes).await.ok();
+        }
+    }
+    // Entry .veil: prefer ui.veil, else the first top-level *.veil.
+    if dir.join("ui.veil").exists() {
+        return Ok("ui.veil".to_string());
+    }
+    files
+        .iter()
+        .find(|f| f.ends_with(".veil") && !f.contains('/'))
+        .cloned()
+        .ok_or_else(|| "no entry .veil found in project source".to_string())
+}
+
+/// POST /api/projects/{slug}/preview/build — (re)build the static preview.
+/// Returns the resulting PreviewStatus. Called on "Open UI" and after each
+/// accepted change so the window can reload.
+async fn preview_build(
+    State(st): State<StorageState>,
+    Path(slug): Path<String>,
+) -> Result<Json<Value>, StatusCode> {
+    let repo_id = resolve_repo_id_value(&st.deps, &slug).await?;
+    let deps = st.deps.clone();
+    let repo_id_for_mat = repo_id.clone();
+    let result = crate::deploy::preview::build_preview(&slug, move |dir| {
+        let deps = deps.clone();
+        let repo_id = repo_id_for_mat.clone();
+        async move { materialize_preview_source(&deps, &repo_id, &dir).await }
+    })
+    .await;
+    match result {
+        Ok(_) => Ok(Json(json!(crate::deploy::preview::status_for(&slug).await))),
+        Err(e) => Ok(Json(json!({ "state": "failed", "error": e }))),
+    }
+}
+
+/// GET /api/projects/{slug}/preview/status — current preview build status, so
+/// the Open-UI window can render "starting preview…" gracefully.
+async fn preview_status(Path(slug): Path<String>) -> Json<Value> {
+    Json(json!(crate::deploy::preview::status_for(&slug).await))
+}
+
+/// GET /preview/{slug}/ and /preview/{slug}/{*path} — serve the built static
+/// preview bundle. HTML responses get the overlay client script injected.
+async fn preview_serve_root(Path(slug): Path<String>) -> axum::response::Response {
+    preview_serve_path(Path((slug, String::new()))).await
+}
+
+async fn preview_serve_path(
+    Path((slug, path)): Path<(String, String)>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let status = crate::deploy::preview::status_for(&slug).await;
+    let dir = match status {
+        crate::deploy::preview::PreviewStatus::Ready { dir } => std::path::PathBuf::from(dir),
+        crate::deploy::preview::PreviewStatus::Building => {
+            return (StatusCode::ACCEPTED, preview_waiting_html(&slug)).into_response();
+        }
+        crate::deploy::preview::PreviewStatus::Failed { error } => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                axum::response::Html(format!(
+                    "<h1>Preview build failed</h1><pre>{}</pre>",
+                    html_escape_min(&error)
+                )),
+            )
+                .into_response();
+        }
+        crate::deploy::preview::PreviewStatus::Idle => {
+            return (StatusCode::NOT_FOUND, preview_waiting_html(&slug)).into_response();
+        }
+    };
+
+    // Resolve the requested file safely within the built bundle. Empty / dir
+    // requests fall back to index.html (SPA behavior).
+    let rel = path.trim_start_matches('/');
+    if rel.contains("..") {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+    let mut target = if rel.is_empty() {
+        dir.join("index.html")
+    } else {
+        dir.join(rel)
+    };
+    if target.is_dir() {
+        target = target.join("index.html");
+    }
+    if !target.exists() {
+        // SPA fallback to the shell so client-side routes resolve.
+        target = dir.join("index.html");
+    }
+
+    let bytes = match tokio::fs::read(&target).await {
+        Ok(b) => b,
+        Err(_) => return StatusCode::NOT_FOUND.into_response(),
+    };
+    let ct = guess_content_type(&target.to_string_lossy());
+    if ct.starts_with("text/html") {
+        let html = String::from_utf8_lossy(&bytes).into_owned();
+        let injected = crate::deploy::preview::inject_overlay(&html);
+        return axum::response::Html(injected).into_response();
+    }
+    ([(axum::http::header::CONTENT_TYPE, ct)], bytes).into_response()
+}
+
+fn preview_waiting_html(slug: &str) -> axum::response::Html<String> {
+    axum::response::Html(format!(
+        "<!doctype html><html><head><meta charset=\"utf-8\">\
+         <meta http-equiv=\"refresh\" content=\"2\">\
+         <title>Starting preview…</title>\
+         <style>body{{font-family:system-ui;margin:0;display:flex;height:100vh;\
+         align-items:center;justify-content:center;background:#0b0b0c;color:#e5e5e5}}\
+         .box{{text-align:center}}.spin{{width:28px;height:28px;border:3px solid #333;\
+         border-top-color:#6ea8fe;border-radius:50%;animation:s 0.8s linear infinite;\
+         margin:0 auto 14px}}@keyframes s{{to{{transform:rotate(360deg)}}}}</style></head>\
+         <body><div class=\"box\"><div class=\"spin\"></div>\
+         <div>Starting preview for <code>{}</code>…</div></div></body></html>",
+        html_escape_min(slug)
+    ))
+}
+
+fn html_escape_min(s: &str) -> String {
+    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+}
+
 /// Build platform domain router and merge onto ProductHost.
 pub async fn build_platform_router(
     bus: Arc<dyn veil_shared::Bus + Send + Sync>,
@@ -5556,6 +5704,7 @@ pub async fn build_platform_router(
         .route("/api/list-files", post(list_files_api))
         .route("/api/projects/{slug}/deploy/ws", get(deploy_ws_handler))
         .route("/api/projects/{slug}/deploy/gate", get(deploy_gate_handler))
+        .route("/api/projects/{slug}/preview/build", post(preview_build))
         .route("/api/review/bundles/{id}/approve", post(bundle_approve))
         .route("/api/review/bundles/{id}/merge", post(bundle_merge))
         .route("/api/review/bundles/{id}/ship", post(bundle_ship))
@@ -5644,6 +5793,14 @@ pub async fn build_platform_router(
     let registry_r = Router::new()
         .route("/api/registry/layers", get(list_registry_layers))
         .route("/api/registry/stubs", get(list_registry_stubs));
+
+    // Static preview serving (Open-UI window). Stateless — reads built bundles
+    // from disk (see crate::deploy::preview). HTML gets the overlay injected.
+    let preview_r = Router::new()
+        .route("/api/projects/{slug}/preview/status", get(preview_status))
+        .route("/preview/{slug}", get(preview_serve_root))
+        .route("/preview/{slug}/", get(preview_serve_root))
+        .route("/preview/{slug}/{*path}", get(preview_serve_path));
 
     // Artifact Registry (Phase 1 Platform Primitives)
     let art_reg_store =
@@ -5775,6 +5932,7 @@ pub async fn build_platform_router(
         .merge(cm_r)
         .merge(deploy_r)
         .merge(registry_r)
+        .merge(preview_r)
         .merge(artifact_registry_r)
         .merge(function_invoke_r)
         .merge(pipeline_r);

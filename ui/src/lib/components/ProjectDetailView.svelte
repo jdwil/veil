@@ -639,6 +639,15 @@
       >
         Open in IDE
       </a>
+      <a
+        class="btn-outline"
+        href={`/projects/${encodeURIComponent(slug || id)}/ui`}
+        target="_blank"
+        rel="noopener"
+        title="Open the running UI in a dedicated window — select or right-click an element to vibe-code it"
+      >
+        Open UI
+      </a>
       <a class="btn-outline" href={`/review/${encodeURIComponent(slug || id)}`}>Review</a>
     {/if}
     {#if has_deploy}
