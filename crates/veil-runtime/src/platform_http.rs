@@ -1436,6 +1436,16 @@ async fn request_pr_changes(
         .and_then(|p| extract_slug_from_description(&p.description));
     let reject_audit =
         record_review_sign_off(rc_slug.as_deref(), Some(&id.to_string()), "reject", Some(comment.clone()));
+    // Complete review-action audit (Part 2): request-changes is a distinct
+    // action tied to the project + PR (feedback = the reviewer note).
+    veil_server::review::record_review_action(veil_server::review::ReviewActionSpec {
+        action: "request_changes".into(),
+        slugs: rc_slug.clone().into_iter().collect(),
+        pr_ids: vec![id.to_string()],
+        result: "success".into(),
+        note: Some(comment.clone()),
+        ..Default::default()
+    });
     match change_management::application::request_pr_changes(&st.deps, id, reviewer, comment)
         .await
     {
@@ -3404,6 +3414,26 @@ async fn bundle_approve(
         let audit = record_review_sign_off(Some(slug), None, "approve", body.note.clone());
         approvals.push(json!({ "slug": slug, "sign_off": audit }));
     }
+    // Complete review-action audit (Part 2): record the approve action for the
+    // whole bundle with actor/target/time.
+    veil_server::review::record_review_action(veil_server::review::ReviewActionSpec {
+        action: "approve".into(),
+        bundle_id: Some(bundle.id.clone()),
+        slugs: bundle.project_slugs.clone(),
+        pr_ids: bundle
+            .projects
+            .iter()
+            .filter_map(|p| p.pr_id.clone())
+            .collect(),
+        git_shas: bundle
+            .projects
+            .iter()
+            .filter_map(|p| p.git_sha.clone())
+            .collect(),
+        result: "success".into(),
+        note: body.note.clone(),
+        ..Default::default()
+    });
     Json(json!({
         "ok": true,
         "bundle_id": bundle.id,
@@ -3450,6 +3480,15 @@ async fn bundle_merge(
 
     // Sign-off gate: EVERY project in the bundle must be approved.
     if let Err(e) = veil_server::review::may_ship_bundle(&bundle.id) {
+        veil_server::review::record_review_action(veil_server::review::ReviewActionSpec {
+            action: "merge".into(),
+            bundle_id: Some(bundle.id.clone()),
+            slugs: bundle.project_slugs.clone(),
+            environment: Some(environment.clone()),
+            result: "blocked".into(),
+            note: Some(format!("sign_off_required: {e}")),
+            ..Default::default()
+        });
         return Json(json!({
             "ok": false,
             "error": "sign_off_required",
@@ -3462,6 +3501,18 @@ async fn bundle_merge(
     // Prod two-person seam.
     let (prod_slugs, gate) = prod_gate_for_bundle(&st.deps, &bundle, &environment).await;
     if gate.active && !gate.satisfied && !body.override_two_person {
+        veil_server::review::record_review_action(veil_server::review::ReviewActionSpec {
+            action: "merge".into(),
+            bundle_id: Some(bundle.id.clone()),
+            slugs: prod_slugs.clone(),
+            environment: Some(environment.clone()),
+            result: "blocked".into(),
+            note: Some(format!(
+                "two_person_required: needs a second approver for {}",
+                gate.blocked.join(", ")
+            )),
+            ..Default::default()
+        });
         return Json(json!({
             "ok": false,
             "error": "two_person_required",
@@ -3492,6 +3543,20 @@ Ask another operator to approve, or override with a recorded reason.",
                 )),
             );
         }
+        // Complete review-action audit (Part 2): the prod-override is its own
+        // audited action with the acknowledgment note.
+        veil_server::review::record_review_action(veil_server::review::ReviewActionSpec {
+            action: "override_two_person".into(),
+            bundle_id: Some(bundle.id.clone()),
+            slugs: prod_slugs.clone(),
+            environment: Some(environment.clone()),
+            result: "success".into(),
+            note: Some(format!(
+                "Production two-person gate overridden without a second approver. {}",
+                body.note.clone().unwrap_or_default()
+            )),
+            ..Default::default()
+        });
         tracing::warn!(bundle = %bundle.id, projects = ?prod_slugs, "two-person prod override");
     }
 
@@ -3531,6 +3596,27 @@ Ask another operator to approve, or override with a recorded reason.",
             }
         }
     }
+
+    // Complete review-action audit (Part 2): the merge action + its result.
+    veil_server::review::record_review_action(veil_server::review::ReviewActionSpec {
+        action: "merge".into(),
+        bundle_id: Some(bundle.id.clone()),
+        slugs: bundle.project_slugs.clone(),
+        environment: Some(environment.clone()),
+        git_shas: bundle
+            .projects
+            .iter()
+            .filter_map(|p| p.git_sha.clone())
+            .collect(),
+        pr_ids: bundle
+            .projects
+            .iter()
+            .filter_map(|p| p.pr_id.clone())
+            .collect(),
+        result: if all_ok { "success" } else { "failure" }.into(),
+        note: body.note.clone(),
+        ..Default::default()
+    });
 
     Json(json!({
         "ok": all_ok,
@@ -3575,6 +3661,16 @@ async fn bundle_ship(
     for slug in &bundle.project_slugs {
         let _ = record_review_sign_off(Some(slug), None, "approve", body.note.clone());
     }
+    // Complete review-action audit (Part 2): the approve leg of one-action ship.
+    veil_server::review::record_review_action(veil_server::review::ReviewActionSpec {
+        action: "approve".into(),
+        bundle_id: Some(bundle.id.clone()),
+        slugs: bundle.project_slugs.clone(),
+        environment: Some(environment.clone()),
+        result: "success".into(),
+        note: body.note.clone(),
+        ..Default::default()
+    });
 
     // 2) Merge (env-gated + two-person seam) via the bundle merge handler logic.
     let merge_resp = bundle_merge(
@@ -3630,6 +3726,22 @@ async fn bundle_ship(
             }
         }
     }
+
+    // Complete review-action audit (Part 2): the deploy leg (per environment).
+    veil_server::review::record_review_action(veil_server::review::ReviewActionSpec {
+        action: "deploy".into(),
+        bundle_id: Some(bundle.id.clone()),
+        slugs: bundle.project_slugs.clone(),
+        environment: Some(environment.clone()),
+        git_shas: bundle
+            .projects
+            .iter()
+            .filter_map(|p| p.git_sha.clone())
+            .collect(),
+        result: if all_ok { "success" } else { "failure" }.into(),
+        note: body.note.clone(),
+        ..Default::default()
+    });
 
     Json(json!({
         "ok": all_ok,

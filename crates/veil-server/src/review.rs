@@ -102,6 +102,50 @@ pub struct SignOffRecord {
     pub actor_kind: String,
 }
 
+/// A complete review-action audit record (audit-logging Part 2).
+///
+/// [`SignOffRecord`] captures only approve/reject sign-offs. `ReviewAction`
+/// records EVERY action in the operator SDLC flow — approve, reject,
+/// request-changes, merge, deploy, and prod-override — with who/when/what/
+/// env/result, tied to the review bundle (and thus to the agent turns that
+/// produced the change via `bundle → items → session_id → turns`). Append-only,
+/// persisted alongside sign-offs in the review store.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReviewAction {
+    pub id: String,
+    /// RFC3339 timestamp.
+    pub at: String,
+    /// Who performed the action (user id / "operator" / "system").
+    pub actor: String,
+    /// `human` | `agent` | `system`.
+    #[serde(default)]
+    pub actor_kind: String,
+    /// One of: `approve` | `reject` | `request_changes` | `merge` |
+    /// `deploy` | `override_two_person`.
+    pub action: String,
+    /// The review bundle this action targets (task grouping key). May be empty
+    /// for a legacy single-project action keyed only by slug.
+    #[serde(default)]
+    pub bundle_id: Option<String>,
+    /// Affected project slugs.
+    #[serde(default)]
+    pub slugs: Vec<String>,
+    /// Target environment for deploy/merge actions (`dev`/`staging`/`prod`).
+    #[serde(default)]
+    pub environment: Option<String>,
+    /// Git SHAs involved (per project) when known.
+    #[serde(default)]
+    pub git_shas: Vec<String>,
+    /// Provider PR ids involved (per project) when known.
+    #[serde(default)]
+    pub pr_ids: Vec<String>,
+    /// `success` | `failure` | `blocked`.
+    pub result: String,
+    /// Free-form note (override reason, request-changes feedback, error text).
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct ReviewState {
     items: Vec<OutstandingItem>,
@@ -110,6 +154,10 @@ struct ReviewState {
     /// `review-state.json` files without this key load as an empty vec.
     #[serde(default)]
     edits: Vec<EditRecord>,
+    /// Complete review-action audit trail (audit-logging Part 2). Additive /
+    /// back-compat: older stores without this key load as an empty vec.
+    #[serde(default)]
+    actions: Vec<ReviewAction>,
 }
 
 const MAX_EDITS: usize = 2000;
@@ -979,6 +1027,116 @@ pub fn close_unknown_projects(live: &[String]) -> usize {
 pub fn audits(limit: usize) -> Vec<SignOffRecord> {
     let guard = store().lock().unwrap_or_else(|e| e.into_inner());
     guard.audits.iter().rev().take(limit.max(1)).cloned().collect()
+}
+
+// ─── Complete review-action audit (audit-logging Part 2) ──────────────────
+
+const MAX_ACTIONS: usize = 4000;
+
+/// Fields a caller supplies to record a [`ReviewAction`]. `id` and `at` are
+/// filled in by [`record_review_action`]; `actor`/`actor_kind` default to the
+/// current human operator when omitted.
+#[derive(Debug, Clone, Default)]
+pub struct ReviewActionSpec {
+    pub action: String,
+    pub actor: Option<String>,
+    pub actor_kind: Option<String>,
+    pub bundle_id: Option<String>,
+    pub slugs: Vec<String>,
+    pub environment: Option<String>,
+    pub git_shas: Vec<String>,
+    pub pr_ids: Vec<String>,
+    pub result: String,
+    pub note: Option<String>,
+}
+
+/// Record ONE review action (approve / reject / request_changes / merge /
+/// deploy / override_two_person) into the durable review-action audit trail.
+/// Best-effort: never fails the caller. Returns the stored record.
+pub fn record_review_action(spec: ReviewActionSpec) -> ReviewAction {
+    let actor = spec
+        .actor
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(crate::session::current_user_id);
+    let actor_kind = spec
+        .actor_kind
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "human".to_string());
+    let action = ReviewAction {
+        id: format!("ra_{}", short_id()),
+        at: now_rfc3339(),
+        actor,
+        actor_kind,
+        action: spec.action,
+        bundle_id: spec.bundle_id.filter(|s| !s.trim().is_empty()),
+        slugs: spec.slugs,
+        environment: spec.environment.filter(|s| !s.trim().is_empty()),
+        git_shas: spec.git_shas,
+        pr_ids: spec.pr_ids,
+        result: if spec.result.trim().is_empty() {
+            "success".to_string()
+        } else {
+            spec.result
+        },
+        note: spec.note.filter(|s| !s.trim().is_empty()),
+    };
+    let mut guard = store().lock().unwrap_or_else(|e| e.into_inner());
+    guard.actions.push(action.clone());
+    if guard.actions.len() > MAX_ACTIONS {
+        let drain = guard.actions.len() - MAX_ACTIONS;
+        guard.actions.drain(0..drain);
+    }
+    persist(&guard);
+    action
+}
+
+/// Read recent review actions, newest first. Optionally filter by bundle id
+/// and/or project slug. `limit` caps the result count (post-filter).
+pub fn review_actions(
+    bundle_id: Option<&str>,
+    slug: Option<&str>,
+    limit: usize,
+) -> Vec<ReviewAction> {
+    let guard = store().lock().unwrap_or_else(|e| e.into_inner());
+    guard
+        .actions
+        .iter()
+        .rev()
+        .filter(|a| {
+            bundle_id
+                .map(|b| a.bundle_id.as_deref() == Some(b))
+                .unwrap_or(true)
+        })
+        .filter(|a| {
+            slug.map(|s| a.slugs.iter().any(|x| x.eq_ignore_ascii_case(s)))
+                .unwrap_or(true)
+        })
+        .take(limit.max(1))
+        .cloned()
+        .collect()
+}
+
+/// Resolve the agent turns that produced a bundle's changes, keyed via
+/// `bundle → outstanding/decided items → session_id`. Returns the distinct
+/// `(session_id, slug)` pairs so a caller can read the full-fidelity turns
+/// (Part 1 capture) for each session. This is the bundle ↔ session/turns
+/// linkage (Part 2 / Part 3).
+pub fn bundle_session_links(bundle_id: &str) -> Vec<(String, String)> {
+    let guard = store().lock().unwrap_or_else(|e| e.into_inner());
+    let mut seen: HashSet<(String, String)> = HashSet::new();
+    let mut out = Vec::new();
+    for it in &guard.items {
+        if it.bundle_id.as_deref() != Some(bundle_id) {
+            continue;
+        }
+        if let Some(sid) = it.session_id.as_ref().filter(|s| !s.is_empty()) {
+            let key = (sid.clone(), it.slug.clone());
+            if seen.insert(key.clone()) {
+                out.push(key);
+            }
+        }
+    }
+    out
 }
 
 // ─── Edit-capture persistence (Spec A) ────────────────────────────────────
@@ -2428,6 +2586,86 @@ mod tests {
                 None => std::env::remove_var("VEIL_TWO_PERSON_PROD"),
             }
         }
+    }
+
+    /// Part 2: every review action (approve/merge/deploy/override/reject/
+    /// request_changes) is recorded with actor/action/target/env/result/time,
+    /// and the reader filters by bundle + slug.
+    #[test]
+    fn review_actions_record_and_filter_by_bundle_and_slug() {
+        let _g = isolated();
+        record_review_action(ReviewActionSpec {
+            action: "approve".into(),
+            actor: Some("jd".into()),
+            bundle_id: Some("bnd_x".into()),
+            slugs: vec!["proj-a".into(), "proj-b".into()],
+            result: "success".into(),
+            ..Default::default()
+        });
+        record_review_action(ReviewActionSpec {
+            action: "merge".into(),
+            actor: Some("jd".into()),
+            bundle_id: Some("bnd_x".into()),
+            slugs: vec!["proj-a".into()],
+            environment: Some("dev".into()),
+            git_shas: vec!["abc123".into()],
+            pr_ids: vec!["pr-a".into()],
+            result: "success".into(),
+            ..Default::default()
+        });
+        record_review_action(ReviewActionSpec {
+            action: "deploy".into(),
+            bundle_id: Some("bnd_other".into()),
+            slugs: vec!["proj-c".into()],
+            environment: Some("prod".into()),
+            result: "success".into(),
+            ..Default::default()
+        });
+
+        // All actions, newest first.
+        let all = review_actions(None, None, 50);
+        assert_eq!(all.len(), 3);
+        assert_eq!(all[0].action, "deploy");
+        assert_eq!(all[2].action, "approve");
+        assert_eq!(all[2].actor_kind, "human");
+
+        // Filter by bundle.
+        let bx = review_actions(Some("bnd_x"), None, 50);
+        assert_eq!(bx.len(), 2);
+        assert!(bx.iter().all(|a| a.bundle_id.as_deref() == Some("bnd_x")));
+
+        // Filter by slug (proj-a appears in approve + merge).
+        let pa = review_actions(None, Some("proj-a"), 50);
+        assert_eq!(pa.len(), 2);
+
+        // Merge action carries env + sha + pr id.
+        let merge = bx.iter().find(|a| a.action == "merge").unwrap();
+        assert_eq!(merge.environment.as_deref(), Some("dev"));
+        assert_eq!(merge.git_shas, vec!["abc123".to_string()]);
+        assert_eq!(merge.pr_ids, vec!["pr-a".to_string()]);
+    }
+
+    /// Part 2 linkage: a bundle's items expose their (session_id, slug) pairs
+    /// so a reviewer can trace change → agent turns.
+    #[test]
+    fn bundle_session_links_maps_bundle_to_sessions() {
+        let _g = isolated();
+        set_active_bundle_id(Some("bnd_link".into()));
+        record(RecordSpec {
+            kind: ItemKind::FileEdit,
+            slug: Some("proj-a".into()),
+            repo_id: None,
+            project_name: None,
+            path: Some("main.veil".into()),
+            summary: "edit".into(),
+            rationale: Some("why".into()),
+            git_sha: None,
+            session_id: Some("sess-1".into()),
+            pr_id: None,
+        });
+        set_active_bundle_id(None);
+        let links = bundle_session_links("bnd_link");
+        assert_eq!(links, vec![("sess-1".to_string(), "proj-a".to_string())]);
     }
 
     fn sample_spec(name: &str, crit: veil_ir::Criticality) -> EditRecordSpec {

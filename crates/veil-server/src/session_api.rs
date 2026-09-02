@@ -58,6 +58,11 @@ pub fn session_routes() -> Router<Arc<MultiProjectProvider>> {
         .route("/api/review/bundles", get(review_bundles))
         .route("/api/review/reconcile", post(review_reconcile))
         .route("/api/review/export", get(review_export))
+        // ─── History / audit surface (audit-logging Part 3) ───────────────
+        .route("/api/history/recent", get(history_recent))
+        .route("/api/history/actions", get(history_actions))
+        .route("/api/history/bundles/{id}", get(history_bundle_detail))
+        .route("/api/history/blob", get(history_blob))
 }
 
 fn json_ok(v: serde_json::Value) -> axum::response::Response {
@@ -1049,6 +1054,162 @@ async fn review_bundles(Query(q): Query<ReviewQuery>) -> axum::response::Respons
 
 async fn review_export() -> axum::response::Response {
     json_ok(crate::review::export_json())
+}
+
+// ─── History / audit query surface (audit-logging Part 3) ─────────────────
+
+#[derive(Deserialize)]
+struct HistoryQuery {
+    #[serde(default)]
+    bundle: Option<String>,
+    #[serde(default)]
+    slug: Option<String>,
+    #[serde(default)]
+    actor: Option<String>,
+    #[serde(default)]
+    action: Option<String>,
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+/// GET /api/history/recent — a merged, most-recent-first activity feed across
+/// coding sessions AND review actions, for the History browse view. Filterable
+/// by project slug, actor, and action type.
+async fn history_recent(Query(q): Query<HistoryQuery>) -> axum::response::Response {
+    let limit = q.limit.unwrap_or(100).clamp(1, 500);
+    let user = current_user_id();
+    // Sessions (coding conversations).
+    let sessions: Vec<Value> = list_sessions_for_user(&user)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|s| {
+            q.slug
+                .as_ref()
+                .map(|slug| s.slug.eq_ignore_ascii_case(slug))
+                .unwrap_or(true)
+        })
+        .map(|s| {
+            json!({
+                "kind": "session",
+                "session_id": s.session_id,
+                "slug": s.slug,
+                "branch_name": s.branch_name,
+                "at": s.updated_at,
+                "user_id": s.user_id,
+            })
+        })
+        .collect();
+    // Review actions.
+    let actions: Vec<Value> = crate::review::review_actions(
+        q.bundle.as_deref(),
+        q.slug.as_deref(),
+        limit,
+    )
+    .into_iter()
+    .filter(|a| {
+        q.actor
+            .as_ref()
+            .map(|actor| a.actor.eq_ignore_ascii_case(actor))
+            .unwrap_or(true)
+    })
+    .filter(|a| {
+        q.action
+            .as_ref()
+            .map(|act| a.action.eq_ignore_ascii_case(act))
+            .unwrap_or(true)
+    })
+    .map(|a| {
+        json!({
+            "kind": "review_action",
+            "id": a.id,
+            "action": a.action,
+            "actor": a.actor,
+            "actor_kind": a.actor_kind,
+            "bundle_id": a.bundle_id,
+            "slugs": a.slugs,
+            "environment": a.environment,
+            "result": a.result,
+            "at": a.at,
+            "note": a.note,
+        })
+    })
+    .collect();
+    // Bundles (review tasks) for the browse list.
+    let bundles = crate::review::bundles(q.slug.as_deref());
+    json_ok(json!({
+        "ok": true,
+        "user_id": user,
+        "sessions": sessions,
+        "actions": actions,
+        "bundles": bundles,
+    }))
+}
+
+/// GET /api/history/actions?bundle=&slug=&actor=&action=&limit= — the complete
+/// review-action audit trail, newest first.
+async fn history_actions(Query(q): Query<HistoryQuery>) -> axum::response::Response {
+    let limit = q.limit.unwrap_or(200).clamp(1, 2000);
+    let actions: Vec<crate::review::ReviewAction> =
+        crate::review::review_actions(q.bundle.as_deref(), q.slug.as_deref(), limit)
+            .into_iter()
+            .filter(|a| {
+                q.actor
+                    .as_ref()
+                    .map(|actor| a.actor.eq_ignore_ascii_case(actor))
+                    .unwrap_or(true)
+            })
+            .filter(|a| {
+                q.action
+                    .as_ref()
+                    .map(|act| a.action.eq_ignore_ascii_case(act))
+                    .unwrap_or(true)
+            })
+            .collect();
+    json_ok(json!({ "ok": true, "count": actions.len(), "actions": actions }))
+}
+
+/// GET /api/history/bundles/{id} — a review bundle's action timeline PLUS the
+/// linked agent turns (Part 2 linkage: bundle → items → session_id → turns).
+/// This backs the "show me the full conversation + tool calls for the turns
+/// that produced review-bundle X" query.
+async fn history_bundle_detail(Path(id): Path<String>) -> axum::response::Response {
+    let bundle = crate::review::bundle_by_id_any_status(&id);
+    let actions = crate::review::review_actions(Some(&id), None, 500);
+    // Linkage: distinct (session_id, slug) pairs, each with its full-fidelity turns.
+    let links = crate::review::bundle_session_links(&id);
+    let mut sessions = Vec::new();
+    for (sid, slug) in links {
+        let turns = list_turns(&sid).unwrap_or_default();
+        sessions.push(json!({
+            "session_id": sid,
+            "slug": slug,
+            "turn_count": turns.len(),
+            "turns": turns,
+        }));
+    }
+    json_ok(json!({
+        "ok": true,
+        "bundle_id": id,
+        "bundle": bundle,
+        "actions": actions,
+        "sessions": sessions,
+    }))
+}
+
+#[derive(Deserialize)]
+struct BlobQuery {
+    #[serde(rename = "ref")]
+    reference: String,
+}
+
+/// GET /api/history/blob?ref=s3://… — expand a tool-result blob that was
+/// offloaded from a durable turn (Part 1). Used by the conversation view when
+/// an operator opens a large tool result.
+async fn history_blob(Query(q): Query<BlobQuery>) -> axum::response::Response {
+    match crate::agent_capture::get_blob(&q.reference) {
+        Ok(body) => json_ok(json!({ "ok": true, "ref": q.reference, "content": body })),
+        Err(e) => err_resp(StatusCode::BAD_REQUEST, e),
+    }
 }
 
 async fn review_sign_off(Json(body): Json<SignOffBody>) -> axum::response::Response {
