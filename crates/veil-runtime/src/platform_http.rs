@@ -3288,25 +3288,20 @@ async fn get_provision_job(
 /// can be shipped in one action once the change set is signed off; `sign_off`
 /// keeps the environment behind the explicit sign-off ceremony (prod).
 /// Unknown / missing config defaults to `none` (matches GatePolicy::from_str).
-async fn deploy_gate_handler(
-    State(st): State<StorageState>,
-    axum::extract::Path(slug): axum::extract::Path<String>,
-    Query(q): Query<std::collections::HashMap<String, String>>,
-) -> Json<Value> {
-    let environment = q
-        .get("environment")
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "dev".to_string());
-
-    // Read veil.toml [deploy.gates] from the project's main branch. Any failure
-    // (no repo, no file, parse error) falls back to the permissive default so
-    // dev flows keep working; prod gating is opt-in via explicit `sign_off`.
-    let gate = async {
-        let repo = storage::application::resolve_repo(&st.deps, &slug).await.ok()?;
+/// Read the approval gate policy for a project + environment from its
+/// `veil.toml [deploy.gates]`. Returns `"none"` or `"sign_off"`. Any failure
+/// (no repo, no file, parse error) falls back to the permissive `"none"` so
+/// dev flows keep working; prod gating is opt-in via explicit `sign_off`.
+pub(crate) async fn read_deploy_gate(
+    deps: &Arc<storage::application::Deps>,
+    slug: &str,
+    environment: &str,
+) -> &'static str {
+    let got = async {
+        let repo = storage::application::resolve_repo(deps, slug).await.ok()?;
         let rid = storage::domain::types::RepoId { value: repo.id.value };
         let bytes = storage::application::read_file(
-            &st.deps,
+            deps,
             rid,
             "main".to_string(),
             "veil.toml".to_string(),
@@ -3318,7 +3313,7 @@ async fn deploy_gate_handler(
         let policy = parsed
             .get("deploy")
             .and_then(|d| d.get("gates"))
-            .and_then(|g| g.get(&environment))
+            .and_then(|g| g.get(environment))
             .and_then(|v| v.as_str())
             .unwrap_or("none");
         Some(match policy {
@@ -3328,6 +3323,21 @@ async fn deploy_gate_handler(
     }
     .await
     .unwrap_or("none");
+    got
+}
+
+async fn deploy_gate_handler(
+    State(st): State<StorageState>,
+    axum::extract::Path(slug): axum::extract::Path<String>,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+) -> Json<Value> {
+    let environment = q
+        .get("environment")
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "dev".to_string());
+
+    let gate = read_deploy_gate(&st.deps, &slug, &environment).await;
 
     Json(json!({
         "ok": true,
@@ -3337,6 +3347,295 @@ async fn deploy_gate_handler(
         // Convenience flag for the UI: dev-gated (gate=none) projects can offer
         // one-action Approve & Deploy; sign_off keeps the ceremony.
         "one_action_ship": gate == "none",
+    }))
+}
+
+// ─── Bundle-level operator actions (Part C) ───────────────────────────────
+//
+// One review = one ReviewBundle (a task's per-project change sets). The
+// operator acts on the WHOLE task at bundle level:
+//   POST /api/review/bundles/{id}/approve  — record human sign-off for every project
+//   POST /api/review/bundles/{id}/merge    — env-gated: merge each project's branch to main
+//   POST /api/review/bundles/{id}/ship     — Approve + Merge + Deploy each (one action)
+// Non-prod (gate=none) is the fast path. Prod (gate=sign_off) is behind the
+// two-person seam (decision-deferred-two-person-prod-approval): the merge is
+// blocked when the seam is ACTIVE and < 2 distinct approvers, with an audited
+// `override=true` escape hatch. All actions record the existing sign-off audit.
+
+#[derive(Deserialize, Default)]
+struct BundleActionBody {
+    #[serde(default)]
+    environment: Option<String>,
+    /// Explicit note recorded on the sign-off audit.
+    #[serde(default)]
+    note: Option<String>,
+    /// Prod two-person override: proceed despite the gate. Audited with a stern
+    /// warning. Structured for when identities land — do NOT default to true.
+    #[serde(default)]
+    override_two_person: bool,
+}
+
+/// Resolve the bundle or 404-shaped error JSON.
+fn resolve_bundle(id: &str) -> Result<veil_server::review::ReviewBundle, Json<Value>> {
+    veil_server::review::bundle_by_id(id).ok_or_else(|| {
+        Json(json!({
+            "ok": false,
+            "error": "bundle_not_found",
+            "message": format!("No open review bundle `{id}`. It may have been shipped already."),
+        }))
+    })
+}
+
+/// POST /api/review/bundles/{id}/approve — record the authoritative human
+/// sign-off for EVERY project in the bundle (the ship-gate record). Idempotent
+/// with the /review UI. The actor is the current human operator (never agent).
+async fn bundle_approve(
+    axum::extract::Path(id): axum::extract::Path<String>,
+    Json(body): Json<BundleActionBody>,
+) -> Json<Value> {
+    let bundle = match resolve_bundle(&id) {
+        Ok(b) => b,
+        Err(e) => return e,
+    };
+    let mut approvals = Vec::new();
+    for slug in &bundle.project_slugs {
+        let audit = record_review_sign_off(Some(slug), None, "approve", body.note.clone());
+        approvals.push(json!({ "slug": slug, "sign_off": audit }));
+    }
+    Json(json!({
+        "ok": true,
+        "bundle_id": bundle.id,
+        "approved_projects": bundle.project_slugs,
+        "approvals": approvals,
+        "audit_env": veil_server::review::audit_env_json(),
+    }))
+}
+
+/// Compute which of the bundle's projects are prod-gated for the target env and
+/// evaluate the two-person production merge gate over them.
+async fn prod_gate_for_bundle(
+    deps: &Arc<storage::application::Deps>,
+    bundle: &veil_server::review::ReviewBundle,
+    environment: &str,
+) -> (Vec<String>, veil_server::review::ProdMergeGate) {
+    let mut prod_slugs = Vec::new();
+    for slug in &bundle.project_slugs {
+        if read_deploy_gate(deps, slug, environment).await == "sign_off" {
+            prod_slugs.push(slug.clone());
+        }
+    }
+    let gate = veil_server::review::prod_merge_gate(&prod_slugs, None);
+    (prod_slugs, gate)
+}
+
+/// POST /api/review/bundles/{id}/merge — env-gated bundle merge. Requires every
+/// project signed off (may_ship_bundle). For prod-gated projects, enforces the
+/// two-person seam (when active) unless `override_two_person` is set (audited).
+/// Merges each project's open PR to main via the existing merge endpoint.
+async fn bundle_merge(
+    State(st): State<StorageState>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    Json(body): Json<BundleActionBody>,
+) -> Json<Value> {
+    let bundle = match resolve_bundle(&id) {
+        Ok(b) => b,
+        Err(e) => return e,
+    };
+    let environment = body
+        .environment
+        .clone()
+        .unwrap_or_else(|| "dev".to_string());
+
+    // Sign-off gate: EVERY project in the bundle must be approved.
+    if let Err(e) = veil_server::review::may_ship_bundle(&bundle.id) {
+        return Json(json!({
+            "ok": false,
+            "error": "sign_off_required",
+            "message": e,
+            "hint": "Approve the whole review before merging the task.",
+            "audit_env": veil_server::review::audit_env_json(),
+        }));
+    }
+
+    // Prod two-person seam.
+    let (prod_slugs, gate) = prod_gate_for_bundle(&st.deps, &bundle, &environment).await;
+    if gate.active && !gate.satisfied && !body.override_two_person {
+        return Json(json!({
+            "ok": false,
+            "error": "two_person_required",
+            "message": format!(
+                "Production merge needs a second distinct approver for: {}. \
+Ask another operator to approve, or override with a recorded reason.",
+                gate.blocked.join(", ")
+            ),
+            "prod_projects": prod_slugs,
+            "gate": gate,
+            "override_field": "override_two_person",
+            "audit_env": veil_server::review::audit_env_json(),
+        }));
+    }
+    let overridden = gate.active && !gate.satisfied && body.override_two_person;
+    if overridden {
+        // Audited override: record a system note against each prod project so
+        // the audit pack shows the two-person rule was consciously bypassed.
+        for slug in &prod_slugs {
+            let _ = record_review_sign_off(
+                Some(slug),
+                None,
+                "approve",
+                Some(format!(
+                    "TWO-PERSON OVERRIDE by {}: production merged without a second approver. {}",
+                    veil_server::session::current_user_id(),
+                    body.note.clone().unwrap_or_default()
+                )),
+            );
+        }
+        tracing::warn!(bundle = %bundle.id, projects = ?prod_slugs, "two-person prod override");
+    }
+
+    // Merge each project's PR via the existing gated endpoint (internal HTTP so
+    // provider-merge + subpath multi-gate stay intact).
+    let port = std::env::var("VEIL_PORT").unwrap_or_else(|_| "8080".into());
+    let client = reqwest::Client::new();
+    let mut results = Vec::new();
+    let mut all_ok = true;
+    for proj in &bundle.projects {
+        let Some(pr_id) = proj.pr_id.as_deref().filter(|s| !s.is_empty()) else {
+            results.push(json!({
+                "slug": proj.slug,
+                "ok": false,
+                "skipped": "no_pr",
+                "message": "No provider/transport PR bound for this project; nothing to merge.",
+            }));
+            continue;
+        };
+        let url = format!("http://127.0.0.1:{port}/api/pull_requests/{pr_id}/merge");
+        match client
+            .post(&url)
+            .json(&json!({ "merger": "operator", "slug": proj.slug }))
+            .send()
+            .await
+        {
+            Ok(resp) => {
+                let v: Value = resp.json().await.unwrap_or(json!({}));
+                if v.get("ok").and_then(|b| b.as_bool()) == Some(false) {
+                    all_ok = false;
+                }
+                results.push(json!({ "slug": proj.slug, "merge": v }));
+            }
+            Err(e) => {
+                all_ok = false;
+                results.push(json!({ "slug": proj.slug, "ok": false, "error": e.to_string() }));
+            }
+        }
+    }
+
+    Json(json!({
+        "ok": all_ok,
+        "bundle_id": bundle.id,
+        "environment": environment,
+        "merged": results,
+        "prod_projects": prod_slugs,
+        "two_person_override": overridden,
+        "gate": gate,
+        "audit_env": veil_server::review::audit_env_json(),
+    }))
+}
+
+/// POST /api/review/bundles/{id}/ship — Approve + Merge + Deploy in one action
+/// for the whole task. Non-prod fast path: records sign-off for every project,
+/// merges each branch to main, then deploys each project. Prod-gated projects
+/// obey the two-person seam like `bundle_merge`.
+async fn bundle_ship(
+    State(st): State<StorageState>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    Json(body): Json<BundleActionBody>,
+) -> Json<Value> {
+    let bundle = match resolve_bundle(&id) {
+        Ok(b) => b,
+        Err(e) => return e,
+    };
+    let environment = body
+        .environment
+        .clone()
+        .unwrap_or_else(|| "dev".to_string());
+
+    // Block shipping a task that still has host-check errors in any project.
+    if bundle.host_has_errors {
+        return Json(json!({
+            "ok": false,
+            "error": "host_errors",
+            "message": "One or more projects in this task still have compile errors. Fix them before shipping.",
+        }));
+    }
+
+    // 1) Approve every project (records the ship-gate sign-off).
+    for slug in &bundle.project_slugs {
+        let _ = record_review_sign_off(Some(slug), None, "approve", body.note.clone());
+    }
+
+    // 2) Merge (env-gated + two-person seam) via the bundle merge handler logic.
+    let merge_resp = bundle_merge(
+        State(st.clone()),
+        axum::extract::Path(bundle.id.clone()),
+        Json(BundleActionBody {
+            environment: Some(environment.clone()),
+            note: body.note.clone(),
+            override_two_person: body.override_two_person,
+        }),
+    )
+    .await;
+    let merge_val = merge_resp.0;
+    if merge_val.get("ok").and_then(|b| b.as_bool()) != Some(true) {
+        // Merge blocked (e.g. two-person) — do not deploy. Surface the reason.
+        return Json(json!({
+            "ok": false,
+            "stage": "merge",
+            "bundle_id": bundle.id,
+            "merge": merge_val,
+        }));
+    }
+
+    // 3) Deploy each project to the target environment.
+    let port = std::env::var("VEIL_PORT").unwrap_or_else(|_| "8080".into());
+    let client = reqwest::Client::new();
+    let mut deploys = Vec::new();
+    let mut all_ok = true;
+    for proj in &bundle.projects {
+        let rid = proj.repo_id.clone().unwrap_or_else(|| proj.slug.clone());
+        let url = format!("http://127.0.0.1:{port}/api/provision-project");
+        match client
+            .post(&url)
+            .json(&json!({
+                "project_slug": proj.slug,
+                "environment": environment,
+                "repo_id": rid,
+                "branch": "main",
+            }))
+            .send()
+            .await
+        {
+            Ok(resp) => {
+                let v: Value = resp.json().await.unwrap_or(json!({}));
+                if v.get("ok").and_then(|b| b.as_bool()) == Some(false) {
+                    all_ok = false;
+                }
+                deploys.push(json!({ "slug": proj.slug, "deploy": v }));
+            }
+            Err(e) => {
+                all_ok = false;
+                deploys.push(json!({ "slug": proj.slug, "ok": false, "error": e.to_string() }));
+            }
+        }
+    }
+
+    Json(json!({
+        "ok": all_ok,
+        "bundle_id": bundle.id,
+        "environment": environment,
+        "merge": merge_val,
+        "deploys": deploys,
+        "audit_env": veil_server::review::audit_env_json(),
     }))
 }
 
@@ -5143,6 +5442,9 @@ pub async fn build_platform_router(
         .route("/api/list-files", post(list_files_api))
         .route("/api/projects/{slug}/deploy/ws", get(deploy_ws_handler))
         .route("/api/projects/{slug}/deploy/gate", get(deploy_gate_handler))
+        .route("/api/review/bundles/{id}/approve", post(bundle_approve))
+        .route("/api/review/bundles/{id}/merge", post(bundle_merge))
+        .route("/api/review/bundles/{id}/ship", post(bundle_ship))
         .route(
             "/api/project_infras/{id}",
             get(get_project_infra),

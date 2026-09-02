@@ -1491,6 +1491,112 @@ pub fn bundle_by_id(id: &str) -> Option<ReviewBundle> {
     bundles(None).into_iter().find(|b| b.id == id)
 }
 
+// ─── Two-person production approval (deferred seam) ───────────────────────
+//
+// decision-deferred-two-person-prod-approval: production PRs require a SECOND
+// distinct user's approval before merge (SOC2 two-person), with an audited
+// override. This is BUILT AS A SEAM now — the approver identity is recorded on
+// every `SignOffRecord.actor`, and `distinct_approvers` / `prod_merge_gate`
+// implement the policy — but it is DEFERRED: the runtime is single-user today
+// (all approvals share one identity), so the check naturally does not fire yet.
+// Do NOT hardcode the gate open; when real identities land it activates itself.
+
+/// Count of DISTINCT human approvers on record for a project (optionally a SHA).
+/// Agent / system actors are excluded — only human sign-offs count toward the
+/// two-person rule. Distinctness is by case-insensitive actor identity.
+pub fn distinct_approvers(slug: &str, sha: Option<&str>) -> usize {
+    let slug = slug.trim();
+    if slug.is_empty() {
+        return 0;
+    }
+    let guard = store().lock().unwrap_or_else(|e| e.into_inner());
+    let mut seen: HashSet<String> = HashSet::new();
+    for a in guard.audits.iter() {
+        if a.decision != "approve" {
+            continue;
+        }
+        if a.actor_kind != "human" {
+            continue; // agent / system / dev do not count toward two-person
+        }
+        let slug_ok = a
+            .slug
+            .as_deref()
+            .map(|s| s.eq_ignore_ascii_case(slug))
+            .unwrap_or(false);
+        if !slug_ok {
+            continue;
+        }
+        let sha_ok = match (sha, a.git_sha.as_deref()) {
+            (Some(want), Some(got)) if !got.is_empty() => {
+                want.starts_with(got) || got.starts_with(want)
+            }
+            _ => true,
+        };
+        if !sha_ok {
+            continue;
+        }
+        seen.insert(a.actor.trim().to_ascii_lowercase());
+    }
+    seen.len()
+}
+
+/// Result of the production merge policy check for a set of prod-gated projects.
+#[derive(Debug, Clone, Serialize)]
+pub struct ProdMergeGate {
+    /// True when the two-person rule is satisfied for every prod-gated project.
+    pub satisfied: bool,
+    /// Per-project distinct-approver counts (only prod-gated projects).
+    pub approvals: Vec<(String, usize)>,
+    /// Projects still short of two distinct approvers.
+    pub blocked: Vec<String>,
+    /// Minimum distinct approvers required (2). Exposed for the UI.
+    pub required: usize,
+    /// Whether the two-person feature is active in this runtime. Today it is a
+    /// seam (single-user runtime), so this is false and the block is advisory —
+    /// callers merge with the seam recorded, activating when identities land.
+    pub active: bool,
+}
+
+/// Whether the two-person production rule is ACTIVE in this runtime. Deferred:
+/// off until real per-user identities are wired (decision-deferred-two-person
+/// -prod-approval). Opt-in via `VEIL_TWO_PERSON_PROD=1` for testing the seam.
+pub fn two_person_active() -> bool {
+    match std::env::var("VEIL_TWO_PERSON_PROD") {
+        Ok(v) => {
+            let l = v.trim().to_ascii_lowercase();
+            l == "1" || l == "true" || l == "yes" || l == "on"
+        }
+        Err(_) => false,
+    }
+}
+
+/// Production merge gate: for each prod-gated project, require >= 2 distinct
+/// human approvers. Returns the structured result; `satisfied` is always true
+/// when the feature is inactive (the deferred seam) so single-user runtimes are
+/// not blocked, BUT the counts are still surfaced so the UI shows the seam and
+/// an override is auditable. When active, `satisfied` reflects the real check.
+pub fn prod_merge_gate(prod_slugs: &[String], sha: Option<&str>) -> ProdMergeGate {
+    const REQUIRED: usize = 2;
+    let active = two_person_active();
+    let mut approvals = Vec::new();
+    let mut blocked = Vec::new();
+    for slug in prod_slugs {
+        let n = distinct_approvers(slug, sha);
+        approvals.push((slug.clone(), n));
+        if n < REQUIRED {
+            blocked.push(slug.clone());
+        }
+    }
+    let satisfied = if active { blocked.is_empty() } else { true };
+    ProdMergeGate {
+        satisfied,
+        approvals,
+        blocked,
+        required: REQUIRED,
+        active,
+    }
+}
+
 /// All distinct project slugs an item bundle touches, across ANY status. Used
 /// by the ship gate: after sign-off the items are Approved (no longer in the
 /// outstanding-derived bundle list), but the task's project set is unchanged.
@@ -2112,6 +2218,72 @@ mod tests {
         let arr = snap["bundles"].as_array().expect("bundles array");
         assert_eq!(arr.len(), 1);
         assert_eq!(arr[0]["projects"].as_array().map(|a| a.len()), Some(1));
+    }
+
+    /// Two-person prod seam (Part C, deferred): distinct human approvers are
+    /// counted; the gate is inactive by default (single-user runtime) so it
+    /// reports satisfied but surfaces the count; when activated it blocks until
+    /// two distinct humans approve.
+    #[test]
+    fn two_person_prod_seam_counts_distinct_human_approvers() {
+        let _g = isolated();
+        let prev = std::env::var("VEIL_TWO_PERSON_PROD").ok();
+        unsafe { std::env::remove_var("VEIL_TWO_PERSON_PROD"); }
+
+        record_file_edit("prod-svc", "main.veil", Some("ship it"));
+        sign_off(SignOffRequest {
+            slug: Some("prod-svc".into()),
+            decision: "approve".into(),
+            actor: "alice".into(),
+            ..Default::default()
+        })
+        .expect("alice approves");
+        assert_eq!(distinct_approvers("prod-svc", None), 1);
+
+        // Inactive (deferred): gate reports satisfied but exposes the count and
+        // the blocked project so the UI can show the seam + an audited override.
+        let gate = prod_merge_gate(&["prod-svc".into()], None);
+        assert!(!gate.active, "two-person is deferred by default");
+        assert!(gate.satisfied, "inactive seam does not block single-user");
+        assert_eq!(gate.approvals, vec![("prod-svc".to_string(), 1)]);
+        assert_eq!(gate.blocked, vec!["prod-svc".to_string()]);
+
+        // Activate the seam: now one approver is NOT enough.
+        unsafe { std::env::set_var("VEIL_TWO_PERSON_PROD", "1"); }
+        let gate = prod_merge_gate(&["prod-svc".into()], None);
+        assert!(gate.active);
+        assert!(!gate.satisfied, "one distinct approver < 2 → blocked when active");
+
+        // A second DISTINCT human approver (co-signing a follow-up change on the
+        // same project) satisfies it.
+        record_file_edit("prod-svc", "layers/y.layer", Some("co-sign"));
+        sign_off(SignOffRequest {
+            slug: Some("prod-svc".into()),
+            decision: "approve".into(),
+            actor: "bob".into(),
+            ..Default::default()
+        })
+        .expect("bob approves");
+        assert_eq!(distinct_approvers("prod-svc", None), 2);
+        assert!(prod_merge_gate(&["prod-svc".into()], None).satisfied);
+
+        // The SAME human approving again does not increase the distinct count.
+        record_file_edit("prod-svc", "layers/z.layer", Some("more"));
+        sign_off(SignOffRequest {
+            slug: Some("prod-svc".into()),
+            decision: "approve".into(),
+            actor: "bob".into(),
+            ..Default::default()
+        })
+        .expect("bob approves again");
+        assert_eq!(distinct_approvers("prod-svc", None), 2, "same actor dedup");
+
+        unsafe {
+            match prev {
+                Some(v) => std::env::set_var("VEIL_TWO_PERSON_PROD", v),
+                None => std::env::remove_var("VEIL_TWO_PERSON_PROD"),
+            }
+        }
     }
 
     fn sample_spec(name: &str, crit: veil_ir::Criticality) -> EditRecordSpec {
