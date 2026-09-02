@@ -60,6 +60,40 @@ export type ChangeSet = {
 	host_has_errors: boolean;
 };
 
+export type BundleProject = {
+	slug: string;
+	repo_id?: string | null;
+	session_id?: string | null;
+	pr_id?: string | null;
+	git_sha?: string | null;
+	outstanding: number;
+	change_summary: ChangeSummary;
+	item_ids: string[];
+	host_check?: {
+		severity?: string;
+		error_count?: number;
+		warning_count?: number;
+		summary?: string;
+	} | null;
+	host_has_errors: boolean;
+};
+
+/**
+ * A ReviewBundle is ONE operator task's set of per-project changes, reviewed
+ * and shipped together (Part B). One headline + per-project sections + a single
+ * decision surface. A single-project task is a one-project bundle.
+ */
+export type ReviewBundle = {
+	id: string;
+	title: string;
+	summary: string;
+	projects: BundleProject[];
+	outstanding: number;
+	host_has_errors: boolean;
+	project_slugs: string[];
+	created_at: string;
+};
+
 export type SignOffAudit = {
 	id: string;
 	at: string;
@@ -85,6 +119,7 @@ export type AuditEnv = {
 export const reviewItems = writable<OutstandingItem[]>([]);
 export const reviewProjects = writable<ProjectReview[]>([]);
 export const reviewChangeSets = writable<ChangeSet[]>([]);
+export const reviewBundles = writable<ReviewBundle[]>([]);
 export const reviewAudits = writable<SignOffAudit[]>([]);
 export const reviewAuditEnv = writable<AuditEnv | null>(null);
 export const reviewReady = writable(false);
@@ -135,6 +170,8 @@ export async function refreshReview(slug?: string): Promise<void> {
 		reviewProjects.set(by);
 		const sets = Array.isArray(data.change_sets) ? (data.change_sets as ChangeSet[]) : [];
 		reviewChangeSets.set(sets);
+		const bundleList = Array.isArray(data.bundles) ? (data.bundles as ReviewBundle[]) : [];
+		reviewBundles.set(bundleList);
 		const audits = Array.isArray(data.audits) ? (data.audits as SignOffAudit[]) : [];
 		reviewAudits.set(audits);
 		if (data.audit_env && typeof data.audit_env === 'object') {
@@ -311,6 +348,84 @@ export async function fetchDeployGate(
 	} catch {
 		return { gate: 'none', one_action_ship: true };
 	}
+}
+
+/** Result shape for a bundle-level action (approve / merge / ship). */
+export type BundleActionResult = {
+	ok: boolean;
+	error?: string;
+	message?: string;
+	/** When error === 'two_person_required', the prod gate detail for the UI. */
+	gate?: {
+		satisfied: boolean;
+		approvals: [string, number][];
+		blocked: string[];
+		required: number;
+		active: boolean;
+	};
+	override_field?: string;
+	data?: unknown;
+};
+
+async function bundleAction(
+	id: string,
+	action: 'approve' | 'merge' | 'ship',
+	opts: { environment?: string; note?: string; override_two_person?: boolean } = {}
+): Promise<BundleActionResult> {
+	try {
+		const r = await fetch(`/api/review/bundles/${encodeURIComponent(id)}/${action}`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({
+				environment: opts.environment ?? 'dev',
+				note: opts.note,
+				override_two_person: opts.override_two_person ?? false
+			})
+		});
+		const data = await r.json().catch(() => ({}));
+		await refreshReview();
+		if (!r.ok || data.ok === false) {
+			return {
+				ok: false,
+				error: typeof data.error === 'string' ? data.error : undefined,
+				message: String(data.message || data.error || `HTTP ${r.status}`),
+				gate: data.gate,
+				override_field: data.override_field,
+				data
+			};
+		}
+		return { ok: true, data };
+	} catch (e) {
+		return { ok: false, message: e instanceof Error ? e.message : String(e) };
+	}
+}
+
+/** Approve every project in a bundle (records the ship-gate sign-off). */
+export function approveBundle(id: string, note?: string): Promise<BundleActionResult> {
+	return bundleAction(id, 'approve', { note });
+}
+
+/** Merge every project's branch to main (env-gated; prod two-person seam). */
+export function mergeBundle(
+	id: string,
+	opts: { environment?: string; note?: string; override_two_person?: boolean } = {}
+): Promise<BundleActionResult> {
+	return bundleAction(id, 'merge', opts);
+}
+
+/** Approve + Merge + Deploy the whole task in one action (non-prod fast path). */
+export function shipBundle(
+	id: string,
+	opts: { environment?: string; note?: string; override_two_person?: boolean } = {}
+): Promise<BundleActionResult> {
+	return bundleAction(id, 'ship', opts);
+}
+
+export function bundleForSlug(slug: string, bundles: ReviewBundle[]): ReviewBundle | null {
+	const s = slug.trim().toLowerCase();
+	return (
+		bundles.find((b) => b.project_slugs.some((p) => p.toLowerCase() === s)) ?? null
+	);
 }
 
 export async function exportAuditPack(): Promise<void> {

@@ -8,14 +8,20 @@
 		reconcileReview,
 		reviewItems,
 		reviewChangeSets,
+		reviewBundles,
 		reviewReady,
 		reviewLoadError,
 		submitSignOff,
 		exportAuditPack,
 		changeSetForSlug,
 		fetchDeployGate,
+		approveBundle,
+		shipBundle,
+		mergeBundle,
 		type OutstandingItem,
-		type ChangeSet
+		type ChangeSet,
+		type ReviewBundle,
+		type BundleActionResult
 	} from '$lib/review/store';
 	import { fetchHubSnapshot, hubSnapshot } from '$lib/ide/store';
 	import {
@@ -116,6 +122,34 @@
 		}
 		return [...map.entries()];
 	});
+
+	// ── ReviewBundles (Part B/C): a review = ONE task's per-project changes. ──
+	// Filter bundles to live projects; when a route slug is set, focus the bundle
+	// that touches it. This is the operator-facing unit — one headline + per-
+	// project sections + one decision surface.
+	const bundles = $derived(
+		$reviewBundles.filter((b) => {
+			if (!catalogReady) return false;
+			// Keep a bundle if at least one of its projects still exists.
+			return b.project_slugs.some(
+				(s) => projectExists(s) || liveNames.has(s)
+			);
+		})
+	);
+	const activeBundle = $derived.by((): ReviewBundle | null => {
+		if (!bundles.length) return null;
+		if (slug) {
+			return (
+				bundles.find((b) =>
+					b.project_slugs.some((s) => s === slug)
+				) ?? null
+			);
+		}
+		return bundles.length === 1 ? bundles[0] : null;
+	});
+	/** Two-person prod gate surfaced after a blocked merge/ship. */
+	let twoPersonBlock = $state<BundleActionResult['gate'] | null>(null);
+	let twoPersonAction = $state<'merge' | 'ship' | null>(null);
 
 	function repoIdFor(name: string): string {
 		return setFor(name)?.repo_id || repoIds[name] || name;
@@ -279,7 +313,11 @@
 	let lastWalkKey = '';
 
 	const waiting = $derived(!$reviewReady || !catalogReady);
-	const ceremonySlug = $derived(slug || (grouped.length === 1 ? grouped[0][0] : ''));
+	// The project whose diff-walk is shown. Within a bundle, default to the
+	// route slug or the bundle's first (most-outstanding) project.
+	const ceremonySlug = $derived(
+		slug || (activeBundle ? activeBundle.projects[0]?.slug ?? '' : grouped.length === 1 ? grouped[0][0] : '')
+	);
 
 	const ceremony = $derived.by(() => {
 		const name = ceremonySlug;
@@ -571,6 +609,120 @@
 		}
 	}
 
+	// ── Bundle-level decisions (Part C): act on the WHOLE task ──────────────
+	function bundleErr(res: BundleActionResult): boolean {
+		if (res.error === 'two_person_required') {
+			twoPersonBlock = res.gate ?? null;
+			twoPersonAction = twoPersonAction; // keep the attempted action
+			error = res.message || 'A second approver is required for production.';
+			return true;
+		}
+		if (!res.ok) {
+			error = res.message || 'Action failed';
+			return true;
+		}
+		return false;
+	}
+
+	async function approveBundleAction() {
+		if (!activeBundle || busy || shipping) return;
+		busy = true;
+		error = '';
+		message = '';
+		twoPersonBlock = null;
+		const res = await approveBundle(activeBundle.id, note.trim() || undefined);
+		busy = false;
+		if (bundleErr(res)) return;
+		note = '';
+		message = `Approved the task (${activeBundle.project_slugs.join(', ')}). It can be merged and deployed.`;
+	}
+
+	async function shipBundleAction(environment = 'dev', override = false) {
+		if (!activeBundle || busy || shipping) return;
+		if (activeBundle.host_has_errors) {
+			error = 'Fix compile errors in the task before deploying.';
+			return;
+		}
+		const label = activeBundle.project_slugs.length > 1 ? `${activeBundle.project_slugs.length} projects` : activeBundle.project_slugs[0];
+		if (!override) {
+			const ok = window.confirm(
+				`Approve, merge and deploy this task (${label}) to ${environment}?\n\nThis records your sign-off, merges each project to main, and deploys.`
+			);
+			if (!ok) return;
+		}
+		shipping = true;
+		twoPersonAction = 'ship';
+		error = '';
+		message = '';
+		twoPersonBlock = null;
+		const res = await shipBundle(activeBundle.id, {
+			environment,
+			note: note.trim() || undefined,
+			override_two_person: override
+		});
+		shipping = false;
+		if (bundleErr(res)) return;
+		note = '';
+		twoPersonAction = null;
+		message = `Shipping the task to ${environment} (${label}).`;
+	}
+
+	async function mergeBundleAction(environment = 'dev', override = false) {
+		if (!activeBundle || busy || shipping) return;
+		shipping = true;
+		twoPersonAction = 'merge';
+		error = '';
+		message = '';
+		twoPersonBlock = null;
+		const res = await mergeBundle(activeBundle.id, {
+			environment,
+			note: note.trim() || undefined,
+			override_two_person: override
+		});
+		shipping = false;
+		if (bundleErr(res)) return;
+		note = '';
+		twoPersonAction = null;
+		message = `Merged the task (${activeBundle.project_slugs.join(', ')}).`;
+	}
+
+	/** Confirm + re-run the blocked action with the two-person override. */
+	async function overrideTwoPerson() {
+		const ok = window.confirm(
+			'OVERRIDE the two-person production rule?\n\nYou are merging to production WITHOUT a second distinct approver. This is recorded in the audit trail with your identity. Proceed only for a genuine exception.'
+		);
+		if (!ok) return;
+		if (twoPersonAction === 'ship') await shipBundleAction('prod', true);
+		else await mergeBundleAction('prod', true);
+	}
+
+	/**
+	 * Request changes = talk to the agent (Part D). Instead of a reject, hand the
+	 * operator's note to the agent as a revision request on THIS bundle so it
+	 * revises the same PRs. Non-destructive: the bundle stays outstanding.
+	 */
+	function requestChangesToAgent() {
+		if (!activeBundle) return;
+		const text = note.trim();
+		if (!text) {
+			error = 'Type what you want changed, then Request changes.';
+			return;
+		}
+		const projects = activeBundle.project_slugs.join(', ');
+		const prompt =
+			`Revise the open review (bundle ${activeBundle.id}, projects: ${projects}). ` +
+			`Do NOT open a new PR — amend the SAME branches/PRs for these projects, ` +
+			`refresh the rationales/summary, and re-alert when ready.\n\nRequested changes:\n${text}`;
+		void import('$lib/agent/runtimeAgentSession')
+			.then((m) => {
+				const send = (m as { agentSend?: (t: string) => void }).agentSend;
+				if (typeof send === 'function') send(prompt);
+			})
+			.catch(() => {});
+		message = `Sent your changes to the agent for ${projects}. It will revise this review.`;
+		note = '';
+	}
+
 	function sessionFor(name: string): string {
 		return setFor(name)?.session_id || '';
 	}
@@ -625,24 +777,29 @@
 	data-veil-role="sign-off"
 	data-veil-agent={JSON.stringify({
 		intent: 'review',
-		entity: 'ChangeSet',
+		entity: 'ReviewBundle',
 		notes: [
-			'Human walks the story (intent + domain constructs), then Approve or Request changes. File diffs are optional.',
-			'The condensed change summary headline lets the human decide without reading the diff or transcript.',
-			'That record unlocks merge and deploy.',
-			'For dev-gated projects (gate=none) the human may Approve & Deploy in one action; prod stays behind the sign-off ceremony.',
-			'"Not yet — keep working" leaves the change outstanding (non-destructive) so the agent can iterate.',
+			'A review = ONE task (ReviewBundle) spanning all projects it touched. One headline + per-project sections + ONE decision surface.',
+			'The human decides for the WHOLE task from the rolled-up summary — no need to read every diff or the transcript.',
+			'Non-prod: Approve + Merge + Deploy is one action (approve → merge each project → deploy each).',
+			'Prod (gate=sign_off) needs a second distinct approver (two-person, deferred seam); an audited override exists.',
+			'"Request changes" hands the note to the AGENT to revise the SAME PRs — it is not a reject.',
+			'"Not yet — keep working" leaves the task outstanding (non-destructive).',
 			'The agent must not press Approve.',
 		],
 		actions: [
 			{ id: 'approve', label: 'Approve', method: 'api' },
-			{ id: 'approve-and-deploy', label: 'Approve & Deploy', method: 'api' },
-			{ id: 'reject', label: 'Request changes', method: 'api' },
+			{ id: 'approve-and-deploy', label: 'Approve + Merge + Deploy', method: 'api' },
+			{ id: 'merge', label: 'Merge', method: 'api' },
+			{ id: 'reject', label: 'Request changes (talk to agent)', method: 'ui' },
 			{ id: 'keep-working', label: 'Not yet — keep working', method: 'ui' },
-			{ id: 'ship', label: 'Deploy', method: 'api' },
+			{ id: 'override-two-person', label: 'Override two-person (audited)', method: 'api' },
 		],
 		api: {
-			list: 'GET /api/review/outstanding',
+			list: 'GET /api/review/bundles',
+			approve: 'POST /api/review/bundles/{id}/approve',
+			merge: 'POST /api/review/bundles/{id}/merge',
+			ship: 'POST /api/review/bundles/{id}/ship',
 			signOff: 'POST /api/review/sign_off',
 			export: 'GET /api/review/export',
 		},
@@ -694,21 +851,38 @@
 		</div>
 	{:else if !ceremonySlug}
 		<div class="queue appear">
-			<p class="hint queue-lead">Select a project.</p>
-			{#each grouped as [proj, rows]}
-				{@const cs = setFor(proj)}
-				{@const pr = prFor(proj)}
-				<a class="proj-card card" href={`/review/${encodeURIComponent(proj)}`}>
-					<div class="proj-h">
-						<strong>{pr?.title || proj}</strong>
-						<StatusPill label={proj} variant="warning" />
-						{#if cs?.git_sha}
-							<code class="sha-pill">{cs.git_sha.slice(0, 8)}</code>
-						{/if}
-					</div>
-					<p class="sum">{cleanPrStory(pr?.description || '') || rows.find((r) => r.rationale)?.rationale || cs?.summary || 'Outstanding work'}</p>
-				</a>
-			{/each}
+			<p class="hint queue-lead">Select a task to review.</p>
+			{#if bundles.length}
+				{#each bundles as b}
+					<a class="proj-card card" href={`/review/${encodeURIComponent(b.projects[0]?.slug ?? '')}`}>
+						<div class="proj-h">
+							<strong>{b.title}</strong>
+							{#each b.project_slugs as ps}
+								<StatusPill label={ps} variant="warning" />
+							{/each}
+							{#if b.host_has_errors}
+								<span class="err-pill">errors</span>
+							{/if}
+						</div>
+						<p class="sum">{b.summary}</p>
+					</a>
+				{/each}
+			{:else}
+				{#each grouped as [proj, rows]}
+					{@const cs = setFor(proj)}
+					{@const pr = prFor(proj)}
+					<a class="proj-card card" href={`/review/${encodeURIComponent(proj)}`}>
+						<div class="proj-h">
+							<strong>{pr?.title || proj}</strong>
+							<StatusPill label={proj} variant="warning" />
+							{#if cs?.git_sha}
+								<code class="sha-pill">{cs.git_sha.slice(0, 8)}</code>
+							{/if}
+						</div>
+						<p class="sum">{cleanPrStory(pr?.description || '') || rows.find((r) => r.rationale)?.rationale || cs?.summary || 'Outstanding work'}</p>
+					</a>
+				{/each}
+			{/if}
 		</div>
 	{:else}
 		{@const proj = ceremony.name}
@@ -771,6 +945,33 @@
 
 				{#if isOverview}
 					<article class="story">
+						{#if activeBundle && activeBundle.project_slugs.length > 1}
+							<section class="bundle-banner" data-veil-role="bundle-summary">
+								<span class="bundle-tag">One task · {activeBundle.project_slugs.length} projects</span>
+								<h2 class="story-h">{activeBundle.title}</h2>
+								<p class="bundle-sum">{activeBundle.summary}</p>
+								<div class="bundle-projects">
+									{#each activeBundle.projects as bp}
+										<a
+											class="bundle-proj"
+											class:on={bp.slug === ceremonySlug}
+											href={`/review/${encodeURIComponent(bp.slug)}`}
+										>
+											<span class="bp-slug">{bp.slug}</span>
+											<span class="bp-head">{bp.change_summary?.headline || `${bp.outstanding} change(s)`}</span>
+											<span
+												class="bp-check"
+												class:err={bp.host_has_errors}
+											>{bp.change_summary?.check_status || (bp.host_has_errors ? 'errors' : 'clean')}</span>
+										</a>
+									{/each}
+								</div>
+								<p class="condensed-hint">
+									Reviewing <strong>{ceremonySlug}</strong> below. Approve / merge / deploy
+									decisions apply to the whole task.
+								</p>
+							</section>
+						{/if}
 						{#if cs?.change_summary}
 							{@const sum = cs.change_summary}
 							<section class="condensed" data-veil-role="change-summary">
@@ -916,32 +1117,88 @@
 				{/if}
 
 				<div class="card actions" data-veil-role="create-form">
+					{#if activeBundle && activeBundle.project_slugs.length > 1}
+						<p class="bundle-scope">
+							This decision applies to the whole task —
+							<strong>{activeBundle.project_slugs.length} projects</strong>:
+							{activeBundle.project_slugs.join(', ')}.
+						</p>
+					{/if}
 					<label class="note">
 						<span>Note (optional)</span>
-						<textarea class="input" bind:value={note} rows="2" placeholder="Why you approve or request changes"></textarea>
+						<textarea class="input" bind:value={note} rows="2" placeholder="Why you approve — or, to request changes, what you want the agent to change"></textarea>
 					</label>
+					{#if twoPersonBlock && twoPersonBlock.active && !twoPersonBlock.satisfied}
+						<div class="two-person" role="alert" data-veil-role="two-person-gate">
+							<p class="two-person-h">Second approver required (production)</p>
+							<p class="hint">
+								{twoPersonBlock.blocked.join(', ')} need a second distinct approver
+								(have {twoPersonBlock.approvals.map((a) => a[1]).join(', ')} of {twoPersonBlock.required}).
+								Ask another operator to approve, or override with an audited reason.
+							</p>
+							<button
+								type="button"
+								class="btn-outline danger"
+								data-veil-action="override-two-person"
+								disabled={busy || shipping}
+								onclick={() => overrideTwoPerson()}
+							>
+								Override (audited) — merge to prod without a second approver
+							</button>
+						</div>
+					{/if}
 					<div class="btns">
-						{#if devOneAction[proj]}
+						{#if activeBundle && devOneAction[ceremonySlug]}
 							<button
 								type="button"
 								class="btn-primary"
 								data-veil-action="approve-and-deploy"
-								disabled={busy || shipping || cs?.host_has_errors}
-								title={cs?.host_has_errors
+								disabled={busy || shipping || activeBundle.host_has_errors}
+								title={activeBundle.host_has_errors
 									? 'Fix compile errors before deploying'
-									: 'Sign off and ship to dev in one action'}
-								onclick={() => approveAndDeploy(proj)}
+									: 'Approve, merge and deploy the whole task to dev'}
+								onclick={() => shipBundleAction('dev')}
 							>
-								{shipping ? 'Deploying…' : busy ? 'Approving…' : 'Approve & Deploy'}
+								{shipping ? 'Shipping…' : busy ? 'Approving…' : 'Approve + Merge + Deploy'}
 							</button>
 							<button
 								type="button"
 								class="btn-outline"
 								data-veil-action="sign-off"
 								disabled={busy || shipping}
-								onclick={() => act('approve', proj)}
+								onclick={() => approveBundleAction()}
 							>
 								{busy ? 'Saving…' : 'Approve only'}
+							</button>
+							<button
+								type="button"
+								class="btn-outline"
+								data-veil-action="merge"
+								disabled={busy || shipping}
+								title="Approve + merge to main without deploying"
+								onclick={() => mergeBundleAction('dev')}
+							>
+								{shipping ? 'Merging…' : 'Merge'}
+							</button>
+						{:else if activeBundle}
+							<button
+								type="button"
+								class="btn-primary"
+								data-veil-action="sign-off"
+								disabled={busy || shipping}
+								onclick={() => approveBundleAction()}
+							>
+								{busy ? 'Saving…' : 'Approve'}
+							</button>
+							<button
+								type="button"
+								class="btn-outline"
+								data-veil-action="merge"
+								disabled={busy || shipping}
+								title="Merge to main (production gates apply)"
+								onclick={() => mergeBundleAction('dev')}
+							>
+								{shipping ? 'Merging…' : 'Merge'}
 							</button>
 						{:else}
 							<button
@@ -956,6 +1213,16 @@
 						{/if}
 						<button
 							type="button"
+							class="btn-outline"
+							data-veil-action="reject-sign-off"
+							disabled={busy || shipping}
+							title="Hand your note to the agent to revise this same review"
+							onclick={() => (activeBundle ? requestChangesToAgent() : act('reject', proj))}
+						>
+							Request changes
+						</button>
+						<button
+							type="button"
 							class="btn-ghost"
 							data-veil-action="keep-working"
 							disabled={busy || shipping}
@@ -964,20 +1231,6 @@
 						>
 							Not yet — keep working
 						</button>
-						<button
-							type="button"
-							class="btn-outline"
-							data-veil-action="reject-sign-off"
-							disabled={busy}
-							onclick={() => act('reject', proj)}
-						>
-							Request changes
-						</button>
-						{#if slug === proj && !devOneAction[proj]}
-							<button type="button" class="btn-outline" disabled={shipping} onclick={() => ship(proj)}>
-								{shipping ? 'Deploying…' : 'Deploy'}
-							</button>
-						{/if}
 					</div>
 				</div>
 			</section>
@@ -1263,6 +1516,73 @@
 	.note { display: flex; flex-direction: column; gap: 0.3rem; font-size: 0.85rem; }
 	.btns { display: flex; gap: 0.5rem; flex-wrap: wrap; }
 	.btn-ghost { font-size: 0.8rem; opacity: 0.85; }
+	.err-pill {
+		font-size: 0.7rem;
+		padding: 0.12rem 0.45rem;
+		border-radius: 999px;
+		background: color-mix(in oklab, #f87171 22%, transparent);
+		color: #fca5a5;
+		font-weight: 600;
+	}
+	.bundle-scope {
+		margin: 0 0 0.35rem;
+		font-size: 0.85rem;
+		opacity: 0.8;
+	}
+	.bundle-banner {
+		border: 1px solid var(--dk-border-soft, #27272a);
+		border-left-width: 3px;
+		border-left-color: #a78bfa;
+		border-radius: 10px;
+		padding: 0.85rem 1rem;
+		margin-bottom: 1rem;
+		background: color-mix(in oklab, var(--dk-surface-2, #242424) 45%, transparent);
+	}
+	.bundle-tag {
+		font-size: 0.68rem;
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
+		color: #c4b5fd;
+		font-weight: 700;
+	}
+	.bundle-banner .story-h { margin: 0.3rem 0 0.35rem; }
+	.bundle-sum { margin: 0 0 0.65rem; opacity: 0.8; font-size: 0.9rem; }
+	.bundle-projects {
+		display: flex;
+		flex-direction: column;
+		gap: 0.4rem;
+		margin-bottom: 0.5rem;
+	}
+	.bundle-proj {
+		display: grid;
+		grid-template-columns: minmax(90px, auto) 1fr auto;
+		gap: 0.6rem;
+		align-items: baseline;
+		padding: 0.4rem 0.55rem;
+		border-radius: 7px;
+		border: 1px solid var(--dk-border-soft, #27272a);
+		text-decoration: none;
+		color: inherit;
+		font-size: 0.84rem;
+	}
+	.bundle-proj:hover { border-color: #a78bfa; }
+	.bundle-proj.on { background: color-mix(in oklab, #a78bfa 16%, transparent); }
+	.bp-slug { font-weight: 650; }
+	.bp-head { opacity: 0.82; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+	.bp-check { font-size: 0.72rem; opacity: 0.7; }
+	.bp-check.err { color: #fca5a5; opacity: 1; }
+	.two-person {
+		border: 1px solid color-mix(in oklab, #f59e0b 40%, transparent);
+		border-radius: 9px;
+		padding: 0.7rem 0.85rem;
+		background: color-mix(in oklab, #f59e0b 12%, transparent);
+		display: flex;
+		flex-direction: column;
+		gap: 0.4rem;
+	}
+	.two-person-h { margin: 0; font-weight: 700; font-size: 0.9rem; color: #fbbf24; }
+	.btn-outline.danger { border-color: #f87171; color: #fca5a5; }
+	.btn-outline.danger:hover { background: color-mix(in oklab, #f87171 15%, transparent); }
 	@media (max-width: 860px) {
 		.ceremony { grid-template-columns: 1fr; }
 		.hier { position: static; max-height: 16rem; }
