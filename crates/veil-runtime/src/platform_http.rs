@@ -3375,13 +3375,15 @@ struct BundleActionBody {
     override_two_person: bool,
 }
 
-/// Resolve the bundle or 404-shaped error JSON.
+/// Resolve the bundle or 404-shaped error JSON. Uses the ANY-STATUS resolver so
+/// merge/ship still find the bundle after approvals have flipped items out of
+/// the outstanding set (the one-action Approve+Merge+Deploy path).
 fn resolve_bundle(id: &str) -> Result<veil_server::review::ReviewBundle, Json<Value>> {
-    veil_server::review::bundle_by_id(id).ok_or_else(|| {
+    veil_server::review::bundle_by_id_any_status(id).ok_or_else(|| {
         Json(json!({
             "ok": false,
             "error": "bundle_not_found",
-            "message": format!("No open review bundle `{id}`. It may have been shipped already."),
+            "message": format!("No review bundle `{id}`. It may have been shipped already."),
         }))
     })
 }

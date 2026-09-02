@@ -1634,6 +1634,108 @@ pub fn may_ship_bundle(id: &str) -> Result<(), String> {
     may_ship_all(&slugs, None)
 }
 
+/// Resolve a bundle from RECORDED ITEMS of ANY status (not just outstanding).
+/// The outstanding-derived [`bundle_by_id`] disappears once every item is
+/// approved (they leave the outstanding change-set list), which breaks the
+/// merge/ship path that approves-then-merges in one action. This resolver
+/// rebuilds the bundle's project set + per-project PR/sha/repo identity from the
+/// durable items so merge/deploy can still target every project after sign-off.
+/// Falls back to the outstanding-derived bundle when no explicit-bundle items
+/// exist (single-project ad-hoc reviews keyed by slug/session).
+pub fn bundle_by_id_any_status(id: &str) -> Option<ReviewBundle> {
+    let id = id.trim();
+    if id.is_empty() {
+        return None;
+    }
+    let rows: Vec<OutstandingItem> = {
+        let guard = store().lock().unwrap_or_else(|e| e.into_inner());
+        guard
+            .items
+            .iter()
+            .filter(|it| it.bundle_id.as_deref() == Some(id))
+            .cloned()
+            .collect()
+    };
+    if rows.is_empty() {
+        // No explicit-bundle items — the id may be an outstanding-derived
+        // single-project bundle. Use the live grouping.
+        return bundle_by_id(id);
+    }
+    // Group the recorded items by project slug into BundleProjects.
+    let mut by: HashMap<String, Vec<OutstandingItem>> = HashMap::new();
+    let mut order: Vec<String> = Vec::new();
+    for it in rows {
+        if !by.contains_key(&it.slug) {
+            order.push(it.slug.clone());
+        }
+        by.entry(it.slug.clone()).or_default().push(it);
+    }
+    let mut projects = Vec::new();
+    let mut project_slugs = Vec::new();
+    let mut outstanding_total = 0usize;
+    let mut host_errors = false;
+    for slug in &order {
+        let items = &by[slug];
+        let pr_id = items.iter().rev().find_map(|i| i.pr_id.clone());
+        let git_sha = items.iter().rev().find_map(|i| i.git_sha.clone());
+        let session_id = items.iter().rev().find_map(|i| i.session_id.clone());
+        let repo_id = items.iter().find_map(|i| i.repo_id.clone());
+        let outstanding = items
+            .iter()
+            .filter(|i| i.status == ItemStatus::Outstanding)
+            .count();
+        outstanding_total += outstanding;
+        let (host_check, he) = host_check_for_slug(slug);
+        if he {
+            host_errors = true;
+        }
+        let change_summary = synthesize_change_summary(slug, items, host_check.as_ref());
+        project_slugs.push(slug.clone());
+        projects.push(BundleProject {
+            slug: slug.clone(),
+            repo_id,
+            session_id,
+            pr_id,
+            git_sha,
+            outstanding,
+            change_summary,
+            item_ids: items.iter().map(|i| i.id.clone()).collect(),
+            host_check,
+            host_has_errors: he,
+        });
+    }
+    project_slugs.sort();
+    project_slugs.dedup();
+    let title = projects
+        .iter()
+        .find_map(|p| {
+            let h = p.change_summary.headline.trim();
+            if h.is_empty() { None } else { Some(h.to_string()) }
+        })
+        .unwrap_or_else(|| {
+            if project_slugs.len() == 1 {
+                format!("Changes in {}", project_slugs[0])
+            } else {
+                format!("Task across {} projects", project_slugs.len())
+            }
+        });
+    let summary = if project_slugs.len() == 1 {
+        format!("Task in {}", project_slugs[0])
+    } else {
+        format!("Task across {} projects ({})", project_slugs.len(), project_slugs.join(", "))
+    };
+    Some(ReviewBundle {
+        id: id.to_string(),
+        title,
+        summary,
+        projects,
+        outstanding: outstanding_total,
+        host_has_errors: host_errors,
+        project_slugs,
+        created_at: now_rfc3339(),
+    })
+}
+
 /// Ship gate for a set of touched project slugs: EVERY project must pass
 /// [`may_ship`]. Used when a PR touches multiple subpath projects — all of their
 /// review gates must be green before the shared-repo change can merge.
@@ -2192,6 +2294,48 @@ mod tests {
             may_ship_bundle("bnd_test_task").is_ok(),
             "all projects signed → bundle ships"
         );
+    }
+
+    /// H1 regression: bundle_by_id_any_status resolves the bundle (with project
+    /// set + PR ids) AFTER all items are approved — the one-action
+    /// Approve+Merge+Deploy path approves then merges, and the merge must still
+    /// find the bundle even though outstanding-derived bundle_by_id has dropped
+    /// it. Guards against the auditor's H1 finding.
+    #[test]
+    fn bundle_resolves_after_sign_off_for_merge() {
+        let _g = isolated();
+        set_active_bundle_id(Some("bnd_ship_task".into()));
+        record_pr("proj-a", "Add A", Some("pr-a"));
+        record_file_edit("proj-a", "main.veil", Some("A change"));
+        record_pr("proj-b", "Add B", Some("pr-b"));
+        record_file_edit("proj-b", "main.veil", Some("B change"));
+        set_active_bundle_id(None);
+
+        // Before approval the outstanding-derived resolver sees it.
+        assert!(bundle_by_id("bnd_ship_task").is_some());
+
+        // Approve every project (what bundle_ship does before merging).
+        for slug in ["proj-a", "proj-b"] {
+            sign_off(SignOffRequest {
+                slug: Some(slug.into()),
+                decision: "approve".into(),
+                actor: "operator".into(),
+                ..Default::default()
+            })
+            .expect("approve");
+        }
+        // Outstanding-derived bundle is now GONE (items are Approved) …
+        assert!(
+            bundle_by_id("bnd_ship_task").is_none(),
+            "outstanding-derived bundle disappears after sign-off (the H1 trap)"
+        );
+        // … but the any-status resolver still finds it with both projects + PRs.
+        let b = bundle_by_id_any_status("bnd_ship_task").expect("any-status resolves post-approval");
+        assert_eq!(b.project_slugs, vec!["proj-a".to_string(), "proj-b".to_string()]);
+        let pr_ids: Vec<_> = b.projects.iter().filter_map(|p| p.pr_id.clone()).collect();
+        assert!(pr_ids.contains(&"pr-a".to_string()) && pr_ids.contains(&"pr-b".to_string()), "PR ids survive: {pr_ids:?}");
+        // And the bundle ship gate passes (all signed).
+        assert!(may_ship_bundle("bnd_ship_task").is_ok());
     }
 
     /// Two DIFFERENT tasks (distinct bundle ids) do NOT merge into one bundle
