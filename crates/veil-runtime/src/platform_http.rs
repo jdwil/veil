@@ -3214,48 +3214,18 @@ async fn provision_project(
     let slug = body.project_slug.clone();
     let environment = body.environment.clone();
 
-    // Check if this is a terraform project — delegate to the new deploy pipeline
-    let has_terraform = project_has_terraform(&body.repo_id).await;
-
-    if has_terraform {
-        // Delegate to the new deploy pipeline via internal HTTP call
-        let port = std::env::var("VEIL_PORT").unwrap_or_else(|_| "8080".into());
-        let url = format!("http://127.0.0.1:{port}/api/projects/{slug}/deploy");
-        let client = reqwest::Client::new();
-        match client
-            .post(&url)
-            .json(&serde_json::json!({
-                "environment": environment,
-                "steps": ["infrastructure"],
-                "dry_run": false,
-            }))
-            .send()
-            .await
-        {
-            Ok(resp) => {
-                let body: serde_json::Value = resp.json().await.unwrap_or(json!({}));
-                let job_id = body.get("job_id").and_then(|v| v.as_str()).unwrap_or("");
-                return Ok(Json(json!({
-                    "ok": true,
-                    "job_id": job_id,
-                    "status": "running",
-                    "summary": format!("Terraform deploy started for {slug} in {environment}"),
-                    "percent": 10,
-                    "steps": [{
-                        "id": "terraform",
-                        "label": "Running Terraform apply",
-                        "status": "running",
-                    }],
-                })));
-            }
-            Err(e) => {
-                return Ok(Json(json!({
-                    "ok": false,
-                    "error": "deploy_failed",
-                    "message": format!("Failed to trigger pipeline: {e}"),
-                })));
-            }
-        }
+    // Unify on the type-aware router. If the project declares a routed deploy
+    // pipeline in veil.toml ([deploy] with a frontend/lambda/ecs/contribution/
+    // infrastructure type, or a [deploy.contribution] target), run THAT pipeline
+    // — the same one the deploy websocket and the operator ship action use.
+    // Only when NO routed pipeline is declared do we fall back to the legacy
+    // compose-unit placement (start_provision_repo) — the "HTTP/compose units in
+    // the data center" arm. This keeps provision_project as one arm of a single
+    // router rather than a divergent backend-only path.
+    if project_has_deploy_pipeline_state(&body.repo_id).await {
+        let storage_deps = resolve_storage_deps().await;
+        let outcome = deploy_project_headless(&storage_deps, &slug, &body.repo_id).await;
+        return Ok(Json(outcome));
     }
 
     match deploy::application::provision_project(
@@ -3275,6 +3245,34 @@ async fn provision_project(
         }))),
         Err(e) => Err(domain_status(e)),
     }
+}
+
+/// Does the project declare a routed deploy pipeline in `veil.toml`? True when a
+/// `[deploy]` section is present with a `type` (frontend/lambda/ecs/contribution/
+/// infrastructure) or a `[deploy.contribution]` target. When true, provisioning
+/// routes through the type-aware pipeline instead of legacy compose placement.
+/// Resolves its own storage deps (the provision handler holds deploy deps).
+async fn project_has_deploy_pipeline_state(repo_id: &str) -> bool {
+    let deps = resolve_storage_deps().await;
+    project_has_deploy_pipeline(&deps, repo_id).await
+}
+
+/// Inner check against an explicit storage deps handle.
+async fn project_has_deploy_pipeline(deps: &storage::application::Deps, repo_id: &str) -> bool {
+    let rid = storage::domain::types::RepoId { value: repo_id.to_string() };
+    if let Ok(bytes) = storage::application::read_file(
+        deps, rid, "main".to_string(), "veil.toml".to_string(),
+    ).await {
+        let content = String::from_utf8_lossy(&bytes).into_owned();
+        if let Ok(parsed) = content.parse::<toml::Value>() {
+            if let Some(deploy) = parsed.get("deploy") {
+                let has_type = deploy.get("type").and_then(|t| t.as_str()).is_some();
+                let has_contribution = deploy.get("contribution").is_some();
+                return has_type || has_contribution;
+            }
+        }
+    }
+    false
 }
 
 #[derive(Deserialize)]
@@ -3694,37 +3692,26 @@ async fn bundle_ship(
         }));
     }
 
-    // 3) Deploy each project to the target environment.
-    let port = std::env::var("VEIL_PORT").unwrap_or_else(|_| "8080".into());
-    let client = reqwest::Client::new();
+    // 3) Deploy each project to the target environment through the SINGLE
+    // type-aware router (deploy_project_headless) — NOT the backend-only
+    // /api/provision-project. This is the core fix: a frontend/contribution
+    // project now runs its real pipeline (run_frontend_deploy_ws /
+    // run_contribution_deploy_ws) on Approve+Merge+Deploy, and a project that
+    // declares BOTH a backend and a UI contribution deploys each target.
     let mut deploys = Vec::new();
     let mut all_ok = true;
     for proj in &bundle.projects {
-        let rid = proj.repo_id.clone().unwrap_or_else(|| proj.slug.clone());
-        let url = format!("http://127.0.0.1:{port}/api/provision-project");
-        match client
-            .post(&url)
-            .json(&json!({
-                "project_slug": proj.slug,
-                "environment": environment,
-                "repo_id": rid,
-                "branch": "main",
-            }))
-            .send()
-            .await
-        {
-            Ok(resp) => {
-                let v: Value = resp.json().await.unwrap_or(json!({}));
-                if v.get("ok").and_then(|b| b.as_bool()) == Some(false) {
-                    all_ok = false;
-                }
-                deploys.push(json!({ "slug": proj.slug, "deploy": v }));
-            }
-            Err(e) => {
-                all_ok = false;
-                deploys.push(json!({ "slug": proj.slug, "ok": false, "error": e.to_string() }));
-            }
+        // Resolve the real repo_id from the slug (proj.repo_id may be a slug
+        // fallback); fall back to the recorded value if resolution fails.
+        let repo_id = match storage::application::resolve_repo(&st.deps, &proj.slug).await {
+            Ok(repo) => repo.id.value,
+            Err(_) => proj.repo_id.clone().unwrap_or_else(|| proj.slug.clone()),
+        };
+        let outcome = deploy_project_headless(&st.deps, &proj.slug, &repo_id).await;
+        if outcome.get("ok").and_then(|b| b.as_bool()) != Some(true) {
+            all_ok = false;
         }
+        deploys.push(json!({ "slug": proj.slug, "deploy": outcome }));
     }
 
     // Complete review-action audit (Part 2): the deploy leg (per environment).
@@ -3799,93 +3786,192 @@ async fn deploy_ws_session(
 
     // Resolve deploy type: if "auto", read [deploy].type from veil.toml
     let deploy_type = if deploy_type_raw == "auto" {
-        let rid = storage::domain::types::RepoId { value: repo_id.clone() };
-        if let Ok(bytes) = storage::application::read_file(
-            &st.deps, rid, "main".to_string(), "veil.toml".to_string(),
-        ).await {
-            let content_str = String::from_utf8_lossy(&bytes).into_owned();
-            if let Ok(parsed) = content_str.parse::<toml::Value>() {
-                parsed.get("deploy")
-                    .and_then(|d| d.get("type"))
-                    .and_then(|t| t.as_str())
-                    .unwrap_or("infrastructure")
-                    .to_string()
-            } else { "infrastructure".to_string() }
-        } else { "infrastructure".to_string() }
+        resolve_deploy_type(&st.deps, &repo_id).await
     } else { deploy_type_raw.to_string() };
 
-    match deploy_type.as_str() {
-        "frontend" => {
-            // Read veil.toml to get build+deploy config
-            let build_config = match read_frontend_build_config(&st.deps, &repo_id, &slug).await {
-                Ok(config) => config,
-                Err(e) => {
-                    let _ = socket.send(Message::Text(
-                        json!({"type": "error", "message": e}).to_string().into()
-                    )).await;
-                    return;
-                }
-            };
-            crate::deploy::ws::run_frontend_deploy_ws(&mut socket, &slug, &build_config).await;
-        }
-        "lambda" | "ecs" => {
-            // Lambda/ECS code deploy: veil gen → cargo build → zip → update Lambda
-            let build_config = match read_lambda_build_config(&st.deps, &repo_id, &slug).await {
-                Ok(config) => config,
-                Err(e) => {
-                    let _ = socket.send(Message::Text(
-                        json!({"type": "error", "message": e}).to_string().into()
-                    )).await;
-                    return;
-                }
-            };
-            crate::deploy::ws::run_lambda_deploy_ws(&mut socket, &slug, &build_config).await;
-        }
-        "infrastructure" => {
-            // Infrastructure (terraform) deploy
-            let tf_files = match fetch_terraform_files_s3(&st.deps, &repo_id).await {
-                Ok(files) => files,
-                Err(e) => {
-                    let _ = socket.send(Message::Text(
-                        json!({"type": "error", "message": e}).to_string().into()
-                    )).await;
-                    return;
-                }
-            };
+    // Dispatch through the SINGLE type-aware router, streaming events live over
+    // the websocket. The operator SDLC ship path uses the SAME router headless
+    // (see deploy_project_headless) — one deploy code path, two sinks.
+    let mut sink = crate::deploy::ws::DeploySink::Ws(&mut socket);
+    run_deploy_target(&mut sink, &st.deps, &slug, &repo_id, &deploy_type).await;
+}
 
-            if tf_files.is_empty() {
-                let _ = socket.send(Message::Text(
-                    json!({"type": "error", "message": "No .tf files found in project"}).to_string().into()
-                )).await;
-                return;
-            }
-
-            let infra_config = read_infra_config_s3(&st.deps, &repo_id, &slug).await;
-            crate::deploy::ws::run_terraform_ws(&mut socket, &slug, &tf_files, &infra_config).await;
-        }
-        "contribution" => {
-            // Contribution deploy: ui.veil → vite lib bundle → contributions
-            // bucket → re-register manifest. Reads [deploy.contribution] and
-            // materializes the full project (ui.veil + layers) so veil gen works.
-            match read_contribution_config(&st.deps, &repo_id, &slug).await {
-                Ok((contribution, source_dir, component_deps)) => {
-                    crate::deploy::ws::run_contribution_deploy_ws(
-                        &mut socket, &slug, &source_dir, &contribution, &component_deps,
-                    ).await;
-                }
-                Err(e) => {
-                    let _ = socket.send(Message::Text(
-                        json!({"type": "error", "message": e}).to_string().into()
-                    )).await;
-                }
-            }
-        }
-        _ => {
-            let _ = socket.send(Message::Text(
-                json!({"type": "error", "message": format!("Unknown deploy type: '{deploy_type}'")}).to_string().into()
-            )).await;
+/// Resolve a project's declared deploy type from `veil.toml [deploy].type`.
+/// Defaults to `infrastructure` when unset/unparseable (matches prior behavior).
+async fn resolve_deploy_type(deps: &storage::application::Deps, repo_id: &str) -> String {
+    let rid = storage::domain::types::RepoId { value: repo_id.to_string() };
+    if let Ok(bytes) = storage::application::read_file(
+        deps, rid, "main".to_string(), "veil.toml".to_string(),
+    ).await {
+        let content_str = String::from_utf8_lossy(&bytes).into_owned();
+        if let Ok(parsed) = content_str.parse::<toml::Value>() {
+            return parsed
+                .get("deploy")
+                .and_then(|d| d.get("type"))
+                .and_then(|t| t.as_str())
+                .unwrap_or("infrastructure")
+                .to_string();
         }
     }
+    "infrastructure".to_string()
+}
+
+/// THE type-aware deploy router. Resolves the project's deploy config and runs
+/// the CORRESPONDING pipeline (frontend / lambda|ecs / infrastructure /
+/// contribution), emitting progress to the given sink. This is the ONE dispatch
+/// shared by the manual deploy websocket AND the operator SDLC ship action — so
+/// approving+deploying a frontend/contribution project actually runs its
+/// pipeline instead of falling through to backend-only provision.
+async fn run_deploy_target(
+    sink: &mut crate::deploy::ws::DeploySink<'_>,
+    deps: &storage::application::Deps,
+    slug: &str,
+    repo_id: &str,
+    deploy_type: &str,
+) {
+    use axum::extract::ws::Message;
+    // Small helper to surface a config-read error to whichever sink we have.
+    macro_rules! sink_error {
+        ($sink:expr, $msg:expr) => {{
+            match $sink {
+                crate::deploy::ws::DeploySink::Ws(ws) => {
+                    let _ = ws
+                        .send(Message::Text(
+                            json!({"type": "error", "message": $msg}).to_string().into(),
+                        ))
+                        .await;
+                }
+                crate::deploy::ws::DeploySink::Collect(c) => {
+                    c.done = true;
+                    c.ok = false;
+                    c.error = Some($msg.to_string());
+                    c.events
+                        .push(json!({"type": "error", "message": $msg}));
+                }
+            }
+        }};
+    }
+
+    match deploy_type {
+        "frontend" => {
+            let build_config = match read_frontend_build_config(deps, repo_id, slug).await {
+                Ok(config) => config,
+                Err(e) => {
+                    sink_error!(sink, e);
+                    return;
+                }
+            };
+            crate::deploy::ws::run_frontend_deploy_ws(sink, slug, &build_config).await;
+        }
+        "lambda" | "ecs" => {
+            let build_config = match read_lambda_build_config(deps, repo_id, slug).await {
+                Ok(config) => config,
+                Err(e) => {
+                    sink_error!(sink, e);
+                    return;
+                }
+            };
+            crate::deploy::ws::run_lambda_deploy_ws(sink, slug, &build_config).await;
+        }
+        "infrastructure" => {
+            let tf_files = match fetch_terraform_files_s3(deps, repo_id).await {
+                Ok(files) => files,
+                Err(e) => {
+                    sink_error!(sink, e);
+                    return;
+                }
+            };
+            if tf_files.is_empty() {
+                sink_error!(sink, "No .tf files found in project".to_string());
+                return;
+            }
+            let infra_config = read_infra_config_s3(deps, repo_id, slug).await;
+            crate::deploy::ws::run_terraform_ws(sink, slug, &tf_files, &infra_config).await;
+        }
+        "contribution" => {
+            match read_contribution_config(deps, repo_id, slug).await {
+                Ok((contribution, source_dir, component_deps)) => {
+                    crate::deploy::ws::run_contribution_deploy_ws(
+                        sink, slug, &source_dir, &contribution, &component_deps,
+                    )
+                    .await;
+                }
+                Err(e) => sink_error!(sink, e),
+            }
+        }
+        other => {
+            sink_error!(sink, format!("Unknown deploy type: '{other}'"));
+        }
+    }
+}
+
+/// Run every deploy target a project DECLARES, headless, and return a per-target
+/// outcome summary. Used by the operator SDLC ship action.
+///
+/// A project may declare MORE THAN ONE target — a backend (`main.veil` → lambda)
+/// AND a UI contribution (`ui.veil` → contribution). We deploy each declared
+/// target through the same type-aware router. The primary target is the
+/// `[deploy].type`; an ADDITIONAL contribution target is detected when the
+/// project also carries a `[deploy.contribution]` section (and the primary type
+/// is not itself `contribution`).
+async fn deploy_project_headless(
+    deps: &storage::application::Deps,
+    slug: &str,
+    repo_id: &str,
+) -> Value {
+    let primary_type = resolve_deploy_type(deps, repo_id).await;
+
+    // Determine the full set of targets to deploy for this project.
+    let mut targets: Vec<String> = vec![primary_type.clone()];
+    if primary_type != "contribution" && project_has_contribution(deps, repo_id).await {
+        // Multi-target: primary backend/frontend + a UI contribution.
+        targets.push("contribution".to_string());
+    }
+
+    let mut target_results = Vec::new();
+    let mut all_ok = true;
+    for t in &targets {
+        let mut sink = crate::deploy::ws::DeploySink::collect();
+        run_deploy_target(&mut sink, deps, slug, repo_id, t).await;
+        let collected = sink.into_collected().unwrap_or_default();
+        let ok = collected.done && collected.ok;
+        if !ok {
+            all_ok = false;
+        }
+        target_results.push(json!({
+            "target": t,
+            "ok": ok,
+            "error": collected.error,
+            "outputs": collected.outputs,
+            // Keep the full event log so the review UI can render what ran
+            // (same events DeployStream consumes live over the ws).
+            "events": collected.events,
+        }));
+    }
+
+    json!({
+        "ok": all_ok,
+        "deploy_type": primary_type,
+        "targets": target_results,
+    })
+}
+
+/// Does the project declare a `[deploy.contribution]` section? Used to detect a
+/// secondary UI-contribution target alongside a backend/frontend primary.
+async fn project_has_contribution(deps: &storage::application::Deps, repo_id: &str) -> bool {
+    let rid = storage::domain::types::RepoId { value: repo_id.to_string() };
+    if let Ok(bytes) = storage::application::read_file(
+        deps, rid, "main".to_string(), "veil.toml".to_string(),
+    ).await {
+        let content = String::from_utf8_lossy(&bytes).into_owned();
+        if let Ok(parsed) = content.parse::<toml::Value>() {
+            return parsed
+                .get("deploy")
+                .and_then(|d| d.get("contribution"))
+                .is_some();
+        }
+    }
+    false
 }
 
 /// Read frontend build config from veil.toml, resolving terraform output references.

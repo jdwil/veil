@@ -33,9 +33,93 @@ use tracing::{error, info, warn};
 use super::config;
 use super::types::InfraConfig;
 
+/// A destination for deploy progress events.
+///
+/// The deploy pipeline (`run_*_ws`) emits the SAME structured JSON events
+/// regardless of who triggered it — the only difference is where the events go.
+/// This sink abstraction is the single seam that lets ONE deploy code path run
+/// two ways:
+///
+///   * `Ws` — live-stream every event over a websocket (the manual deploy UI,
+///     `DeployStream.svelte`).
+///   * `Collect` — run headless, accumulating the event log + terminal outcome
+///     in memory (the operator SDLC ship action, where deploy is a leg of an
+///     HTTP request whose JSON response the review UI renders).
+///
+/// Without this, the operator ship path and the ws path would diverge — which
+/// is exactly the bug this fixes (ship went through backend-only
+/// `provision_project` and never reached `run_frontend_deploy_ws` et al).
+pub enum DeploySink<'a> {
+    /// Stream events live over a websocket.
+    Ws(&'a mut WebSocket),
+    /// Accumulate events headless (no socket). Tracks the terminal outcome.
+    Collect(CollectSink),
+}
+
+/// Headless accumulator: keeps the full event log and derives the terminal
+/// deploy outcome (`ok` / `error`) from the `done` / `error` events the
+/// pipeline emits, so a caller with no websocket can report per-project status.
+#[derive(Default)]
+pub struct CollectSink {
+    pub events: Vec<serde_json::Value>,
+    pub done: bool,
+    pub ok: bool,
+    pub error: Option<String>,
+    pub outputs: serde_json::Value,
+}
+
+impl<'a> DeploySink<'a> {
+    /// A fresh headless sink.
+    pub fn collect() -> Self {
+        DeploySink::Collect(CollectSink::default())
+    }
+
+    /// Emit one event to the sink. Over a websocket this sends immediately;
+    /// headless it records the event and updates the terminal outcome.
+    async fn emit(&mut self, msg: serde_json::Value) {
+        match self {
+            DeploySink::Ws(ws) => {
+                let _ = ws
+                    .send(Message::Text(msg.to_string().into()))
+                    .await;
+            }
+            DeploySink::Collect(c) => {
+                match msg.get("type").and_then(|t| t.as_str()) {
+                    Some("done") => {
+                        c.done = true;
+                        c.ok = msg.get("ok").and_then(|b| b.as_bool()).unwrap_or(true);
+                        if let Some(o) = msg.get("outputs") {
+                            c.outputs = o.clone();
+                        }
+                    }
+                    Some("error") => {
+                        c.done = true;
+                        c.ok = false;
+                        c.error = msg
+                            .get("message")
+                            .and_then(|m| m.as_str())
+                            .map(|s| s.to_string());
+                    }
+                    _ => {}
+                }
+                c.events.push(msg);
+            }
+        }
+    }
+
+    /// Consume the sink, returning the collected outcome (headless only).
+    /// For a `Ws` sink there is nothing to collect (events already streamed).
+    pub fn into_collected(self) -> Option<CollectSink> {
+        match self {
+            DeploySink::Collect(c) => Some(c),
+            DeploySink::Ws(_) => None,
+        }
+    }
+}
+
 /// Run the full terraform deploy over a websocket, streaming output in real time.
 pub async fn run_terraform_ws(
-    ws: &mut WebSocket,
+    ws: &mut DeploySink<'_>,
     slug: &str,
     tf_files: &[(String, Vec<u8>)],
     infra_config: &InfraConfig,
@@ -120,7 +204,7 @@ pub async fn run_terraform_ws(
 /// Run a full frontend deploy: generate → build → S3 sync → CloudFront invalidate.
 /// Streams progress over the websocket.
 pub async fn run_frontend_deploy_ws(
-    ws: &mut WebSocket,
+    ws: &mut DeploySink<'_>,
     slug: &str,
     build_config: &FrontendBuildConfig,
 ) {
@@ -230,7 +314,7 @@ pub async fn run_frontend_deploy_ws(
 /// streaming progress. Mirrors the frontend path but targets the shared
 /// contributions bucket + re-registers the manifest on the runtime.
 pub async fn run_contribution_deploy_ws(
-    ws: &mut WebSocket,
+    ws: &mut DeploySink<'_>,
     slug: &str,
     source_dir: &Path,
     contribution: &super::types::ContributionConfig,
@@ -402,7 +486,7 @@ pub struct LambdaBuildConfig {
 /// Run a full Lambda deploy: generate → cargo build → zip → upload → update function code.
 /// Streams progress over the websocket.
 pub async fn run_lambda_deploy_ws(
-    ws: &mut WebSocket,
+    ws: &mut DeploySink<'_>,
     slug: &str,
     config: &LambdaBuildConfig,
 ) {
@@ -577,7 +661,7 @@ async fn write_tf_files(tf_dir: &Path, tf_files: &[(String, Vec<u8>)]) -> Result
 /// Run a command, streaming stdout+stderr line by line over the websocket.
 /// Parses terraform-specific progress lines into structured events.
 async fn run_streaming(
-    ws: &mut WebSocket,
+    ws: &mut DeploySink<'_>,
     step: &str,
     cwd: &Path,
     cmd: &str,
@@ -822,11 +906,10 @@ pub async fn capture_outputs(tf_dir: &Path) -> Result<serde_json::Value, String>
     Ok(serde_json::Value::Object(flat))
 }
 
-/// Send a JSON message over the websocket.
-async fn send(ws: &mut WebSocket, msg: serde_json::Value) -> Result<(), ()> {
-    ws.send(Message::Text(msg.to_string().into()))
-        .await
-        .map_err(|_| ())
+/// Send a JSON message to the deploy sink (websocket or headless collector).
+async fn send(sink: &mut DeploySink<'_>, msg: serde_json::Value) -> Result<(), ()> {
+    sink.emit(msg).await;
+    Ok(())
 }
 
 /// Strip ANSI escape sequences from a string (colors, bold, dim, etc.)

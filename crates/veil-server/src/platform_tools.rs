@@ -3056,7 +3056,7 @@ pub fn tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "provision_project",
-            "description": "Provision project infrastructure for an environment (imperative control plane).",
+            "description": "Deploy/provision project infrastructure for an environment (type-aware: frontend / lambda / ecs / contribution / infrastructure). OPERATOR GATE — deploy is a HUMAN review action (Approve+Merge+Deploy on /review). Agents must NOT call this to self-deploy; end at 'review ready' via request_sign_off. Server-side may_ship blocks unapproved SHAs regardless.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
