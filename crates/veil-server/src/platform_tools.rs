@@ -1473,7 +1473,7 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                 "summary": format!("Pull request {id}"),
                 "pull_request": data,
                 "pull_request": data,
-                "navigation": { "action": "goto", "path": format!("/pulls/{id}") }
+                "navigation": { "action": "goto", "path": "/review".to_string() }
             })
             .to_string())
         }
@@ -1600,7 +1600,7 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                 "http_status": status,
                 "summary": summary,
                 "result": data,
-                "navigation": { "action": "goto", "path": format!("/pulls/{id}") },
+                "navigation": { "action": "goto", "path": "/review".to_string() },
                 "intent": intent,
                 "execution": { "domain": "server", "present": "illustrate" }
             })
@@ -1630,7 +1630,7 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                 "http_status": status,
                 "summary": summary,
                 "result": data,
-                "navigation": { "action": "goto", "path": format!("/pulls/{id}") },
+                "navigation": { "action": "goto", "path": "/review".to_string() },
                 "intent": intent,
                 "execution": { "domain": "server", "present": "illustrate" }
             })
@@ -1670,7 +1670,7 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                 "http_status": status,
                 "summary": summary,
                 "result": data,
-                "navigation": { "action": "goto", "path": format!("/pulls/{id}") },
+                "navigation": { "action": "goto", "path": "/review".to_string() },
                 "intent": intent,
                 "execution": { "domain": "server", "present": "illustrate" }
             })
@@ -1700,7 +1700,7 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                 "http_status": status,
                 "summary": summary,
                 "result": data,
-                "navigation": { "action": "goto", "path": format!("/pulls/{id}") },
+                "navigation": { "action": "goto", "path": "/review".to_string() },
                 "intent": intent,
                 "execution": { "domain": "server", "present": "illustrate" }
             })
@@ -1721,7 +1721,7 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                 "http_status": status,
                 "summary": format!("Structural diff for change {id}"),
                 "diff": data,
-                "navigation": { "action": "goto", "path": format!("/pulls/{id}") }
+                "navigation": { "action": "goto", "path": "/review".to_string() }
             })
             .to_string())
         }
@@ -2905,7 +2905,7 @@ pub fn tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "list_prs",
-            "description": "List pull requests (GET /api/pull_requests) and open /pulls. Optional status filter: Draft, ReadyForReview, Approved, Merged, …. Prefer open/unmerged PRs when reusing a work line.",
+            "description": "List pull requests (GET /api/pull_requests) and open /review. Optional status filter: Draft, ReadyForReview, Approved, Merged, …. Prefer open/unmerged PRs when reusing a work line.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -3502,7 +3502,7 @@ impl Tool for ListChangesTool {
     async fn definition(&self, _prompt: String) -> ToolDefinition {
         ToolDefinition {
             name: Self::NAME.into(),
-            description: "List SDLC pull requests and open /pulls.".into(),
+            description: "List SDLC pull requests and open /review.".into(),
             parameters: json!({ "type": "object", "properties": {} }),
         }
     }
@@ -3536,7 +3536,7 @@ impl Tool for CreateChangeTool {
     async fn definition(&self, _prompt: String) -> ToolDefinition {
         ToolDefinition {
             name: Self::NAME.into(),
-            description: "Create pull request (with title) or open /pulls/new.".into(),
+            description: "Create pull request (with title) or open /review.".into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
