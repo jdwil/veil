@@ -102,11 +102,13 @@ pub fn generate_ts_ir(solution: &Solution, registry: &LayerRegistry) -> TsProjec
     let mut files = deduped;
 
     // Now that all layer/construct files are known, generate src/index.ts. In
-    // addition to the type/interface/service barrels, re-export every Svelte
-    // component emitted under src/lib/components/ by its PascalCase name as a
-    // default export. The DLX AI harness (and any contribution consumer) mounts
-    // pages by these named exports; without them a library bundle would export
-    // only types and fail to resolve WorkflowsPage / AgentsPage / etc.
+    // addition to the type/interface/service barrels, collect every Svelte
+    // component emitted under src/lib/components/ by its PascalCase name so the
+    // entry can expose the framework-neutral `mount(exportName, target, props)`
+    // contract (see gen_index_ir). The DLX AI harness (and any contribution
+    // consumer) is framework-blind and mounts pages by calling that function;
+    // named exports (AgentsPage / WorkflowsPage / etc.) are also kept for direct
+    // consumers.
     let mut component_names: Vec<String> = files
         .iter()
         .filter_map(|f| {
@@ -504,12 +506,70 @@ fn gen_index_ir(sol_name: &str, component_names: &[String]) -> TsFile {
         sol_name
     );
     if !component_names.is_empty() {
+        // Framework-agnostic contribution-mount contract.
+        //
+        // The DLX AI harness (and any contribution consumer) is FRAMEWORK-BLIND:
+        // it never imports svelte/react/vue. Each contribution bundle is
+        // self-contained (its own framework bundled in) and exposes a single
+        // neutral, DOM-level entry point:
+        //
+        //   mount(exportName, target, { context, params }) => () => void
+        //
+        // The harness does: `const unmount = bundle.mount(name, el, props)` and
+        // later `unmount()`. This is the SVELTE target's implementation of that
+        // contract (svelte's mount/unmount, self-contained). A future React
+        // target implements the same signature via createRoot().render()/
+        // root.unmount(); Vue via createApp().mount()/app.unmount(). Same
+        // contract, framework-specific innards — one harness hosts any target.
         content.push('\n');
+        content.push_str("import { mount as __svelteMount, unmount as __svelteUnmount } from 'svelte';\n");
         for name in component_names {
             content.push_str(&format!(
-                "export {{ default as {name} }} from './lib/components/{name}.svelte';\n"
+                "import {name} from './lib/components/{name}.svelte';\n"
             ));
         }
+
+        // Keep the existing named exports too (harmless — a consumer may still
+        // import a component class directly), plus the barrels above.
+        content.push('\n');
+        for name in component_names {
+            content.push_str(&format!("export {{ {name} }};\n"));
+        }
+
+        // exportName -> component registry (the mount contract keys off this).
+        content.push_str("\nconst __components: Record<string, any> = {\n");
+        for name in component_names {
+            content.push_str(&format!("  {name},\n"));
+        }
+        content.push_str("};\n");
+
+        // The neutral mount function — the ONLY thing the harness calls.
+        content.push_str(
+            "\n\
+             /**\n\
+             \x20* Framework-neutral mount: instantiate the contribution export named\n\
+             \x20* `exportName` into `target`, returning a teardown function. The harness\n\
+             \x20* calls this without importing any UI framework.\n\
+             \x20*/\n\
+             export function mount(\n\
+             \x20 exportName: string,\n\
+             \x20 target: HTMLElement,\n\
+             \x20 props: { context?: any; params?: any } = {}\n\
+             ): () => void {\n\
+             \x20 const Component = __components[exportName];\n\
+             \x20 if (!Component) {\n\
+             \x20   throw new Error(`Export \"${exportName}\" not found in contribution bundle`);\n\
+             \x20 }\n\
+             \x20 const instance = __svelteMount(Component, { target, props });\n\
+             \x20 return () => {\n\
+             \x20   try {\n\
+             \x20     __svelteUnmount(instance);\n\
+             \x20   } catch {\n\
+             \x20     /* already torn down */\n\
+             \x20   }\n\
+             \x20 };\n\
+             }\n",
+        );
     }
     TsFile {
         path: "src/index.ts".to_string(),
@@ -1420,5 +1480,72 @@ mod provenance_tests {
         assert!(!developer_layer_active(&reg), "should be inactive by default");
         reg.layers.push("developer".to_string());
         assert!(developer_layer_active(&reg), "should be active when layer present");
+    }
+}
+
+#[cfg(test)]
+mod index_mount_contract_tests {
+    use super::*;
+
+    #[test]
+    fn index_without_components_is_barrel_only() {
+        let file = gen_index_ir("some-lib", &[]);
+        assert_eq!(file.path, "src/index.ts");
+        assert!(file.content.contains("export * from './types';"));
+        assert!(file.content.contains("export * from './services';"));
+        // No components → no framework import, no mount contract.
+        assert!(!file.content.contains("from 'svelte'"), "bare lib leaked svelte import:\n{}", file.content);
+        assert!(!file.content.contains("export function mount"), "bare lib emitted mount:\n{}", file.content);
+    }
+
+    #[test]
+    fn index_emits_framework_neutral_mount_contract() {
+        let components = vec!["AgentsPage".to_string(), "TeamsPage".to_string()];
+        let file = gen_index_ir("agent-core", &components);
+        let c = &file.content;
+
+        // Barrels preserved.
+        assert!(c.contains("export * from './types';"), "missing types barrel:\n{c}");
+
+        // Each component is imported (default import) so the bundle is self-contained.
+        assert!(
+            c.contains("import AgentsPage from './lib/components/AgentsPage.svelte';"),
+            "AgentsPage not imported:\n{c}"
+        );
+        assert!(
+            c.contains("import TeamsPage from './lib/components/TeamsPage.svelte';"),
+            "TeamsPage not imported:\n{c}"
+        );
+
+        // Named exports kept (harmless direct-consumer path).
+        assert!(c.contains("export { AgentsPage };"), "AgentsPage named export missing:\n{c}");
+        assert!(c.contains("export { TeamsPage };"), "TeamsPage named export missing:\n{c}");
+
+        // exportName -> component registry.
+        assert!(c.contains("const __components: Record<string, any> = {"), "component registry missing:\n{c}");
+        assert!(c.contains("  AgentsPage,"), "AgentsPage not in registry:\n{c}");
+        assert!(c.contains("  TeamsPage,"), "TeamsPage not in registry:\n{c}");
+
+        // The neutral mount contract: mount(exportName, target, props) => () => void.
+        assert!(c.contains("export function mount("), "mount fn missing:\n{c}");
+        assert!(c.contains("exportName: string,"), "mount exportName param missing:\n{c}");
+        assert!(c.contains("target: HTMLElement,"), "mount target param missing:\n{c}");
+        assert!(c.contains("props: { context?: any; params?: any }"), "mount props param shape wrong:\n{c}");
+        assert!(c.contains("): () => void {"), "mount return type (teardown) wrong:\n{c}");
+
+        // Svelte target implements the contract via svelte mount/unmount — the ONLY
+        // place svelte appears; the harness never imports it.
+        assert!(
+            c.contains("import { mount as __svelteMount, unmount as __svelteUnmount } from 'svelte';"),
+            "svelte impl import missing:\n{c}"
+        );
+        assert!(c.contains("__svelteMount(Component, { target, props })"), "svelte mount call missing:\n{c}");
+        assert!(c.contains("__svelteUnmount(instance)"), "svelte unmount call missing:\n{c}");
+
+        // Missing-export error surfaces (harness maps this to "Failed to load component").
+        assert!(
+            c.contains("not found in contribution bundle"),
+            "missing-export error not emitted:\n{c}"
+        );
     }
 }
