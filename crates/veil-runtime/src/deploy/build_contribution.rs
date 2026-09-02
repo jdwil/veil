@@ -180,6 +180,27 @@ pub async fn run(
         );
     }
 
+    // Step 1c: Ensure the entry imports the global stylesheet so the build
+    // bundles it into style.css. Framework-neutral: codegen emits layer-level
+    // global CSS (tokens + shared classes, incl. any merged provider CSS) to a
+    // plain `src/app.css`. A bare vite library build won't include it unless the
+    // entry imports it. Prepend `import './app.css';` to src/index.ts when an
+    // app.css exists and the import isn't already present. Works for any target
+    // that emits app.css (raw HTML/CSS, Svelte, React, Vue, …).
+    {
+        let app_css = gen_dir.join("src/app.css");
+        let entry = gen_dir.join("src/index.ts");
+        if app_css.exists() && entry.exists() {
+            if let Ok(idx) = tokio::fs::read_to_string(&entry).await {
+                if !idx.contains("./app.css") {
+                    let with_css = format!("import './app.css';\n{idx}");
+                    let _ = tokio::fs::write(&entry, with_css).await;
+                    info!(slug, "contribution entry imports app.css (global styles bundled)");
+                }
+            }
+        }
+    }
+
     // Step 2: Write build config files (overwrite any codegen-produced ones)
     let vite_config = generate_vite_library_config(contribution);
     tokio::fs::write(gen_dir.join("vite.config.ts"), &vite_config)

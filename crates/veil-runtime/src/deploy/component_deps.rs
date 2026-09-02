@@ -277,6 +277,32 @@ pub async fn materialize_component_deps(
                 "component-deps: materialized component into consumer"
             );
         }
+
+        // Materialize the provider layer's GLOBAL CSS (tokens + shared classes).
+        // Framework-neutral: a project's layer-level global CSS is emitted to a
+        // plain `src/app.css` by codegen regardless of target (raw HTML/CSS,
+        // Svelte, React, Vue, …). The provider's components reference those
+        // tokens/classes, so without this the consumer bundle has the markup but
+        // no styles. Append the provider's app.css into the consumer's app.css
+        // (deduped by a provider marker) so the consumer's build bundles it.
+        let provider_css = provider_gen.join("src/app.css");
+        if provider_css.exists() {
+            if let Ok(css) = tokio::fs::read_to_string(&provider_css).await {
+                let marker = format!("/* veil:component-dep {} */", dep.provider_slug);
+                let consumer_css_path = consumer_gen_dir.join("src/app.css");
+                let existing = tokio::fs::read_to_string(&consumer_css_path)
+                    .await
+                    .unwrap_or_default();
+                if !existing.contains(&marker) {
+                    let merged = format!("{existing}\n{marker}\n{css}\n");
+                    if let Err(e) = tokio::fs::write(&consumer_css_path, merged).await {
+                        warn!(provider = %dep.provider_slug, "component-deps: failed to merge provider app.css: {e}");
+                    } else {
+                        info!(provider = %dep.provider_slug, "component-deps: merged provider global CSS into consumer app.css");
+                    }
+                }
+            }
+        }
     }
 
     Ok(())
