@@ -526,10 +526,10 @@
 								class="example-chip"
 								onclick={() =>
 									agentSend(
-										'Show open pull requests — use list_prs so the UI navigates to /pulls'
+										'Show me what is waiting for review — open the review surface (/review) so I can approve or request changes.'
 									)}
 							>
-								Open pull requests
+								What needs review?
 							</button>
 						{/if}
 					</div>

@@ -1351,13 +1351,13 @@ pub fn parse_platform_ux_intent(prompt: &str) -> Option<PlatformUxIntent> {
                     "show me open change",
                     "show open change",
                     "pull requests",
-                    "navigate to /pulls",
-                    "go to /pulls",
-                    "go to changes",
+                    "what needs review",
+                    "open review",
+                    "go to review",
                 ],
                 "list_prs",
-                "/pulls",
-                "Opening pull requests",
+                "/review",
+                "Opening review",
             ),
             (
                 &[
@@ -1365,11 +1365,11 @@ pub fn parse_platform_ux_intent(prompt: &str) -> Option<PlatformUxIntent> {
                     "open_create_pr",
                     "create pull request",
                     "new pull request",
-                    "navigate to /pulls/new",
+                    "open review",
                 ],
                 "create_pr",
-                "/pulls/new",
-                "Opening create pull request",
+                "/review",
+                "Opening review",
             ),
             (
                 &[

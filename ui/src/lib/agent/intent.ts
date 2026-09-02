@@ -1214,7 +1214,7 @@ function synthesizeIntent(toolName: string, root: Record<string, unknown>): Inte
 			present: {
 				announce: title ? `Creating change: ${title}` : 'Open create change',
 				steps: [
-					{ kind: 'goto', path: '/pulls/new', ms: 360 },
+					{ kind: 'goto', path: '/review', ms: 360 },
 					...fillSteps,
 					...(nav?.path && !ux
 						? ([{ kind: 'goto' as const, path: nav.path, ms: 280 }] as PresentStep[])

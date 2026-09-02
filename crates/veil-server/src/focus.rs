@@ -299,17 +299,15 @@ pub fn create_pr_intent(
         fields["project"] = json!(p);
         fields["slug"] = json!(p);
     }
-    let mut steps = vec![json!({ "kind": "goto", "path": "/pulls/new", "ms": 320 })];
+    // The old /pulls/new create-change form is gone: agents open PRs via tools,
+    // and the human reviews on /review. Navigate to the project's review surface.
+    let review_path = project
+        .filter(|s| !s.is_empty())
+        .map(|p| format!("/review/{}", crate::project_layout::slugify_name(p)))
+        .unwrap_or_else(|| "/review".to_string());
+    let mut steps = vec![json!({ "kind": "goto", "path": review_path, "ms": 320 })];
     if !fields.as_object().map(|o| o.is_empty()).unwrap_or(true) {
-        steps.push(json!({
-            "kind": "fill",
-            "formId": "create-change",
-            "fields": fields,
-            "mode": "type"
-        }));
         steps.push(json!({ "kind": "wait", "ms": 160 }));
-        steps.push(json!({ "kind": "pulse", "target": "submit", "ms": 550, "activate": true }));
-        steps.push(json!({ "kind": "wait", "ms": 180 }));
     }
     match domain_mode {
         DomainMode::Ux if title.is_some() => {
@@ -540,7 +538,10 @@ pub async fn wait_intent_ack(intent_id: &str, timeout_ms: u64) -> Result<Value, 
 
 /// Present for change lifecycle actions (submit / approve / merge / …).
 pub fn change_action_intent(action: &str, change_id: &str, summary: &str) -> Value {
-    let path = format!("/pulls/{change_id}");
+    // Change lifecycle (submit/approve/merge/request-changes) is driven on the
+    // /review surface now — the standalone /pulls/{id} detail page was removed.
+    let _ = change_id;
+    let path = "/review".to_string();
     // Prefer stable data-veil-action; fall back to button text labels.
     let (action_attr, btn_text) = match action {
         "submit" => ("submit-pr", "Submit for Review"),

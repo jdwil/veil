@@ -1026,7 +1026,7 @@ async fn create_pull_request_flat(
             Ok(Json(json!({
                 "pull_request": cr,
                 "slug": slug,
-                "wizard_path": format!("/pulls/{}", cr.id),
+                "wizard_path": format!("/review/{slug}"),
                 "provider_pr": provider_pr,
             })))
         }
@@ -1069,7 +1069,7 @@ async fn create_pull_request_flat(
             Ok(Json(json!({
                 "pull_request": cr,
                 "slug": slug,
-                "wizard_path": format!("/pulls/{}", cr.id),
+                "wizard_path": format!("/review/{slug}"),
                 "soft_create": true,
             })))
         }

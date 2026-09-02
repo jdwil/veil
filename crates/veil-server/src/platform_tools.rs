@@ -1042,9 +1042,9 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                 "api": format!("{base}/api/pull_requests"),
             });
             if navigate {
-                out["navigation"] = json!({ "action": "goto", "path": "/pulls" });
+                out["navigation"] = json!({ "action": "goto", "path": "/review" });
                 out["intent"] =
-                    crate::focus::page_action_intent("list_prs", "/pulls", "Open pull requests");
+                    crate::focus::page_action_intent("list_prs", "/review", "Open review");
                 out["execution"] = json!({ "domain": "none", "present": "goto" });
             }
             // ok even if API empty — navigation still useful
@@ -1096,7 +1096,7 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                             let still_open =
                                 ok_status(st) && crate::coding_resolve::is_open_status(status);
                             if still_open {
-                                let ui_path = format!("/pulls/{aid}");
+                                let ui_path = format!("/review/{slug}");
                                 let host_check =
                                     crate::coding_gates::host_check_value(&h.snapshot_meta());
                                 let branch = h
@@ -1142,7 +1142,10 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                 let description = arg_str(arguments, &["description", "body"]);
 
                 if domain_mode == crate::focus::DomainMode::Ux {
-                    let path = "/pulls".to_string();
+                    let path = project
+                        .as_deref()
+                        .map(|p| format!("/review/{}", crate::project_layout::slugify_name(p)))
+                        .unwrap_or_else(|| "/review".to_string());
                     let intent = crate::focus::create_pr_intent(
                         Some(&title),
                         description.as_deref(),
@@ -1161,7 +1164,7 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                         "ok": true,
                         "summary": format!("Scheduled create_pr `{title}` — UX Present then commit"),
                         "pending_ux": true,
-                        "navigation": { "action": "goto", "path": "/pulls/new" },
+                        "navigation": { "action": "goto", "path": path },
                         "intent": intent,
                         "execution": { "domain": "ux", "present": "ux_commit" }
                     })
@@ -1279,11 +1282,11 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                         }
                     }
                 }
-                let path = if pr_id.is_empty() {
-                    "/pulls".to_string()
-                } else {
-                    format!("/pulls/{pr_id}")
-                };
+                let path = project
+                    .as_deref()
+                    .filter(|s| !s.is_empty())
+                    .map(|p| format!("/review/{}", crate::project_layout::slugify_name(p)))
+                    .unwrap_or_else(|| "/review".to_string());
                 let intent = crate::focus::create_pr_intent(
                     Some(&title),
                     description.as_deref(),
@@ -1411,15 +1414,11 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                     body["slug"] = json!(slug);
                 }
                 let (status, data) = http_json("POST", "/api/pull_requests", Some(body)).await?;
-                let path = if ok_status(status) {
-                    data.get("pull_request")
-                        .and_then(|c| c.get("id"))
-                        .and_then(|id| id.as_str())
-                        .map(|id| format!("/pulls/{id}"))
-                        .unwrap_or_else(|| "/pulls".into())
-                } else {
-                    "/pulls/new".into()
-                };
+                let path = project
+                    .as_deref()
+                    .filter(|s| !s.is_empty())
+                    .map(|p| format!("/review/{}", crate::project_layout::slugify_name(p)))
+                    .unwrap_or_else(|| "/review".to_string());
                 let intent = crate::focus::create_pr_intent(
                     Some(&title),
                     Some(&desc),

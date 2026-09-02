@@ -136,10 +136,10 @@ function emitNavigation(nav: NavigationAction) {
 
 /** Fallback nav when a tool result has no Intent+Present. Prefer present over this map. */
 const TOOL_NAV: Record<string, NavigationAction> = {
-	list_prs: { action: 'goto', path: '/pulls' },
-	open_prs: { action: 'goto', path: '/pulls' },
-	create_pr: { action: 'goto', path: '/pulls/new' },
-	open_create_pr: { action: 'goto', path: '/pulls/new' },
+	list_prs: { action: 'goto', path: '/review' },
+	open_prs: { action: 'goto', path: '/review' },
+	create_pr: { action: 'goto', path: '/review' },
+	open_create_pr: { action: 'goto', path: '/review' },
 	list_projects: { action: 'goto', path: '/projects' },
 	open_projects: { action: 'goto', path: '/projects' },
 	// create_project: prefer structured navigation from tool output (project/ide path)

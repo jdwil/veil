@@ -9,36 +9,15 @@
 
 	import { reviewOutstandingCount, startReviewPoll } from '$lib/review/store';
 
-	let open_cr_count: number = $state(0);
-
 	$effect(() => {
 		const stop = startReviewPoll(6000);
 		return () => stop();
-	});
-
-	$effect(() => {
-		void (async () => {
-			open_cr_count = 0;
-			try {
-				const __u = new URL(
-					'/api/pull_requests?status=ReadyForReview',
-					typeof window !== 'undefined' ? window.location.origin : 'http://localhost'
-				);
-				const __r = await fetch(__u.toString());
-				if (!__r.ok) return;
-				const resp = await __r.json();
-				open_cr_count = Array.isArray(resp) ? resp.length : 0;
-			} catch {
-				/* optional */
-			}
-		})();
 	});
 
 	const links = [
 		{ href: '/dashboard', label: 'Dashboard', icon: '⌂' },
 		{ href: '/projects', label: 'Projects', icon: '▣' },
 		{ href: '/review', label: 'Review', icon: '✓', badge: 'review' as const },
-		{ href: '/pulls', label: 'Changes', icon: '⇄', badge: 'prs' as const },
 		{ href: '/deploy', label: 'Deploy', icon: '☁' },
 		{ href: '/registry', label: 'Registry', icon: '⧉' },
 		{ href: '/agents', label: 'Agents', icon: '◆' },
@@ -50,7 +29,6 @@
 		if (href === '/dashboard') return path === '/' || path.startsWith('/dashboard');
 		if (href === '/projects') return path.startsWith('/projects');
 		if (href === '/review') return path.startsWith('/review');
-		if (href === '/pulls') return path.startsWith('/pulls');
 		return path === href || path.startsWith(href + '/');
 	}
 </script>
@@ -91,13 +69,9 @@
 				<span class="nav-icon" aria-hidden="true">{link.icon}</span>
 				{#if !$sidebarCollapsed}
 					<span class="nav-label">{link.label}</span>
-					{#if link.badge === 'prs' && open_cr_count > 0}
-						<span class="nav-badge">{open_cr_count}</span>
-					{:else if link.badge === 'review' && $reviewOutstandingCount > 0}
+					{#if link.badge === 'review' && $reviewOutstandingCount > 0}
 						<span class="nav-badge">{$reviewOutstandingCount}</span>
 					{/if}
-				{:else if link.badge === 'prs' && open_cr_count > 0}
-					<span class="nav-badge nav-badge--dot" aria-label="{open_cr_count} open changes"></span>
 				{:else if link.badge === 'review' && $reviewOutstandingCount > 0}
 					<span class="nav-badge nav-badge--dot" aria-label="{$reviewOutstandingCount} need review"></span>
 				{/if}

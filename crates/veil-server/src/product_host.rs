@@ -128,8 +128,6 @@ impl ProductHost {
             .route("/projects/new", get(shell_index))
             .route("/projects/{name}/ide", get(shell_index))
             .route("/projects/{name}", get(shell_index))
-            .route("/pulls", get(shell_index))
-            .route("/pulls/{*rest}", get(shell_index))
             .route("/deploy", get(shell_index))
             .route("/registry", get(shell_index))
             .route("/agents", get(shell_index))
