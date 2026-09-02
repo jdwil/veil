@@ -156,6 +156,34 @@ fn intent_for(name: &str, rats: &HashMap<String, String>) -> Option<String> {
 ///
 /// Returns an empty vec when the new content fails to parse (the write's own
 /// parse-gate handles reporting) or when there is no structural delta.
+/// Count the DISTINCT top-level constructs changed between `prev` and `content`
+/// (Added / Removed / Renamed / BodyChanged / …). Used by the write_source
+/// rationale-enforcement guard: a multi-construct structural change must carry
+/// rationales so the review can show intent per construct. Returns 0 when the
+/// new content does not parse (the parse guard handles that separately).
+pub fn changed_construct_count(prev: &str, content: &str, registry: &LayerRegistry) -> usize {
+    let Some(head) = build_graph(content, registry) else {
+        return 0;
+    };
+    let base = build_graph(prev, registry).unwrap_or_default();
+    let diff = structural_diff(&base, &head, "before", "after");
+    // Count DISTINCT TOP-LEVEL constructs only (empty container path). A single
+    // new flow-with-steps is one top-level construct, so it is NOT treated as a
+    // multi-construct change — only genuinely separate top-level constructs are.
+    let mut top: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for item in &diff.items {
+        let name = item_name(item);
+        if name.is_empty() {
+            continue;
+        }
+        let container = item_container(item).unwrap_or_default();
+        if container.trim().is_empty() {
+            top.insert(name.to_string());
+        }
+    }
+    top.len()
+}
+
 pub fn synthesize_from_whole_file(
     prev: &str,
     content: &str,
@@ -256,6 +284,23 @@ mod tests {
         let src = "pkg Demo\n\n  rec A\n    x: Int\n";
         let specs = synthesize_from_whole_file(src, src, &reg(), &HashMap::new(), None);
         assert!(specs.is_empty(), "identical source must produce no edits: {specs:?}");
+    }
+
+    /// Rationale-enforcement guard (Part E): a multi-construct structural change
+    /// reports >1 changed construct; a single add reports 1; no change reports 0.
+    #[test]
+    fn changed_construct_count_detects_multi() {
+        let prev = "pkg Demo\n";
+        let one = "pkg Demo\n\n  flow Checkout\n    step Validate\n      guard ok\n";
+        let two = "pkg Demo\n\n  flow Checkout\n    step Validate\n      guard ok\n\n  flow Refund\n    step Issue\n      guard ok\n";
+        assert_eq!(changed_construct_count(prev, prev, &reg()), 0);
+        let one_n = changed_construct_count(prev, one, &reg());
+        let two_n = changed_construct_count(prev, two, &reg());
+        assert!(one_n >= 1, "one added flow → at least one changed construct");
+        assert!(
+            two_n > one_n,
+            "a second flow must count more changed constructs than one ({two_n} vs {one_n})"
+        );
     }
 
     // ── DiffItem-level synthesis (no VEIL parsing) ───────────────────────

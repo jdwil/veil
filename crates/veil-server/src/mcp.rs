@@ -130,7 +130,7 @@ fn mcp_tools() -> Vec<Value> {
         }),
         json!({
             "name": "write_source",
-            "description": "Replace the entire active file source. Always call veil_check afterward. Pass rationales: map of construct name → short why (one line each) so Review shows agent intent next to each structural change.",
+            "description": "Replace the entire active file source. Always call veil_check afterward. Pass rationales: map of construct name → short why (one line each) so Review shows agent intent next to each structural change. REQUIRED when the change touches more than one construct — a multi-construct write with no rationale is rejected.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1053,6 +1053,27 @@ async fn dispatch_tool_scoped<P: SourceProvider>(
             // Spec A: keep a copy of the previous full-file source for durable
             // edit-capture (the smoke-rollback branch moves `prev`).
             let prev_for_capture = prev.clone().unwrap_or_default();
+            // Operator SDLC (Part E): a MULTI-construct structural change must
+            // carry rationales so the review can show intent per construct.
+            // Reject when >1 top-level construct changed and NO rationale was
+            // provided — single-construct or body-only tweaks are exempt so
+            // trivial edits are not blocked. Bypassable via VEIL_DEV for tests.
+            if rats.is_empty() && !crate::review::veil_dev_enabled() {
+                let changed = crate::edit_capture::changed_construct_count(
+                    &prev_for_capture,
+                    content,
+                    &registry,
+                );
+                if changed > 1 {
+                    return Ok(format!(
+                        "WRITE REJECTED — this change touches {changed} constructs but has no \
+rationales (file NOT saved).\n\nPass `rationales`: a map of construct name → one-line why so the \
+Review shows your intent next to each structural change. Example:\n  \
+rationales: {{\"Order\": \"aggregate holding line items\", \"placeOrder\": \"checkout entry flow\"}}\n\n\
+Re-send write_source with rationales for the changed constructs."
+                    ));
+                }
+            }
             let files = provider.list_files().await;
             let active_path = files
                 .iter()
