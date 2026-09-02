@@ -169,6 +169,13 @@ pub fn is_platform_tool(name: &str) -> bool {
             | "list_outstanding"
             | "request_sign_off"
             | "sign_off"
+            | "start_task"
+            | "set_task_bundle"
+            | "begin_task"
+            | "end_task"
+            | "clear_task_bundle"
+            | "list_bundles"
+            | "list_reviews"
     )
 }
 
@@ -2224,6 +2231,54 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
             }
         }
 
+        // ── Task/bundle tools (Part D/E): open ONE ReviewBundle per task ──────
+        "start_task" | "set_task_bundle" | "begin_task" => {
+            // Open or CONTINUE a task's review bundle. The agent calls this at the
+            // start of a task (new work) OR when revising an open review (same
+            // title → same deterministic id → same bundle: no duplicate). Every
+            // change recorded after this rolls up under one ReviewBundle.
+            let title = arg_str(arguments, &["title", "task", "summary", "name"])
+                .unwrap_or_default();
+            let explicit = arg_str(arguments, &["bundle_id", "id"]);
+            let bundle_id = explicit
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or_else(|| crate::review::bundle_id_from_title(&title));
+            crate::review::set_active_bundle_id(Some(bundle_id.clone()));
+            Ok(json!({
+                "ok": true,
+                "bundle_id": bundle_id,
+                "title": title,
+                "summary": format!(
+                    "Task bundle `{bundle_id}` is active. All changes across every project \
+you touch now roll up to ONE review. To REVISE this task later, call start_task \
+with the SAME title (or bundle_id) so it reuses this bundle — do not open a new one."
+                ),
+            })
+            .to_string())
+        }
+
+        "end_task" | "clear_task_bundle" => {
+            crate::review::set_active_bundle_id(None);
+            Ok(json!({ "ok": true, "summary": "Task bundle cleared." }).to_string())
+        }
+
+        "list_bundles" | "list_reviews" => {
+            let slug = arg_str(arguments, &["project", "slug", "id"]);
+            let bundles = crate::review::bundles(slug.as_deref());
+            let path = "/review".to_string();
+            Ok(json!({
+                "ok": true,
+                "summary": if bundles.is_empty() {
+                    "No open review bundles.".to_string()
+                } else {
+                    format!("{} open review bundle(s) (task-level).", bundles.len())
+                },
+                "bundles": bundles,
+                "navigation": { "action": "goto", "path": path },
+            })
+            .to_string())
+        }
+
         "list_outstanding" => {
             let slug = arg_str(arguments, &["project", "slug", "id"]);
             let snap = crate::review::snapshot_json(crate::review::ListFilter {
@@ -2657,7 +2712,7 @@ pub fn tool_definitions() -> Vec<Value> {
     vec![
         json!({
             "name": "navigate_to",
-            "description": "Navigate the VEIL runtime dashboard SPA to a path. Use for any UI destination: /dashboard, /projects, /projects/{id}, /pulls, /pulls/new, /review, /deploy, /registry, /config, /agents.",
+            "description": "Navigate the VEIL runtime dashboard SPA to a path. Use for any UI destination: /dashboard, /projects, /projects/{id}, /review, /review/{slug}, /deploy, /registry, /config, /agents.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -2764,6 +2819,35 @@ pub fn tool_definitions() -> Vec<Value> {
                     "project": { "type": "string" },
                     "slug": { "type": "string" },
                     "id": { "type": "string" }
+                },
+                "required": []
+            }
+        }),
+        json!({
+            "name": "start_task",
+            "description": "Open (or CONTINUE) the review bundle for the CURRENT operator task BEFORE editing. Every change you make across every project until end_task rolls up to ONE review the operator sees as a single task. To REVISE an open review, call start_task with the SAME title (or the same bundle_id) so it reuses that bundle — never open a second bundle for the same task. Returns the bundle_id.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "title": { "type": "string", "description": "Short task title (used to derive a stable bundle id)" },
+                    "bundle_id": { "type": "string", "description": "Reuse an existing bundle id exactly (revision intent)" }
+                },
+                "required": []
+            }
+        }),
+        json!({
+            "name": "end_task",
+            "description": "Clear the active task bundle after the task's changes are done and you have called request_sign_off. Subsequent edits will not roll into the finished task.",
+            "inputSchema": { "type": "object", "properties": {}, "required": [] }
+        }),
+        json!({
+            "name": "list_bundles",
+            "description": "List open review bundles (task-level rollups: N per-project change sets grouped as one review). Use to see what tasks are awaiting review. Navigates to /review.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "project": { "type": "string" },
+                    "slug": { "type": "string" }
                 },
                 "required": []
             }
@@ -3679,6 +3763,9 @@ pub fn rig_platform_tool_names() -> &'static [&'static str] {
         "list_outstanding",
         "request_sign_off",
         "sign_off",
+        "start_task",
+        "end_task",
+        "list_bundles",
     ]
 }
 
@@ -3692,6 +3779,9 @@ mod tests {
         assert!(is_platform_tool("list_outstanding"));
         assert!(is_platform_tool("request_sign_off"));
         assert!(is_platform_tool("sign_off"));
+        assert!(is_platform_tool("start_task"));
+        assert!(is_platform_tool("end_task"));
+        assert!(is_platform_tool("list_bundles"));
         assert!(is_platform_tool("create_repo"));
         assert!(is_platform_tool("rename_project"));
         assert!(is_platform_tool("update_project"));

@@ -120,6 +120,25 @@ export const reviewItems = writable<OutstandingItem[]>([]);
 export const reviewProjects = writable<ProjectReview[]>([]);
 export const reviewChangeSets = writable<ChangeSet[]>([]);
 export const reviewBundles = writable<ReviewBundle[]>([]);
+
+/**
+ * The bundle the operator is currently reviewing (Part D). Set by
+ * ReviewSignOffView while a bundle is in focus; read by the agent session so
+ * free-typed operator input on /review carries the active-bundle context and
+ * the agent treats it as a REVISION of the same task (same PRs), not new work.
+ * `null` when not on a review or no bundle is focused.
+ */
+export const activeReviewBundle = writable<{
+	id: string;
+	title: string;
+	project_slugs: string[];
+} | null>(null);
+
+export function setActiveReviewBundle(
+	b: { id: string; title: string; project_slugs: string[] } | null
+): void {
+	activeReviewBundle.set(b);
+}
 export const reviewAudits = writable<SignOffAudit[]>([]);
 export const reviewAuditEnv = writable<AuditEnv | null>(null);
 export const reviewReady = writable(false);

@@ -723,9 +723,32 @@ export async function agentSend(content: string, attachments?: File[]) {
 		for (const p of prepared.previewUrls) previewObjectUrls.push(p.url);
 	}
 
-	const wireText = prepared?.wireText ?? text;
+	const wireText0 = prepared?.wireText ?? text;
 	const displayText = prepared?.displayText ?? text;
-	if (!wireText.trim()) return;
+	if (!wireText0.trim()) return;
+
+	// Part D: when the operator types while reviewing an open task (bundle),
+	// prepend a compact active-review context so the agent treats free-typed
+	// input as a REVISION of the SAME bundle/PRs — not a new task. Only added on
+	// /review; the display text the operator sees is unchanged.
+	let wireText = wireText0;
+	try {
+		const onReview =
+			typeof window !== 'undefined' && window.location.pathname.startsWith('/review');
+		if (onReview) {
+			const { activeReviewBundle: arb } = await import('$lib/review/store');
+			const ab = get(arb);
+			if (ab && ab.project_slugs.length) {
+				wireText =
+					`[active review: bundle ${ab.id} · projects ${ab.project_slugs.join(', ')}]\n` +
+					`If this is feedback on the open review, REVISE the SAME branches/PRs for those ` +
+					`projects (do not open a new PR), refresh rationales/summary, and re-alert.\n\n` +
+					wireText0;
+			}
+		}
+	} catch {
+		/* context is best-effort */
+	}
 
 	agentPendingSeed.set('');
 	const contentBlocks: Message['content'] = [{ type: 'text', text: displayText }];

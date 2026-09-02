@@ -18,6 +18,7 @@
 		approveBundle,
 		shipBundle,
 		mergeBundle,
+		setActiveReviewBundle,
 		type OutstandingItem,
 		type ChangeSet,
 		type ReviewBundle,
@@ -449,6 +450,7 @@
 				repoIds = map;
 			})
 			.catch(() => {});
+		return () => setActiveReviewBundle(null);
 	});
 
 	$effect(() => {
@@ -463,6 +465,20 @@
 		void loadWalks(names).then((ok) => {
 			if (!ok) lastWalkKey = '';
 		});
+	});
+
+	// Publish the focused bundle to the agent-context store (Part D) so operator
+	// input in the agent panel is treated as a revision of THIS task.
+	$effect(() => {
+		if (activeBundle) {
+			setActiveReviewBundle({
+				id: activeBundle.id,
+				title: activeBundle.title,
+				project_slugs: activeBundle.project_slugs
+			});
+		} else {
+			setActiveReviewBundle(null);
+		}
 	});
 
 	// Resolve the dev deploy gate for the project(s) in view so the UI can
