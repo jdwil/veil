@@ -310,6 +310,38 @@ pub async fn run_frontend_deploy_ws(
     info!(slug, job_id, bucket = %build_config.bucket, "frontend deploy complete via websocket");
 }
 
+/// Normalize a contribution `slots` value into the harness-consumed shape:
+/// every slot maps to an ARRAY of entries. The veil.toml
+/// `[deploy.contribution.slots.<name>]` parses as `{ <name>: { items: "<json>" } }`
+/// (the `items` value is a JSON-string array from TOML). This unwraps `.items`
+/// and parses the string into a real array so the harness's
+/// `for (const item of slots[name])` iterates entries. Passthrough for slots
+/// that are already arrays; drops unparseable/empty to an empty array.
+fn normalize_slots(slots: &serde_json::Value) -> serde_json::Value {
+    let Some(obj) = slots.as_object() else {
+        return serde_json::Value::Object(Default::default());
+    };
+    let mut out = serde_json::Map::new();
+    for (name, val) in obj {
+        let arr = if val.is_array() {
+            val.clone()
+        } else if let Some(items) = val.get("items") {
+            match items {
+                serde_json::Value::String(s) => serde_json::from_str::<serde_json::Value>(s)
+                    .ok()
+                    .filter(|v| v.is_array())
+                    .unwrap_or_else(|| serde_json::Value::Array(vec![])),
+                serde_json::Value::Array(_) => items.clone(),
+                _ => serde_json::Value::Array(vec![]),
+            }
+        } else {
+            serde_json::Value::Array(vec![])
+        };
+        out.insert(name.clone(), arr);
+    }
+    serde_json::Value::Object(out)
+}
+
 /// Build + deploy a contribution (ui.veil → ES-module bundle) over a websocket,
 /// streaming progress. Mirrors the frontend path but targets the shared
 /// contributions bucket + re-registers the manifest on the runtime.
@@ -423,6 +455,12 @@ pub async fn run_contribution_deploy_ws(
         .unwrap_or_else(|| format!("https://{bucket}.s3.amazonaws.com"));
     let bundle_url = format!("{origin}/{js_key}");
     let css_url = css_key.as_ref().map(|k| format!("{origin}/{k}"));
+    // Normalize slots to the shape the harness consumes: each slot must be an
+    // ARRAY of entries. The veil.toml `[deploy.contribution.slots.<name>]` parses
+    // as `{ <name>: { items: "<json-string-array>" } }` — unwrap `.items` and
+    // parse the JSON string into a real array so `for (item of slots[name])`
+    // in the harness iterates entries (was iterating an object → empty menu).
+    let slots = normalize_slots(&contribution.slots);
     let mut body = json!({
         "app_id": contribution.app_id,
         "id": contribution.contribution_id,
@@ -433,7 +471,7 @@ pub async fn run_contribution_deploy_ws(
         "enabled": true,
         "order": contribution.order,
         "access": {"public": true},
-        "slots": contribution.slots,
+        "slots": slots,
     });
     if css_url.is_none() { body.as_object_mut().map(|m| m.remove("css_url")); }
     let port = std::env::var("VEIL_PORT").unwrap_or_else(|_| "8080".into());
