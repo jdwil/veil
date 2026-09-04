@@ -1913,11 +1913,46 @@ async fn get_config() -> axum::response::Response {
         "reference_roots": crate::reference_fs::public_roots_json(),
         "search_paths": cfg.search_paths.iter().map(|e| e.to_line()).collect::<Vec<_>>(),
         "search_roots": crate::search_fs::public_roots_json(),
+        "agent": agent_config_public_json(&cfg),
+        "agent_providers": crate::model::available_providers(),
     });
     match serde_json::to_string(&body) {
         Ok(json) => json_response(json).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
+}
+
+/// Public (secret-free) view of the effective inner-agent provider config for
+/// GET/PATCH `/api/config`. Reflects env-over-config resolution so the UI shows
+/// what will actually run, and flags when env is overriding persisted config.
+/// Never returns a raw API key — only the NAME of the key env var + whether it
+/// currently resolves.
+fn agent_config_public_json(cfg: &crate::config::VeilConfig) -> serde_json::Value {
+    let effective = crate::model::ModelConfig::resolve(cfg);
+    let (ready, hint) = crate::model::provider_readiness(&effective, cfg.agent.as_ref());
+    let stored = cfg.agent.clone().unwrap_or_default();
+    let env_override = std::env::var("VEIL_MODEL_PROVIDER")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .is_some();
+    serde_json::json!({
+        // What is persisted in config.json (may differ from effective if env overrides).
+        "provider": stored.provider,
+        "model": stored.model,
+        "base_url": stored.base_url,
+        "region": stored.region,
+        "acp_command": stored.acp_command,
+        "acp_args": stored.acp_args,
+        "acp_agent": stored.acp_agent,
+        "api_key_env": stored.api_key_env,
+        // Effective (after env-over-config) for display.
+        "effective_provider": effective.kind_name(),
+        "effective_model": effective.model,
+        "env_override": env_override,
+        "ready": ready,
+        "readiness_hint": hint,
+        "restart_required": true,
+    })
 }
 
 #[derive(serde::Deserialize)]
@@ -1931,6 +1966,70 @@ struct ConfigPatchBody {
     /// Empty array clears. DISTINCT from `reference_dirs` (resolved-from, not
     /// a read-only conversion source).
     search_paths: Option<Vec<String>>,
+    /// Inner-agent provider config. When present, replaces the persisted
+    /// `agent` section. `provider` empty string clears it back to default.
+    agent: Option<AgentConfigPatch>,
+}
+
+/// Inbound inner-agent provider config for PATCH `/api/config`.
+///
+/// SECURITY: no raw API key field. `api_key_env` names an env var that holds
+/// the key; the key never transits config.json.
+#[derive(serde::Deserialize)]
+struct AgentConfigPatch {
+    provider: String,
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
+    base_url: Option<String>,
+    #[serde(default)]
+    region: Option<String>,
+    #[serde(default)]
+    acp_command: Option<String>,
+    #[serde(default)]
+    acp_args: Option<String>,
+    #[serde(default)]
+    acp_agent: Option<String>,
+    #[serde(default)]
+    api_key_env: Option<String>,
+}
+
+/// Normalize an optional string: trim, empty → None.
+fn norm_opt(s: Option<String>) -> Option<String> {
+    s.map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
+}
+
+impl AgentConfigPatch {
+    /// Convert to a persisted [`crate::config::AgentConfig`], or `None` to clear
+    /// (empty/unknown provider). Validates the provider against the known set.
+    fn into_config(self) -> Result<Option<crate::config::AgentConfig>, String> {
+        let provider = self.provider.trim().to_lowercase();
+        if provider.is_empty() {
+            return Ok(None);
+        }
+        let known = ["acp", "bedrock", "openai", "openai-compatible", "ollama", "echo", "kiro"];
+        if !known.contains(&provider.as_str()) {
+            return Err(format!(
+                "unknown agent provider `{provider}` (expected one of: acp, bedrock, openai, ollama, echo)"
+            ));
+        }
+        // Canonicalize aliases.
+        let provider = match provider.as_str() {
+            "openai-compatible" => "openai".to_string(),
+            "kiro" => "acp".to_string(),
+            other => other.to_string(),
+        };
+        Ok(Some(crate::config::AgentConfig {
+            provider,
+            model: norm_opt(self.model),
+            base_url: norm_opt(self.base_url),
+            region: norm_opt(self.region),
+            acp_command: norm_opt(self.acp_command),
+            acp_args: norm_opt(self.acp_args),
+            acp_agent: norm_opt(self.acp_agent),
+            api_key_env: norm_opt(self.api_key_env),
+        }))
+    }
 }
 
 /// CAP-007: PATCH /api/config — update allowlisted keys only.
@@ -1949,6 +2048,8 @@ async fn patch_config(Json(body): Json<ConfigPatchBody>) -> axum::response::Resp
                 "reference_roots": crate::reference_fs::public_roots_json(),
                 "search_paths": cfg.search_paths.iter().map(|e| e.to_line()).collect::<Vec<_>>(),
                 "search_roots": crate::search_fs::public_roots_json(),
+                "agent": agent_config_public_json(&cfg),
+                "agent_providers": crate::model::available_providers(),
             });
             match serde_json::to_string(&body) {
                 Ok(json) => json_response(json).into_response(),
@@ -1993,6 +2094,11 @@ fn apply_config_patch(body: ConfigPatchBody) -> Result<crate::config::VeilConfig
                 .collect();
             save_config(&cfg)?;
         }
+        if let Some(agent) = body.agent {
+            cfg.agent = agent.into_config()?;
+            save_config(&cfg)?;
+            crate::model::export_agent_env(&cfg);
+        }
         crate::search_fs::export_env(&cfg.search_paths);
         return Ok(cfg);
     }
@@ -2025,12 +2131,17 @@ fn apply_config_patch(body: ConfigPatchBody) -> Result<crate::config::VeilConfig
             .collect();
         changed = true;
     }
+    if let Some(agent) = body.agent {
+        cfg.agent = agent.into_config()?;
+        changed = true;
+    }
     if !changed {
-        return Err("no allowlisted fields in PATCH body (projects_dir, show_core_layers, layers_dir, reference_dirs, search_paths)".into());
+        return Err("no allowlisted fields in PATCH body (projects_dir, show_core_layers, layers_dir, reference_dirs, search_paths, agent)".into());
     }
     cfg.configured = true;
     save_config(&cfg)?;
     crate::search_fs::export_env(&cfg.search_paths);
+    crate::model::export_agent_env(&cfg);
     Ok(cfg)
 }
 

@@ -189,6 +189,8 @@ pub fn is_platform_tool(name: &str) -> bool {
             | "search_paths_list"
             | "search_paths_set"
             | "search_paths_add"
+            | "agent_provider_get"
+            | "agent_provider_set"
             | "get_git_status"
             | "get_origin"
             | "bind_origin"
@@ -2109,6 +2111,99 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
             .to_string())
         }
 
+        // ─── Inner-agent provider (Spec 6 — "UI OR agent") ────────────────
+        "agent_provider_get" => {
+            let (status, data) = http_json("GET", "/api/config", None).await?;
+            let agent = data.get("agent").cloned().unwrap_or(json!({}));
+            let providers = data.get("agent_providers").cloned().unwrap_or(json!([]));
+            let effective = agent
+                .get("effective_provider")
+                .and_then(|v| v.as_str())
+                .unwrap_or("echo");
+            let ready = agent.get("ready").and_then(|v| v.as_bool()).unwrap_or(false);
+            let hint = agent
+                .get("readiness_hint")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            Ok(json!({
+                "ok": ok_status(status),
+                "http_status": status,
+                "summary": format!(
+                    "Inner agent provider: {effective} ({}). {hint}",
+                    if ready { "ready" } else { "not ready" }
+                ),
+                "agent": agent,
+                "available_providers": providers,
+            })
+            .to_string())
+        }
+
+        "agent_provider_set" => {
+            let provider = arg_str(arguments, &["provider", "kind"])
+                .ok_or_else(|| {
+                    "agent_provider_set requires `provider` (acp | bedrock | openai | ollama | echo)".to_string()
+                })?;
+            // Build the agent patch object from optional fields. No raw key —
+            // BYOK keys live in an env var named by `api_key_env`.
+            let mut agent = json!({ "provider": provider });
+            if let Some(m) = arg_str(arguments, &["model", "model_id", "model_name"]) {
+                agent["model"] = json!(m);
+            }
+            if let Some(b) = arg_str(arguments, &["base_url", "endpoint"]) {
+                agent["base_url"] = json!(b);
+            }
+            if let Some(r) = arg_str(arguments, &["region", "aws_region"]) {
+                agent["region"] = json!(r);
+            }
+            if let Some(c) = arg_str(arguments, &["acp_command", "command"]) {
+                agent["acp_command"] = json!(c);
+            }
+            if let Some(a) = arg_str(arguments, &["acp_args", "args"]) {
+                agent["acp_args"] = json!(a);
+            }
+            if let Some(a) = arg_str(arguments, &["acp_agent", "agent"]) {
+                agent["acp_agent"] = json!(a);
+            }
+            if let Some(k) = arg_str(arguments, &["api_key_env", "key_env"]) {
+                agent["api_key_env"] = json!(k);
+            }
+            if arguments.get("api_key").is_some() || arguments.get("apiKey").is_some() {
+                return Err(
+                    "refusing raw api_key: pass `api_key_env` (the NAME of an env var holding the key) instead — secrets are never stored in config.json".into(),
+                );
+            }
+            let (status, data) = http_json("PATCH", "/api/config", Some(json!({ "agent": agent }))).await?;
+            if !ok_status(status) {
+                return Ok(json!({
+                    "ok": false,
+                    "http_status": status,
+                    "summary": format!("Failed to set inner-agent provider (HTTP {status})"),
+                    "error": data,
+                })
+                .to_string());
+            }
+            let saved = data.get("agent").cloned().unwrap_or(json!({}));
+            let restart = saved
+                .get("restart_required")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true);
+            let hint = saved
+                .get("readiness_hint")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            Ok(json!({
+                "ok": true,
+                "http_status": status,
+                "summary": format!(
+                    "Inner-agent provider set to `{provider}`.{} {hint}",
+                    if restart { " Restart the runtime to apply." } else { "" }
+                ),
+                "restart_required": restart,
+                "agent": saved,
+            })
+            .to_string())
+        }
+
         "get_origin" => {
             let id = arg_str(arguments, &["project", "slug", "id", "name"])
                 .or_else(|| crate::coding_gates::current_project_slug())
@@ -3312,6 +3407,29 @@ pub fn tool_definitions() -> Vec<Value> {
             }
         }),
         json!({
+            "name": "agent_provider_get",
+            "description": "Read the inner (runtime) agent's model provider config: persisted selection, the EFFECTIVE provider after env-over-config resolution, readiness (e.g. ACP command on PATH, BYOK key env set, Bedrock region set), and the list of selectable providers. No secrets returned.",
+            "inputSchema": { "type": "object", "properties": {}, "required": [] }
+        }),
+        json!({
+            "name": "agent_provider_set",
+            "description": "Set the inner (runtime) agent's model provider — e.g. 'switch the inner agent to bedrock in us-west-2' or 'use OpenRouter via BYOK'. Persists to ~/.veil/config.json. Requires a runtime restart to take effect. SECURITY: never pass a raw API key — pass api_key_env (the NAME of an env var holding the key). Env vars still override persisted config. Bedrock is config-only in v1 (selection/readiness work; completions not yet wired).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "provider": { "type": "string", "enum": ["acp", "bedrock", "openai", "ollama", "echo"], "description": "Provider to use for the inner agent" },
+                    "model": { "type": "string", "description": "Model id/name (provider-specific; optional → provider default)" },
+                    "base_url": { "type": "string", "description": "OpenAI-compatible base URL (BYOK gateway) or Ollama URL" },
+                    "region": { "type": "string", "description": "AWS region (Bedrock)" },
+                    "acp_command": { "type": "string", "description": "ACP: command to spawn (default kiro-cli)" },
+                    "acp_args": { "type": "string", "description": "ACP: args (default acp)" },
+                    "acp_agent": { "type": "string", "description": "ACP: Kiro agent name" },
+                    "api_key_env": { "type": "string", "description": "BYOK: NAME of the env var holding the API key (NOT the key itself)" }
+                },
+                "required": ["provider"]
+            }
+        }),
+        json!({
             "name": "get_git_status",
             "description": "GitHub/Bitbucket connection for this runtime (login, orgs, default owner). No secrets. Use before create_project/bind_origin to pick origin_owner.",
             "inputSchema": { "type": "object", "properties": {}, "required": [] }
@@ -3976,6 +4094,8 @@ pub fn rig_platform_tool_names() -> &'static [&'static str] {
         "search_paths_list",
         "search_paths_set",
         "search_paths_add",
+        "agent_provider_get",
+        "agent_provider_set",
         "init_repo_workspace",
         "list_outstanding",
         "request_sign_off",
@@ -4002,6 +4122,8 @@ mod tests {
         assert!(is_platform_tool("search_paths_list"));
         assert!(is_platform_tool("search_paths_set"));
         assert!(is_platform_tool("search_paths_add"));
+        assert!(is_platform_tool("agent_provider_get"));
+        assert!(is_platform_tool("agent_provider_set"));
         assert!(is_platform_tool("create_repo"));
         assert!(is_platform_tool("rename_project"));
         assert!(is_platform_tool("update_project"));
@@ -4065,6 +4187,8 @@ mod tests {
             "{create_desc}"
         );
         assert!(names.contains(&"rename_project"));
+        assert!(names.contains(&"agent_provider_get"));
+        assert!(names.contains(&"agent_provider_set"));
         assert!(names.contains(&"list_outstanding"));
         assert!(names.contains(&"request_sign_off"));
         assert!(names.contains(&"sign_off"));

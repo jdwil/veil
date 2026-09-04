@@ -39,6 +39,51 @@ pub struct VeilConfig {
     /// `name=/path`). See Mind Palace `decision-registry-repo-structure`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub search_paths: Vec<SearchPathEntry>,
+    /// Inner-agent (runtime-omnipresent agent) provider configuration.
+    /// Env vars (`VEIL_MODEL_PROVIDER`, `VEIL_ACP_*`, …) always override this —
+    /// see [`crate::model::ModelConfig::resolve`]. Serde default so existing
+    /// `~/.veil/config.json` files load unchanged. Never stores raw API keys;
+    /// use [`AgentConfig::api_key_env`] (the NAME of an env var).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<AgentConfig>,
+}
+
+/// Persisted inner-agent provider config (`~/.veil/config.json` `agent`).
+///
+/// Selects and configures the runtime-omnipresent agent's model backend from
+/// the Config UI / an agent tool, instead of only via env + restart. Layered
+/// UNDER env by [`crate::model::ModelConfig::resolve`] (env wins so ops/CI can
+/// force a provider).
+///
+/// SECURITY: this file is plaintext on disk and often synced. Raw API keys are
+/// NOT stored here. `api_key_env` holds the NAME of the env var that carries
+/// the key (e.g. `OPENAI_API_KEY`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct AgentConfig {
+    /// Provider: `acp` | `bedrock` | `openai` | `ollama` | `echo`.
+    #[serde(default)]
+    pub provider: String,
+    /// Model id / name (provider-specific). None → provider default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// OpenAI-compatible base URL (BYOK gateway: OpenAI, OpenRouter, …).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
+    /// AWS region (Bedrock).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub region: Option<String>,
+    /// ACP: command to spawn (default `kiro-cli`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acp_command: Option<String>,
+    /// ACP: args passed to the command (default `acp`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acp_args: Option<String>,
+    /// ACP: Kiro agent name (`--agent`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acp_agent: Option<String>,
+    /// NAME of an env var holding the API key (BYOK). Never the key itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key_env: Option<String>,
 }
 
 /// One allowlisted reference directory in `config.json`.
@@ -176,6 +221,7 @@ impl Default for VeilConfig {
             configured: false,
             reference_dirs: Vec::new(),
             search_paths: Vec::new(),
+            agent: None,
         }
     }
 }
@@ -462,10 +508,59 @@ mod tests {
                     path: "~/code/veil-libs".into(),
                 },
             ],
+            agent: Some(AgentConfig {
+                provider: "acp".into(),
+                acp_command: Some("kiro-cli".into()),
+                acp_args: Some("acp".into()),
+                ..Default::default()
+            }),
         };
         let s = serde_json::to_string(&cfg).unwrap();
         let back: VeilConfig = serde_json::from_str(&s).unwrap();
         assert_eq!(cfg, back);
+    }
+
+    #[test]
+    fn old_config_without_agent_defaults_none() {
+        let back: VeilConfig = serde_json::from_str(
+            r#"{"version":1,"projects_dir":"/tmp/p","show_core_layers":false,"configured":true}"#,
+        )
+        .unwrap();
+        assert!(back.agent.is_none());
+    }
+
+    #[test]
+    fn agent_config_roundtrips_all_fields() {
+        let cfg = AgentConfig {
+            provider: "openai".into(),
+            model: Some("gpt-4o-mini".into()),
+            base_url: Some("https://openrouter.ai/api/v1".into()),
+            region: None,
+            acp_command: None,
+            acp_args: None,
+            acp_agent: None,
+            api_key_env: Some("OPENROUTER_API_KEY".into()),
+        };
+        let s = serde_json::to_string(&cfg).unwrap();
+        let back: AgentConfig = serde_json::from_str(&s).unwrap();
+        assert_eq!(cfg, back);
+        // No raw key material — only the env var NAME is persisted.
+        assert!(!s.contains("sk-"));
+        assert!(s.contains("OPENROUTER_API_KEY"));
+    }
+
+    #[test]
+    fn agent_config_never_serializes_none_fields() {
+        // A minimal ACP agent config omits BYOK/bedrock-only fields.
+        let cfg = AgentConfig {
+            provider: "acp".into(),
+            ..Default::default()
+        };
+        let s = serde_json::to_string(&cfg).unwrap();
+        assert!(!s.contains("base_url"), "unset base_url must be skipped: {s}");
+        assert!(!s.contains("region"), "unset region must be skipped: {s}");
+        assert!(!s.contains("api_key_env"), "unset api_key_env skipped: {s}");
+        assert!(s.contains("\"provider\":\"acp\""), "{s}");
     }
 
     #[test]

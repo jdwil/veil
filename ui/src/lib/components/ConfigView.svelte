@@ -27,6 +27,52 @@
 	let search_roots: { id?: string; path?: string; usable?: boolean; skip_reason?: string | null }[] =
 		$state([]);
 
+	// Inner-agent provider config.
+	type AgentProvider = {
+		id: string;
+		label: string;
+		fields: string[];
+		wired?: boolean;
+		note?: string;
+	};
+	let agent_providers: AgentProvider[] = $state([]);
+	let agent_provider = $state('');
+	let agent_model = $state('');
+	let agent_base_url = $state('');
+	let agent_region = $state('');
+	let agent_acp_command = $state('');
+	let agent_acp_args = $state('');
+	let agent_acp_agent = $state('');
+	let agent_api_key_env = $state('');
+	let agent_effective = $state('');
+	let agent_env_override = $state(false);
+	let agent_ready = $state(true);
+	let agent_readiness_hint = $state('');
+
+	function agentFields(): string[] {
+		const p = agent_providers.find((x) => x.id === agent_provider);
+		return p ? p.fields : [];
+	}
+	function agentHasField(f: string): boolean {
+		return agentFields().includes(f);
+	}
+
+	function applyAgent(a: Record<string, unknown> | null | undefined) {
+		if (!a || typeof a !== 'object') return;
+		agent_provider = String((a.provider as string) ?? agent_provider ?? '');
+		agent_model = String((a.model as string) ?? '');
+		agent_base_url = String((a.base_url as string) ?? '');
+		agent_region = String((a.region as string) ?? '');
+		agent_acp_command = String((a.acp_command as string) ?? '');
+		agent_acp_args = String((a.acp_args as string) ?? '');
+		agent_acp_agent = String((a.acp_agent as string) ?? '');
+		agent_api_key_env = String((a.api_key_env as string) ?? '');
+		agent_effective = String((a.effective_provider as string) ?? '');
+		agent_env_override = Boolean(a.env_override);
+		agent_ready = a.ready === undefined ? true : Boolean(a.ready);
+		agent_readiness_hint = String((a.readiness_hint as string) ?? '');
+	}
+
 	async function load() {
 		loading = true;
 		error = '';
@@ -56,6 +102,13 @@
 				search_roots = (sr as { roots: typeof search_roots }).roots;
 			} else {
 				search_roots = [];
+			}
+			if (Array.isArray(data.agent_providers)) {
+				agent_providers = data.agent_providers as AgentProvider[];
+			}
+			applyAgent(data.agent as Record<string, unknown>);
+			if (!agent_provider && agent_providers.length) {
+				agent_provider = agent_providers[0].id;
 			}
 			config_path = String(data.config_path ?? '');
 			veil_home = String(data.veil_home ?? '');
@@ -101,6 +154,16 @@
 						.split('\n')
 						.map((s) => s.trim())
 						.filter((s) => s.length > 0 && !s.startsWith('#')),
+					agent: {
+						provider: agent_provider.trim(),
+						model: agent_model.trim() || null,
+						base_url: agent_base_url.trim() || null,
+						region: agent_region.trim() || null,
+						acp_command: agent_acp_command.trim() || null,
+						acp_args: agent_acp_args.trim() || null,
+						acp_agent: agent_acp_agent.trim() || null,
+						api_key_env: agent_api_key_env.trim() || null
+					}
 				}),
 			});
 			if (!r.ok) throw new Error((await r.text()) || `HTTP ${r.status}`);
@@ -122,6 +185,10 @@
 			if (sr && typeof sr === 'object' && Array.isArray((sr as { roots?: unknown }).roots)) {
 				search_roots = (sr as { roots: typeof search_roots }).roots;
 			}
+			if (Array.isArray(data.agent_providers)) {
+				agent_providers = data.agent_providers as AgentProvider[];
+			}
+			applyAgent(data.agent as Record<string, unknown>);
 			config_path = String(data.config_path ?? config_path);
 			saved = true;
 		} catch (e: unknown) {
@@ -211,6 +278,96 @@
 					</ul>
 				{/if}
 			</FormSection>
+			<FormSection title="Inner agent" columns={1}>
+				<FormField
+					id="agent_provider"
+					label="Provider"
+					input_type="select"
+					bind:value={agent_provider}
+					options={agent_providers.map((p) => ({ value: p.id, label: p.label }))}
+					hint="The model backend the runtime agent uses. Env vars (VEIL_MODEL_PROVIDER, VEIL_ACP_*) always override this. Saved to ~/.veil/config.json."
+				/>
+				{#if agentHasField('acp_command')}
+					<FormField
+						id="agent_acp_command"
+						label="ACP command"
+						bind:value={agent_acp_command}
+						placeholder="kiro-cli"
+						hint="Command to spawn the external agent (default kiro-cli)."
+					/>
+				{/if}
+				{#if agentHasField('acp_args')}
+					<FormField
+						id="agent_acp_args"
+						label="ACP args"
+						bind:value={agent_acp_args}
+						placeholder="acp"
+					/>
+				{/if}
+				{#if agentHasField('acp_agent')}
+					<FormField
+						id="agent_acp_agent"
+						label="ACP agent name"
+						bind:value={agent_acp_agent}
+						placeholder="veil"
+						hint="Kiro --agent name (optional)."
+					/>
+				{/if}
+				{#if agentHasField('region')}
+					<FormField
+						id="agent_region"
+						label="AWS region"
+						bind:value={agent_region}
+						placeholder="us-east-1"
+						hint="Bedrock region. Note: Bedrock completions are config-only in v1 (selection + readiness work; not yet wired to a live client)."
+					/>
+				{/if}
+				{#if agentHasField('base_url')}
+					<FormField
+						id="agent_base_url"
+						label="Base URL"
+						bind:value={agent_base_url}
+						placeholder="https://openrouter.ai/api/v1"
+						hint="OpenAI-compatible endpoint (BYOK gateway or Ollama)."
+					/>
+				{/if}
+				{#if agentHasField('api_key_env')}
+					<FormField
+						id="agent_api_key_env"
+						label="API key env var name"
+						bind:value={agent_api_key_env}
+						placeholder="OPENAI_API_KEY"
+						hint="The NAME of an env var that holds your API key — not the key itself. Keys are never stored in config.json."
+					/>
+				{/if}
+				{#if agentHasField('model')}
+					<FormField
+						id="agent_model"
+						label="Model"
+						bind:value={agent_model}
+						placeholder="(provider default)"
+						hint="Model id/name (optional; provider default when blank)."
+					/>
+				{/if}
+				<ul class="git-facts">
+					<li>
+						Effective provider: <code>{agent_effective || agent_provider || '—'}</code>
+						{#if agent_env_override}
+							<span class="warn"> (forced by env var)</span>
+						{/if}
+					</li>
+					<li>
+						Readiness: {agent_ready ? '✓ ready' : '⚠ not ready'}
+						{#if agent_readiness_hint}
+							— {agent_readiness_hint}
+						{/if}
+					</li>
+				</ul>
+				<p class="hint">
+					Saved to config, but the runtime reads the provider at startup.
+					<strong>Restart the runtime to apply.</strong>
+				</p>
+			</FormSection>
 			<label class="check">
 				<input type="checkbox" bind:checked={show_core_layers} />
 				Show core layers in the IDE
@@ -298,5 +455,8 @@
 		margin: 0;
 		font-size: 0.85rem;
 		color: #86efac;
+	}
+	.warn {
+		color: #fbbf24;
 	}
 </style>
