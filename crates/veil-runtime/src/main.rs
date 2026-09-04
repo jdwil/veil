@@ -160,6 +160,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         veil_server::search_fs::export_env(&cfg.search_paths);
     }
 
+    // Inner-agent provider: seed env from persisted `agent` config (env still
+    // wins — see model::export_agent_env). So a UI/tool provider selection
+    // applies on the next restart without requiring env vars.
+    {
+        let cfg = veil_server::config::load_config_or_default();
+        veil_server::model::export_agent_env(&cfg);
+    }
+
     let projects_dir = host.projects_dir_path().to_path_buf();
     let viewer = host.viewer_url_ref().to_string();
 

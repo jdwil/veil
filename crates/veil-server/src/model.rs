@@ -59,8 +59,30 @@ pub struct ModelConfig {
 
 impl ModelConfig {
     pub fn from_env() -> Self {
+        Self::resolve(&crate::config::VeilConfig::default())
+    }
+
+    /// Resolve the effective model config by layering **env over persisted
+    /// config over built-in default**.
+    ///
+    /// Precedence (highest first):
+    /// 1. Explicit env vars (`VEIL_MODEL_PROVIDER`, `VEIL_MODEL_NAME`,
+    ///    `VEIL_MODEL_BASE_URL`, `VEIL_MODEL_API_KEY`/`OPENAI_API_KEY`,
+    ///    `VEIL_MODEL_REGION`/`AWS_REGION`) — ops/CI (`.env.dlx`) force these.
+    /// 2. Persisted [`crate::config::AgentConfig`] (`~/.veil/config.json`).
+    /// 3. Built-in default (`echo`).
+    ///
+    /// For BYOK the persisted config never carries a raw key; it names an env
+    /// var (`api_key_env`) that is read here.
+    pub fn resolve(cfg: &crate::config::VeilConfig) -> Self {
+        let agent = cfg.agent.as_ref();
+
+        // Provider: env wins, else persisted, else echo.
         let kind_raw = std::env::var("VEIL_MODEL_PROVIDER")
-            .unwrap_or_else(|_| "echo".into())
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+            .or_else(|| agent.map(|a| a.provider.clone()).filter(|s| !s.trim().is_empty()))
+            .unwrap_or_else(|| "echo".into())
             .to_lowercase();
         let kind = match kind_raw.as_str() {
             "openai" | "openai-compatible" => ProviderKind::OpenAi,
@@ -69,7 +91,7 @@ impl ModelConfig {
             "acp" | "kiro" => ProviderKind::Acp,
             "echo" | "heuristic" | "" => ProviderKind::Echo,
             other => {
-                tracing::warn!(provider = %other, "unknown VEIL_MODEL_PROVIDER; using echo");
+                tracing::warn!(provider = %other, "unknown agent provider; using echo");
                 ProviderKind::Echo
             }
         };
@@ -80,16 +102,40 @@ impl ModelConfig {
             ProviderKind::Acp => "kiro".to_string(),
             ProviderKind::Echo => "echo".to_string(),
         };
+        let model = std::env::var("VEIL_MODEL_NAME")
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+            .or_else(|| agent.and_then(|a| a.model.clone()).filter(|s| !s.trim().is_empty()))
+            .unwrap_or(default_model);
+        let base_url = std::env::var("VEIL_MODEL_BASE_URL")
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+            .or_else(|| agent.and_then(|a| a.base_url.clone()).filter(|s| !s.trim().is_empty()));
+        let region = std::env::var("VEIL_MODEL_REGION")
+            .ok()
+            .or_else(|| std::env::var("AWS_REGION").ok())
+            .filter(|s| !s.trim().is_empty())
+            .or_else(|| agent.and_then(|a| a.region.clone()).filter(|s| !s.trim().is_empty()));
+        // API key: explicit env vars first; else read the env var NAMED by the
+        // persisted `api_key_env` (never a raw key from config.json).
+        let api_key = std::env::var("VEIL_MODEL_API_KEY")
+            .ok()
+            .or_else(|| std::env::var("OPENAI_API_KEY").ok())
+            .filter(|s| !s.trim().is_empty())
+            .or_else(|| {
+                agent
+                    .and_then(|a| a.api_key_env.as_ref())
+                    .filter(|n| !n.trim().is_empty())
+                    .and_then(|name| std::env::var(name).ok())
+                    .filter(|s| !s.trim().is_empty())
+            });
+
         Self {
             kind,
-            model: std::env::var("VEIL_MODEL_NAME").unwrap_or(default_model),
-            base_url: std::env::var("VEIL_MODEL_BASE_URL").ok(),
-            api_key: std::env::var("VEIL_MODEL_API_KEY")
-                .ok()
-                .or_else(|| std::env::var("OPENAI_API_KEY").ok()),
-            region: std::env::var("VEIL_MODEL_REGION")
-                .ok()
-                .or_else(|| std::env::var("AWS_REGION").ok()),
+            model,
+            base_url,
+            api_key,
+            region,
         }
     }
 
@@ -395,17 +441,205 @@ pub async fn prompt_with_tools(
     }
 }
 
+/// Seed process env vars from the persisted `agent` config so downstream
+/// consumers that read env directly (the ACP spawner in `acp.rs`, legacy
+/// `ModelConfig::from_env` callers) honor the UI/tool selection at boot.
+///
+/// **Env still wins**: a var already set in the environment (shell / `.env` /
+/// CI) is left untouched — this only fills the *gaps* from persisted config.
+/// Call once at startup (after load) and again after a config PATCH.
+///
+/// Does NOT export any API key value — only `api_key_env` NAMES an env var the
+/// operator sets themselves; secrets never transit config.json.
+pub fn export_agent_env(cfg: &crate::config::VeilConfig) {
+    let Some(agent) = cfg.agent.as_ref() else {
+        return;
+    };
+    // SAFETY: called single-threaded at startup / on the config-write path.
+    unsafe {
+        set_env_if_absent("VEIL_MODEL_PROVIDER", &agent.provider);
+        if let Some(m) = agent.model.as_deref() {
+            set_env_if_absent("VEIL_MODEL_NAME", m);
+        }
+        if let Some(b) = agent.base_url.as_deref() {
+            set_env_if_absent("VEIL_MODEL_BASE_URL", b);
+        }
+        if let Some(r) = agent.region.as_deref() {
+            set_env_if_absent("VEIL_MODEL_REGION", r);
+        }
+        if let Some(c) = agent.acp_command.as_deref() {
+            set_env_if_absent("VEIL_ACP_COMMAND", c);
+        }
+        if let Some(a) = agent.acp_args.as_deref() {
+            set_env_if_absent("VEIL_ACP_ARGS", a);
+        }
+        if let Some(a) = agent.acp_agent.as_deref() {
+            set_env_if_absent("VEIL_ACP_AGENT", a);
+        }
+    }
+}
+
+/// Set an env var only if it is unset or empty (env-over-config invariant).
+///
+/// # Safety
+/// Must be called from a single-threaded context (startup / config-write path).
+unsafe fn set_env_if_absent(key: &str, value: &str) {
+    if value.trim().is_empty() {
+        return;
+    }
+    let present = std::env::var(key).map(|v| !v.trim().is_empty()).unwrap_or(false);
+    if !present {
+        unsafe {
+            std::env::set_var(key, value);
+        }
+    }
+}
+
+/// Effective model config: env over persisted `~/.veil/config.json` over default.
+///
+/// This is the single source of truth for "what provider is the inner agent
+/// actually using right now" — used by `/api/agent/status`, `/api/models`, and
+/// `list_provider_info`.
+pub fn effective_model_config() -> ModelConfig {
+    ModelConfig::resolve(&crate::config::load_config_or_default())
+}
+
+/// Whether the effective ACP command resolves on `PATH` (readiness hint).
+fn command_on_path(cmd: &str) -> bool {
+    if cmd.is_empty() {
+        return false;
+    }
+    // Absolute / relative path: check directly.
+    if cmd.contains('/') {
+        return std::path::Path::new(cmd).is_file();
+    }
+    if let Some(paths) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&paths) {
+            let cand = dir.join(cmd);
+            if cand.is_file() {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Readiness check for the *effective* provider. Never hard-fails — returns a
+/// `(ready, hint)` pair the UI/status endpoint surfaces.
+pub fn provider_readiness(cfg: &ModelConfig, agent: Option<&crate::config::AgentConfig>) -> (bool, String) {
+    match cfg.kind {
+        ProviderKind::Acp => {
+            let cmd = agent
+                .and_then(|a| a.acp_command.clone())
+                .or_else(|| std::env::var("VEIL_ACP_COMMAND").ok())
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or_else(|| "kiro-cli".into());
+            if command_on_path(&cmd) {
+                (true, format!("ACP command `{cmd}` found on PATH"))
+            } else {
+                (false, format!("ACP command `{cmd}` not found on PATH — install Kiro CLI or set the command"))
+            }
+        }
+        ProviderKind::OpenAi => {
+            if cfg.api_key.is_some() {
+                (true, "API key resolved".into())
+            } else if cfg.base_url.is_some() {
+                (true, "base_url set (local/keyless gateway assumed)".into())
+            } else {
+                let env_name = agent
+                    .and_then(|a| a.api_key_env.clone())
+                    .unwrap_or_else(|| "OPENAI_API_KEY".into());
+                (false, format!("no API key — set env `{env_name}` (or VEIL_MODEL_API_KEY / OPENAI_API_KEY), or a base_url"))
+            }
+        }
+        ProviderKind::Ollama => {
+            let base = cfg.base_url.clone().unwrap_or_else(|| "http://localhost:11434".into());
+            (true, format!("Ollama at {base} (ensure the daemon is running)"))
+        }
+        ProviderKind::Bedrock => {
+            let region = cfg.region.clone().unwrap_or_default();
+            if region.is_empty() {
+                (false, "Bedrock region not set — set region (or VEIL_MODEL_REGION/AWS_REGION). NOTE: Bedrock completions are config-only in v1 (not yet wired to a Rig client).".into())
+            } else {
+                (true, format!("region {region} set. NOTE: Bedrock completions are config-only in v1 (not yet wired to a Rig client)."))
+            }
+        }
+        ProviderKind::Echo => (true, "offline echo provider (no model calls)".into()),
+    }
+}
+
+/// The set of selectable providers + the fields each one needs (drives the
+/// Config UI form and documents the agent tool contract).
+pub fn available_providers() -> serde_json::Value {
+    serde_json::json!([
+        {
+            "id": "acp",
+            "label": "ACP (external agent — e.g. Kiro CLI)",
+            "fields": ["acp_command", "acp_args", "acp_agent", "model"],
+            "wired": true,
+            "note": "Spawns an external agent process over ACP. Default command kiro-cli, args acp."
+        },
+        {
+            "id": "bedrock",
+            "label": "Amazon Bedrock",
+            "fields": ["model", "region"],
+            "wired": false,
+            "note": "Config-only in v1: selection/persistence/readiness work, but Bedrock completions are not yet wired to a Rig client. Use an OpenAI-compatible Bedrock gateway (openai + base_url) for live calls."
+        },
+        {
+            "id": "openai",
+            "label": "OpenAI-compatible (BYOK: OpenAI, OpenRouter, Together, local gateway)",
+            "fields": ["base_url", "model", "api_key_env"],
+            "wired": true,
+            "note": "api_key_env is the NAME of an env var holding the key — the key is never stored in config.json."
+        },
+        {
+            "id": "ollama",
+            "label": "Ollama (local)",
+            "fields": ["base_url", "model"],
+            "wired": true,
+            "note": "Local or remote Ollama. No API key required."
+        },
+        {
+            "id": "echo",
+            "label": "Echo (offline / no model)",
+            "fields": [],
+            "wired": true,
+            "note": "No network. Returns guidance text."
+        }
+    ])
+}
+
 pub fn list_provider_info() -> serde_json::Value {
-    let cfg = ModelConfig::from_env();
+    let stored = crate::config::load_config_or_default();
+    let cfg = ModelConfig::resolve(&stored);
+    let (ready, hint) = provider_readiness(&cfg, stored.agent.as_ref());
+    // Whether the env is overriding the persisted provider (ops/CI signal).
+    let env_provider = std::env::var("VEIL_MODEL_PROVIDER")
+        .ok()
+        .filter(|s| !s.trim().is_empty());
+    let env_override = env_provider.is_some();
     if cfg.supports_acp() {
-        return crate::acp::acp_info();
+        let mut info = crate::acp::acp_info();
+        if let Some(obj) = info.as_object_mut() {
+            obj.insert("ready".into(), serde_json::json!(ready));
+            obj.insert("readiness_hint".into(), serde_json::json!(hint));
+            obj.insert("env_override".into(), serde_json::json!(env_override));
+            obj.insert("available_providers".into(), available_providers());
+        }
+        return info;
     }
     serde_json::json!({
         "provider": cfg.kind_name(),
         "models": [cfg.model],
+        "model": cfg.model,
         "rig": cfg.supports_rig_agent(),
         "acp": false,
         "supports_tools": cfg.supports_rig_agent(),
+        "ready": ready,
+        "readiness_hint": hint,
+        "env_override": env_override,
+        "available_providers": available_providers(),
         "config": {
             "kind": cfg.kind_name(),
             "model": cfg.model,
@@ -414,4 +648,146 @@ pub fn list_provider_info() -> serde_json::Value {
             "has_api_key": cfg.api_key.is_some(),
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{AgentConfig, VeilConfig};
+    use std::sync::Mutex;
+
+    // Env vars are process-global; serialize env-touching tests.
+    static ENV_GUARD: Mutex<()> = Mutex::new(());
+
+    const KEYS: &[&str] = &[
+        "VEIL_MODEL_PROVIDER",
+        "VEIL_MODEL_NAME",
+        "VEIL_MODEL_BASE_URL",
+        "VEIL_MODEL_API_KEY",
+        "OPENAI_API_KEY",
+        "VEIL_MODEL_REGION",
+        "AWS_REGION",
+    ];
+
+    fn clear_env() {
+        // SAFETY: guarded by ENV_GUARD; test-only single-threaded region.
+        unsafe {
+            for k in KEYS {
+                std::env::remove_var(k);
+            }
+        }
+    }
+
+    fn cfg_with_agent(agent: AgentConfig) -> VeilConfig {
+        VeilConfig {
+            agent: Some(agent),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn resolve_uses_config_when_env_absent() {
+        let _g = ENV_GUARD.lock().unwrap();
+        clear_env();
+        let cfg = ModelConfig::resolve(&cfg_with_agent(AgentConfig {
+            provider: "ollama".into(),
+            model: Some("mistral".into()),
+            base_url: Some("http://localhost:11434".into()),
+            ..Default::default()
+        }));
+        assert_eq!(cfg.kind, ProviderKind::Ollama);
+        assert_eq!(cfg.model, "mistral");
+        assert_eq!(cfg.base_url.as_deref(), Some("http://localhost:11434"));
+        clear_env();
+    }
+
+    #[test]
+    fn resolve_env_wins_over_config() {
+        let _g = ENV_GUARD.lock().unwrap();
+        clear_env();
+        // SAFETY: guarded.
+        unsafe {
+            std::env::set_var("VEIL_MODEL_PROVIDER", "openai");
+            std::env::set_var("VEIL_MODEL_NAME", "gpt-4o");
+        }
+        let cfg = ModelConfig::resolve(&cfg_with_agent(AgentConfig {
+            provider: "ollama".into(),
+            model: Some("mistral".into()),
+            ..Default::default()
+        }));
+        assert_eq!(cfg.kind, ProviderKind::OpenAi, "env provider must win");
+        assert_eq!(cfg.model, "gpt-4o", "env model must win");
+        clear_env();
+    }
+
+    #[test]
+    fn resolve_defaults_when_both_absent() {
+        let _g = ENV_GUARD.lock().unwrap();
+        clear_env();
+        let cfg = ModelConfig::resolve(&VeilConfig::default());
+        assert_eq!(cfg.kind, ProviderKind::Echo);
+        assert_eq!(cfg.model, "echo");
+        clear_env();
+    }
+
+    #[test]
+    fn resolve_reads_api_key_from_named_env_var() {
+        let _g = ENV_GUARD.lock().unwrap();
+        clear_env();
+        // SAFETY: guarded. Simulate a BYOK env var named in config.
+        unsafe {
+            std::env::set_var("MY_BYOK_KEY", "sk-test-123");
+        }
+        let cfg = ModelConfig::resolve(&cfg_with_agent(AgentConfig {
+            provider: "openai".into(),
+            base_url: Some("https://openrouter.ai/api/v1".into()),
+            api_key_env: Some("MY_BYOK_KEY".into()),
+            ..Default::default()
+        }));
+        assert_eq!(cfg.kind, ProviderKind::OpenAi);
+        assert_eq!(cfg.api_key.as_deref(), Some("sk-test-123"));
+        // SAFETY: guarded.
+        unsafe {
+            std::env::remove_var("MY_BYOK_KEY");
+        }
+        clear_env();
+    }
+
+    #[test]
+    fn readiness_bedrock_requires_region() {
+        let _g = ENV_GUARD.lock().unwrap();
+        clear_env();
+        let agent = AgentConfig {
+            provider: "bedrock".into(),
+            ..Default::default()
+        };
+        let cfg = ModelConfig::resolve(&cfg_with_agent(agent.clone()));
+        let (ready, hint) = provider_readiness(&cfg, Some(&agent));
+        assert!(!ready);
+        assert!(hint.contains("region"), "{hint}");
+
+        let agent2 = AgentConfig {
+            provider: "bedrock".into(),
+            region: Some("us-west-2".into()),
+            ..Default::default()
+        };
+        let cfg2 = ModelConfig::resolve(&cfg_with_agent(agent2.clone()));
+        let (ready2, _) = provider_readiness(&cfg2, Some(&agent2));
+        assert!(ready2);
+        clear_env();
+    }
+
+    #[test]
+    fn available_providers_lists_five() {
+        let list = available_providers();
+        let arr = list.as_array().unwrap();
+        assert_eq!(arr.len(), 5);
+        let ids: Vec<&str> = arr.iter().filter_map(|p| p["id"].as_str()).collect();
+        for want in ["acp", "bedrock", "openai", "ollama", "echo"] {
+            assert!(ids.contains(&want), "missing provider {want}");
+        }
+        // Bedrock is flagged config-only.
+        let bedrock = arr.iter().find(|p| p["id"] == "bedrock").unwrap();
+        assert_eq!(bedrock["wired"], serde_json::json!(false));
+    }
 }

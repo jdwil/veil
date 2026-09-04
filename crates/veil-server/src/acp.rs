@@ -788,6 +788,8 @@ fn veil_ide_tool_names() -> Vec<&'static str> {
         "open_dashboard",
         "open_config",
         "get_config",
+        "agent_provider_get",
+        "agent_provider_set",
         "get_git_status",
         "get_origin",
         "bind_origin",
