@@ -21,7 +21,6 @@
 		{ href: '/history', label: 'History', icon: '≡' },
 		{ href: '/deploy', label: 'Deploy', icon: '☁' },
 		{ href: '/registry', label: 'Registry', icon: '⧉' },
-		{ href: '/agents', label: 'Agents', icon: '◆' },
 		{ href: '/config', label: 'Config', icon: '⚙' },
 	] as const;
 
