@@ -3,7 +3,6 @@
 //! Pre-passes annotate AST nodes before the engine backend runs.
 //! Post-passes augment output after the engine backend runs.
 
-use std::collections::HashMap;
 
 use veil_ir::ast::{Construct, Solution, TopLevelItem};
 use veil_ir::layer::{LayerRegistry, PassPhase, PassSpec, RuleAction, RuleSpec};
@@ -188,7 +187,6 @@ pub fn effective_annotation<'a>(construct: &'a Construct, key: &str, global_defa
 #[cfg(test)]
 mod tests {
     use super::*;
-    use veil_ir::ast::*;
     use veil_ir::layer::*;
     use veil_ir::span::Span;
 

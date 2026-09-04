@@ -600,7 +600,10 @@ pub fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, cra
 
     // INV-003: JSON envelope routing is opt-in via layer routing traits +
     // step context refs. Packages without routing stay direct-call.
-    let has_ctx_refs = flows.iter().any(|flow| {
+    // TODO(routing): computed but not yet consumed — intended to gate JSON
+    // envelope routing on presence of step context refs. Wire into routing
+    // decision or remove once INV-003 routing lands.
+    let _has_ctx_refs = flows.iter().any(|flow| {
         let steps = match flow {
             FlowLike::Flow(f) => &f.steps,
             FlowLike::Construct(c) => &c.steps,
@@ -613,7 +616,7 @@ pub fn gen_application(flows: &[FlowLike], module_contents: &ModuleContents, cra
             }
         })
     });
-    let mut effective_name_to_shape = name_to_shape.clone();
+    let effective_name_to_shape = name_to_shape.clone();
 
     // Shared trait → Deps field map (application + harness + port-call lowering).
     let flow_constructs: Vec<&Construct> = flows
@@ -1073,7 +1076,11 @@ pub fn emit_runtime_delegated(
     ctx: &crate::expr::GenCtx,
     layer_fn_attrs: Option<&str>,
 ) {
-    let err_type = registry.error_model.as_ref().map(|em| em.type_name.as_str()).unwrap_or("__VEIL_NO_ERROR_MODEL__");
+    // TODO(runtime-delegated-errors): error model type resolved but not yet
+    // used when emitting delegated runtime steps (cf. gen_impls in
+    // traits_impls.rs which does wire it). Thread through or drop once the
+    // delegated-step error path is finished.
+    let _err_type = registry.error_model.as_ref().map(|em| em.type_name.as_str()).unwrap_or("__VEIL_NO_ERROR_MODEL__");
     let step_trait = &rt.step_trait;
     // Capture the construct's inputs on each step struct so step bodies can use
     // them. Fields are cloned into the struct at construction.

@@ -80,7 +80,6 @@ pub async fn reconcile(
                 risk: ActionRisk::Low.clone(),
                 details: serde_json::json!(serde_json::Value::Null),
             }),
-            _ => unreachable!(),
         };
         return Ok(ReconcileResult::Create {
             actions: actions.clone(),
@@ -370,7 +369,7 @@ pub async fn list_deploy_environments(deps: &Deps) -> Result<serde_json::Value, 
         .get_current("_".to_string(), "_".to_string())
         .await?;
     let raw = deps.exec.list_environments().await?;
-    let mut catalog: serde_json::Value = serde_json::from_str::<_>(&raw)?;
+    let catalog: serde_json::Value = serde_json::from_str::<_>(&raw)?;
     return Ok(catalog);
 }
 
@@ -399,7 +398,7 @@ pub async fn plan_provision(
             environment.clone(),
         )
         .await?;
-    let mut plan: serde_json::Value = serde_json::from_str::<_>(&raw)?;
+    let plan: serde_json::Value = serde_json::from_str::<_>(&raw)?;
     return Ok(plan);
 }
 
@@ -428,7 +427,7 @@ pub async fn provision_project(
             environment.clone(),
         )
         .await?;
-    let mut job: serde_json::Value = serde_json::from_str::<_>(&raw)?;
+    let job: serde_json::Value = serde_json::from_str::<_>(&raw)?;
     return Ok(job);
 }
 
@@ -446,7 +445,7 @@ pub async fn get_provision_job(
         .get_current("_".to_string(), "_".to_string())
         .await?;
     let raw = deps.exec.get_provision_job(job_id.clone()).await?;
-    let mut job: serde_json::Value = serde_json::from_str::<_>(&raw)?;
+    let job: serde_json::Value = serde_json::from_str::<_>(&raw)?;
     return Ok(job);
 }
 
@@ -557,7 +556,7 @@ pub async fn list_deployments_tool(
 ) -> Result<serde_json::Value, DomainError> {
     // step: execute
     let results = serde_json::from_value::<Vec<DeploymentState>>(deps.bus.invoke(serde_json::json!({ "type": "ListAllDeployments", "environment": environment.clone(), "project": project.clone() })).await?).map_err(|e| DomainError::External(e.to_string()))?;
-    let count = (results.len() as i64);
+    let count = results.len() as i64;
     return Ok(
         serde_json::json!({ "deployments": results.clone(), "count": count.clone(), "summary": format!("Found {} deployments{}{}.", count, if environment.is_some() { format!(" in {}", environment.unwrap()) } else { "".to_string() }, if project.is_some() { format!(" for project {}", project.unwrap()) } else { "".to_string() }) }),
     );
@@ -606,7 +605,6 @@ pub async fn deployment_diff_tool(
                 serde_json::json!({ "in_sync": false, "changes": actions.clone(), "summary": format!("{} in {} would be removed ({} actions).", unit_name, environment, actions.len()) }),
             );
         }
-        _ => unreachable!(),
     };
 }
 

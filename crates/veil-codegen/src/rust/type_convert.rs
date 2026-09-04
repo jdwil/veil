@@ -427,7 +427,7 @@ pub fn generate_multi_package_harness(
 
     // Add all context crates as deps
     let mut all_crate_names: Vec<String> = Vec::new();
-    for (sol, reg) in packages {
+    for (sol, _reg) in packages {
         for item in &sol.items {
             if let TopLevelItem::Construct(c) = item
                 && c.shape == veil_ir::layer::Shape::Mod

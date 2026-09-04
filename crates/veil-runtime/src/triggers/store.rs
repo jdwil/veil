@@ -28,6 +28,8 @@ impl TriggerStore {
     }
 
     /// Build from the standard env vars (`VEIL_DDB_TABLE`).
+    // Retained: in-flight trigger store env constructor (triggers subsystem).
+    #[allow(dead_code)]
     pub async fn from_env() -> Self {
         let config = aws_config::load_defaults(aws_config::BehaviorVersion::latest()).await;
         let ddb = aws_sdk_dynamodb::Client::new(&config);
@@ -115,6 +117,8 @@ impl TriggerStore {
     }
 
     /// Delete a trigger.
+    // Retained: in-flight trigger CRUD delete (triggers subsystem).
+    #[allow(dead_code)]
     pub async fn delete(&self, tenant_id: &str, trigger_id: &str) -> Result<(), TriggerError> {
         self.ddb
             .delete_item()

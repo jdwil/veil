@@ -225,7 +225,7 @@ pub async fn unwind(
     while i > 0 {
         i = i - 1;
         steps[(i) as usize]
-            .compensate(bus.clone(), state.clone())
+            .compensate(bus, state.clone())
             .await?;
     }
     return Ok(());
@@ -239,13 +239,13 @@ pub async fn run_saga(
     let mut state = serde_json::json!({});
     let mut i = 0;
     while i < (steps.len() as i64) {
-        match steps[(i) as usize].action(bus.clone(), state.clone()).await {
+        match steps[(i) as usize].action(bus, state.clone()).await {
             Ok(next) => {
                 state = next;
                 i = i + 1;
             }
             Err(e) => {
-                unwind(bus.clone(), steps.clone(), i, state.clone()).await?;
+                unwind(bus, steps, i, state.clone()).await?;
                 return Err(e);
             }
         };

@@ -21,7 +21,7 @@ use crate::provider::{FileInfo, FileKind, SourceProvider};
 use async_trait::async_trait;
 use veil_ir::LayerRegistry;
 
-/// Request-scoped project name for multi-project providers.
+// Request-scoped project name for multi-project providers.
 tokio::task_local! {
     pub static CURRENT_PROJECT: String;
 }

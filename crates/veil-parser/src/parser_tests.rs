@@ -595,7 +595,7 @@ sol App
             .expect("crm layer");
 
         // Debug: what constructs are registered?
-        let kws: Vec<_> = reg.constructs.iter().map(|c| format!("{}→{}", c.keyword, c.name)).collect();
+        let _kws: Vec<_> = reg.constructs.iter().map(|c| format!("{}→{}", c.keyword, c.name)).collect();
 
         let src = "\
 pkg Sales
@@ -617,7 +617,6 @@ pkg Sales
         let sol = parse_with_registry(&tokens, reg).expect("stacked parse failed");
         let pipeline = find_construct(&sol.items, "Outbound");
 
-        let group = &pipeline.children[0];
         assert_eq!(pipeline.keyword, "pipeline");
         assert_eq!(pipeline.subkind, "Pipeline");
         assert_eq!(pipeline.shape, Shape::Mod); // pipeline -> ctx -> mod

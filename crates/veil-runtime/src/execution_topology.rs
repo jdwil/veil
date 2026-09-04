@@ -68,18 +68,23 @@ impl Default for ExecutionTopology {
 }
 
 impl ExecutionTopology {
+    // Retained: query helpers for the in-flight fire-routing resolver
+    // (shared vs dedicated executor). See module docs.
     /// Whether this topology is the shared host (the default).
+    #[allow(dead_code)]
     pub fn is_shared(&self) -> bool {
         matches!(self, ExecutionTopology::Shared)
     }
 
     /// Whether this topology is a project-scoped dedicated executor.
+    #[allow(dead_code)]
     pub fn is_dedicated(&self) -> bool {
         matches!(self, ExecutionTopology::Dedicated { .. })
     }
 
     /// The dedicated service name (`veil-<slug>-executor`) for a dedicated
     /// topology, or `None` for the shared host.
+    #[allow(dead_code)]
     pub fn dedicated_service_name(&self) -> Option<String> {
         match self {
             ExecutionTopology::Dedicated { slug, .. } => Some(dedicated_service_name(slug)),
@@ -119,6 +124,8 @@ impl Default for DedicatedSizing {
 }
 
 /// Errors from parsing `[execution]`.
+// Retained: error type for the in-flight [execution] mode parser.
+#[allow(dead_code)]
 #[derive(Debug, Clone, thiserror::Error, PartialEq)]
 pub enum TopologyError {
     #[error("unknown execution mode '{0}' (expected 'shared' or 'dedicated')")]
@@ -128,12 +135,17 @@ pub enum TopologyError {
 }
 
 /// The default (implicit) execution mode when no `[execution]` block is present.
+// Retained: default for the in-flight [execution] mode parser.
+#[allow(dead_code)]
 pub const DEFAULT_MODE: &str = "shared";
 
 /// The dedicated-executor ECS service name for a project slug.
 ///
 /// Constraint (design): `veil-` prefix; dedicated services are named
 /// `veil-<slug>-executor` on the shared `veil-cluster`.
+// Retained: in-flight dedicated-executor naming (used by topology methods and
+// the terraform renderer, both not-yet-wired).
+#[allow(dead_code)]
 pub fn dedicated_service_name(slug: &str) -> String {
     format!("veil-{slug}-executor")
 }
@@ -152,6 +164,9 @@ pub fn dedicated_service_name(slug: &str) -> String {
 /// - Any other mode ⇒ [`TopologyError::UnknownMode`] (fail loud; do not silently
 ///   fall back to shared, so a typo like `mode = "dedcated"` is caught at
 ///   registration rather than silently mis-routing).
+// Retained: in-flight [execution] block parser (has test coverage; not yet
+// called from the live compile path).
+#[allow(dead_code)]
 pub fn parse_execution(
     veil_toml: &serde_json::Value,
     slug: &str,
@@ -187,6 +202,8 @@ pub fn parse_execution(
 
 /// Parse `[execution.dedicated]` sizing, filling any missing field with the
 /// [`DedicatedSizing::default`] value.
+// Retained: in-flight [execution.dedicated] sizing parser.
+#[allow(dead_code)]
 fn parse_dedicated_sizing(v: &serde_json::Value) -> DedicatedSizing {
     let d = DedicatedSizing::default();
     let u32_at = |key: &str, fallback: u32| -> u32 {
@@ -206,6 +223,9 @@ fn parse_dedicated_sizing(v: &serde_json::Value) -> DedicatedSizing {
 
 /// Load + parse `[execution]` directly from a `veil.toml` file on disk. A
 /// missing file yields the shared default (matches `parse_triggers_from_file`).
+// Retained: in-flight [execution] file parser (only caller,
+// compile_and_register_with_triggers, is itself not yet wired).
+#[allow(dead_code)]
 pub fn parse_execution_from_file(
     path: &std::path::Path,
     slug: &str,
@@ -231,6 +251,8 @@ pub fn parse_execution_from_file(
 /// (the shared host firing an artifact it itself hosts) resolve to
 /// [`ExecutorEndpoint::InProcess`]; a dedicated artifact resolves to
 /// [`ExecutorEndpoint::Remote`] pointing at the scoped service.
+// Retained: in-flight fire-routing endpoint (in-process vs remote executor).
+#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum ExecutorEndpoint {
     /// Invoke the artifact in *this* process (shared host hosting its own
@@ -243,6 +265,8 @@ pub enum ExecutorEndpoint {
 
 impl ExecutorEndpoint {
     /// The base URL to POST an invoke/fire to, or `None` for in-process.
+    // Retained: in-flight fire-routing endpoint accessor.
+    #[allow(dead_code)]
     pub fn base_url(&self) -> Option<&str> {
         match self {
             ExecutorEndpoint::InProcess => None,
@@ -264,6 +288,9 @@ impl ExecutorEndpoint {
 ///   IS that exact dedicated executor, in-process.
 ///
 /// This keeps the SAME engine while sending a fire to the RIGHT executor.
+// Retained: in-flight trigger-fire routing resolver (has test coverage; not
+// yet called from the live fire path).
+#[allow(dead_code)]
 pub fn resolve_endpoint(
     topology: &ExecutionTopology,
     ctx: &RoutingContext,
@@ -296,6 +323,8 @@ pub fn resolve_endpoint(
 /// Ambient context for [`resolve_endpoint`]: where the shared host lives, how to
 /// build a dedicated service URL, and the identity of the *current* process so a
 /// self-invoke short-circuits to in-process.
+// Retained: in-flight routing context for the fire-routing resolver.
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct RoutingContext {
     /// Base URL of the shared execution host (e.g. `https://exec.veil.dev.dashlx.com`).
@@ -313,7 +342,9 @@ pub struct RoutingContext {
 }
 
 impl RoutingContext {
+    // Retained: in-flight routing-context builders for the fire resolver.
     /// Build the dedicated base URL for a slug by substituting the template.
+    #[allow(dead_code)]
     pub fn dedicated_base_for(&self, slug: &str) -> String {
         let service = dedicated_service_name(slug);
         self.dedicated_base_template
@@ -328,6 +359,7 @@ impl RoutingContext {
     /// - `VEIL_ROLE == "execution-host"` ⇒ caller is the shared host, UNLESS
     ///   `VEIL_EXEC_ARTIFACT_SCOPE` names a dedicated slug (then this process is
     ///   that dedicated executor, not the shared host).
+    #[allow(dead_code)]
     pub fn from_env() -> Self {
         let shared_host_base = std::env::var("VEIL_EXEC_SHARED_BASE")
             .unwrap_or_else(|_| "http://localhost:8090".to_string());
@@ -360,6 +392,8 @@ impl RoutingContext {
 ///
 /// Factored out so the branch that decides in-process vs. remote on a live
 /// dedicated task is unit-tested without mutating global process env.
+// Retained: in-flight self-identity resolver for fire routing (test-covered).
+#[allow(dead_code)]
 pub fn resolve_self_identity(
     is_execution_host: bool,
     scope: Option<&str>,

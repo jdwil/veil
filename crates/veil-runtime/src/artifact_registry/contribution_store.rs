@@ -126,6 +126,9 @@ impl ContributionManifestStore {
     }
 
     /// Create from standard env vars (VEIL_DDB_TABLE).
+    // Retained: env constructor for the contribution store (used by the
+    // in-flight standalone/env-driven wiring; live path uses ::new).
+    #[allow(dead_code)]
     pub async fn from_env() -> Self {
         let config = aws_config::load_defaults(aws_config::BehaviorVersion::latest()).await;
         let ddb = aws_sdk_dynamodb::Client::new(&config);

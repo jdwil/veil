@@ -416,7 +416,7 @@ impl DeployExec for LocalDeployExec {
         if veil_local_fs::LocalFs::path_is_file(path.clone()) {
             let raw = veil_local_fs::LocalFs::read(path.clone())
                 .map_err(|e| DomainError::External(e.to_string()))?;
-            let mut job: serde_json::Value = serde_json::from_str::<_>(&raw)?;
+            let job: serde_json::Value = serde_json::from_str::<_>(&raw)?;
             let st = job
                 .get("status")
                 .cloned()
@@ -743,7 +743,7 @@ impl DeployExec for LocalDeployExec {
                                 .map_err(|e| DomainError::External(format!("{e:?}")))?;
                             detail = format!("{} exists arn={}", f0, arn0);
                         } else {
-                            let mut zip_blob = aws_sdk_lambda::primitives::Blob::new({
+                            let zip_blob = aws_sdk_lambda::primitives::Blob::new({
                                 let __h: String = ("504b03041400000000001042fd5c9a7470c7460000004600000008000000696e6465782e6a736578706f7274732e68616e646c65723d6173796e632865293d3e287b737461747573436f64653a3230302c626f64793a277665696c2d706c616365686f6c646572277d293b0a504b010214031400000000001042fd5c9a7470c74600000046000000080000000000000000000000800100000000696e6465782e6a73504b05060000000001000100360000006c0000000000".to_string()).to_string();
                                 let __h = __h.as_str();
                                 let mut __b = Vec::with_capacity(__h.len() / 2);
@@ -756,10 +756,10 @@ impl DeployExec for LocalDeployExec {
                                 }
                                 __b
                             });
-                            let mut code = aws_sdk_lambda::types::FunctionCode::builder()
+                            let code = aws_sdk_lambda::types::FunctionCode::builder()
                                 .zip_file(zip_blob.clone())
                                 .build();
-                            let mut created = self
+                            let created = self
                                 .lambda
                                 .create_function()
                                 .function_name(f0.clone())
@@ -782,7 +782,7 @@ impl DeployExec for LocalDeployExec {
                         };
                         if t0 == "lambda-api".to_string() {
                             if arn0 != "".to_string() {
-                                let mut region = std::env::var("AWS_REGION".to_string())
+                                let region = std::env::var("AWS_REGION".to_string())
                                     .unwrap_or_else(|_| "us-west-2".to_string());
                                 let mut api_id = std::env::var("VEIL_GW_HTTP_API".to_string())
                                     .unwrap_or_else(|_| "".to_string());
@@ -888,7 +888,7 @@ impl DeployExec for LocalDeployExec {
                                     if !has2 {
                                         self.apigw.create_route().api_id(api_id.clone()).route_key(rk2.clone()).target(format!("integrations/{}", integ_id)).authorization_type(aws_sdk_apigatewayv2::types::AuthorizationType::None).send().await.map_err(|e| DomainError::External(format!("{e:?}")))?;
                                     };
-                                    let mut acct =
+                                    let acct =
                                         std::env::var("AWS_ACCOUNT_ID".to_string()).unwrap_or_default();
                                     let source_arn = format!(
                                         "arn:aws:execute-api:{}:{}:{}/*/*",
@@ -924,8 +924,8 @@ impl DeployExec for LocalDeployExec {
                                 };
                             };
                         };
-                        let mut pk = format!("DEPLOY#{}#{}", environment, u0);
-                        let mut state = serde_json::to_string(
+                        let pk = format!("DEPLOY#{}#{}", environment, u0);
+                        let state = serde_json::to_string(
                             &serde_json::json!({ "project": slug.clone(), "unit_name": u0.clone(), "unit_type": t0.clone(), "environment": environment.clone(), "status": "Active".to_string(), "lambda_name": f0.clone(), "lambda_arn": arn0.clone(), "role_arn": role.clone() }),
                         )?;
                         self.ddb
@@ -1000,7 +1000,7 @@ impl DeployExec for LocalDeployExec {
                                 .map_err(|e| DomainError::External(format!("{e:?}")))?;
                             detail = format!("{} exists arn={}", f1, arn1);
                         } else {
-                            let mut zip_blob = aws_sdk_lambda::primitives::Blob::new({
+                            let zip_blob = aws_sdk_lambda::primitives::Blob::new({
                                 let __h: String = ("504b03041400000000001042fd5c9a7470c7460000004600000008000000696e6465782e6a736578706f7274732e68616e646c65723d6173796e632865293d3e287b737461747573436f64653a3230302c626f64793a277665696c2d706c616365686f6c646572277d293b0a504b010214031400000000001042fd5c9a7470c74600000046000000080000000000000000000000800100000000696e6465782e6a73504b05060000000001000100360000006c0000000000".to_string()).to_string();
                                 let __h = __h.as_str();
                                 let mut __b = Vec::with_capacity(__h.len() / 2);
@@ -1013,10 +1013,10 @@ impl DeployExec for LocalDeployExec {
                                 }
                                 __b
                             });
-                            let mut code = aws_sdk_lambda::types::FunctionCode::builder()
+                            let code = aws_sdk_lambda::types::FunctionCode::builder()
                                 .zip_file(zip_blob.clone())
                                 .build();
-                            let mut created = self
+                            let created = self
                                 .lambda
                                 .create_function()
                                 .function_name(f1.clone())
@@ -1038,9 +1038,9 @@ impl DeployExec for LocalDeployExec {
                             detail = format!("{} created arn={}", f1, arn1);
                         };
                         if t1 == "lambda-consumer".to_string() {
-                            let mut region = std::env::var("AWS_REGION".to_string())
+                            let region = std::env::var("AWS_REGION".to_string())
                                 .unwrap_or_else(|_| "us-west-2".to_string());
-                            let mut acct =
+                            let acct =
                                 std::env::var("AWS_ACCOUNT_ID".to_string()).unwrap_or_default();
                             let qarn = format!("arn:aws:sqs:{}:{}:{}", region, acct, sqs_name);
                             let mut esm_uuid = "".to_string();
@@ -1083,8 +1083,8 @@ impl DeployExec for LocalDeployExec {
                             };
                             detail = format!("{}; esm={}", detail, esm_uuid);
                         };
-                        let mut pk = format!("DEPLOY#{}#{}", environment, u1);
-                        let mut state = serde_json::to_string(
+                        let pk = format!("DEPLOY#{}#{}", environment, u1);
+                        let state = serde_json::to_string(
                             &serde_json::json!({ "project": slug.clone(), "unit_name": u1.clone(), "unit_type": t1.clone(), "environment": environment.clone(), "status": "Active".to_string(), "lambda_name": f1.clone(), "lambda_arn": arn1.clone(), "role_arn": role.clone(), "sqs": sqs_name.clone() }),
                         )?;
                         self.ddb
@@ -1147,7 +1147,7 @@ impl DeployExec for LocalDeployExec {
                             };
                             detail = format!("{} exists arn={}", f2, arn2);
                         } else {
-                            let mut zip_blob = aws_sdk_lambda::primitives::Blob::new({
+                            let zip_blob = aws_sdk_lambda::primitives::Blob::new({
                                 let __h: String = ("504b03041400000000001042fd5c9a7470c7460000004600000008000000696e6465782e6a736578706f7274732e68616e646c65723d6173796e632865293d3e287b737461747573436f64653a3230302c626f64793a277665696c2d706c616365686f6c646572277d293b0a504b010214031400000000001042fd5c9a7470c74600000046000000080000000000000000000000800100000000696e6465782e6a73504b05060000000001000100360000006c0000000000".to_string()).to_string();
                                 let __h = __h.as_str();
                                 let mut __b = Vec::with_capacity(__h.len() / 2);
@@ -1160,10 +1160,10 @@ impl DeployExec for LocalDeployExec {
                                 }
                                 __b
                             });
-                            let mut code = aws_sdk_lambda::types::FunctionCode::builder()
+                            let code = aws_sdk_lambda::types::FunctionCode::builder()
                                 .zip_file(zip_blob.clone())
                                 .build();
-                            let mut created = self
+                            let created = self
                                 .lambda
                                 .create_function()
                                 .function_name(f2.clone())
@@ -1184,8 +1184,8 @@ impl DeployExec for LocalDeployExec {
                             };
                             detail = format!("{} created arn={}", f2, arn2);
                         };
-                        let mut pk = format!("DEPLOY#{}#{}", environment, u2);
-                        let mut state = serde_json::to_string(
+                        let pk = format!("DEPLOY#{}#{}", environment, u2);
+                        let state = serde_json::to_string(
                             &serde_json::json!({ "project": slug.clone(), "unit_name": u2.clone(), "unit_type": t2.clone(), "environment": environment.clone(), "status": "Active".to_string(), "lambda_name": f2.clone(), "lambda_arn": arn2.clone() }),
                         )?;
                         self.ddb
@@ -1217,8 +1217,8 @@ impl DeployExec for LocalDeployExec {
                     next_cursor = "run_hooks".to_string();
                     steps_done = steps_done + 1;
                 } else {
-                    let mut hub = veil_local_fs::LocalFs::projects_dir();
-                    let mut root = veil_local_fs::LocalFs::join(hub.clone(), slug.clone());
+                    let hub = veil_local_fs::LocalFs::projects_dir();
+                    let root = veil_local_fs::LocalFs::join(hub.clone(), slug.clone());
                     let backend_toml = veil_local_fs::LocalFs::join(
                         veil_local_fs::LocalFs::join(
                             veil_local_fs::LocalFs::join(root.clone(), "generated".to_string()),
@@ -1229,7 +1229,7 @@ impl DeployExec for LocalDeployExec {
                     let main_veil =
                         veil_local_fs::LocalFs::join(root.clone(), "main.veil".to_string());
                     let mut gen_detail = "".to_string();
-                    let mut build_detail;
+                    let build_detail;
                     if !veil_local_fs::LocalFs::path_exists(root.clone()) {
                         detail = format!("project root missing {}", root);
                         status = "failed".to_string();
@@ -1428,8 +1428,8 @@ impl DeployExec for LocalDeployExec {
                     next_cursor = "finalize".to_string();
                     steps_done = steps_done + 1;
                 } else {
-                    let mut hub = veil_local_fs::LocalFs::projects_dir();
-                    let mut root = veil_local_fs::LocalFs::join(hub.clone(), slug.clone());
+                    let hub = veil_local_fs::LocalFs::projects_dir();
+                    let root = veil_local_fs::LocalFs::join(hub.clone(), slug.clone());
                     let bin_path = veil_local_fs::LocalFs::join(
                         veil_local_fs::LocalFs::join(
                             veil_local_fs::LocalFs::join(
@@ -1833,7 +1833,7 @@ impl DeployExec for LocalDeployExec {
     ) -> Result<String, DomainError> {
         let disk = veil_local_fs::LocalFs::read_project_deploy(slug.clone())
             .map_err(|e| DomainError::External(e.to_string()))?;
-        let mut snap: serde_json::Value = serde_json::from_str::<_>(&disk)?;
+        let snap: serde_json::Value = serde_json::from_str::<_>(&disk)?;
         let mock_s =
             std::env::var("VEIL_DEPLOY_EXECUTOR".to_string()).unwrap_or_else(|_| "".to_string());
         let mock = mock_s == "mock".to_string() || mock_s == "MOCK".to_string();
@@ -2101,7 +2101,7 @@ impl DeployExec for LocalDeployExec {
         };
         let disk = veil_local_fs::LocalFs::read_project_deploy(project_slug.clone())
             .map_err(|e| DomainError::External(e.to_string()))?;
-        let mut snap: serde_json::Value = serde_json::from_str::<_>(&disk)?;
+        let snap: serde_json::Value = serde_json::from_str::<_>(&disk)?;
         let names = snap
             .get("stack")
             .cloned()
@@ -2175,7 +2175,7 @@ impl DeployExec for LocalDeployExec {
         let s3_key = format!("repos/{}/{}/veil.toml", repo_id, branch);
         let disk = veil_local_fs::LocalFs::read_project_deploy(slug.clone())
             .map_err(|e| DomainError::External(e.to_string()))?;
-        let mut snap: serde_json::Value = serde_json::from_str::<_>(&disk)?;
+        let snap: serde_json::Value = serde_json::from_str::<_>(&disk)?;
         let mut source = "disk".to_string();
         if mode != "disk".to_string()
             && self.bucket.clone() != "".to_string()
@@ -2204,7 +2204,7 @@ impl DeployExec for LocalDeployExec {
     ) -> Result<String, DomainError> {
         let disk = veil_local_fs::LocalFs::read_project_deploy(project_slug.clone())
             .map_err(|e| DomainError::External(e.to_string()))?;
-        let mut snap: serde_json::Value = serde_json::from_str::<_>(&disk)?;
+        let snap: serde_json::Value = serde_json::from_str::<_>(&disk)?;
         veil_local_fs::LocalFs::create_dir_all("/tmp/veil-provision-jobs".to_string())
             .map_err(|e| DomainError::External(e.to_string()))?;
         let now = Utc::now();
@@ -2357,7 +2357,7 @@ impl DeployExec for LocalDeployExec {
     ) -> Result<String, DomainError> {
         let disk = veil_local_fs::LocalFs::read_project_deploy(slug.clone())
             .map_err(|e| DomainError::External(e.to_string()))?;
-        let mut snap: serde_json::Value = serde_json::from_str::<_>(&disk)?;
+        let snap: serde_json::Value = serde_json::from_str::<_>(&disk)?;
         veil_local_fs::LocalFs::create_dir_all("/tmp/veil-provision-jobs".to_string())
             .map_err(|e| DomainError::External(e.to_string()))?;
         let now = Utc::now();

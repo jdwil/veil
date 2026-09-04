@@ -781,7 +781,7 @@ fn emit_const_with_await_method_call() {
 #[test]
 fn emit_spread_in_object() {
     // { ...defaults, name: "custom" }
-    let expr = TsExpr::ObjectLit {
+    let _expr = TsExpr::ObjectLit {
         fields: vec![
             ("...defaults".into(), TsExpr::Noop),
         ],
@@ -1980,7 +1980,6 @@ fn lower_block_multiple_stmts() {
 
 use veil_ir::ast::{ActionExpr, CallExpr};
 use veil_ir::layer::{Shape, StmtShape};
-use std::collections::HashSet;
 
 /// Helper: create a GenCtx with trait shapes registered.
 fn ctx_with_trait(name: &str) -> GenCtx {

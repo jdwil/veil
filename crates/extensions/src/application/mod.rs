@@ -518,7 +518,7 @@ pub async fn promote_extension(
 ) -> Result<ExtensionRecord, DomainError> {
     // step: execute
     if allow_promote == false {
-        let mut rec = deps
+        let rec = deps
             .extension_registry
             .get(extension_id.clone())
             .await?

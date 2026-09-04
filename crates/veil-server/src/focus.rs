@@ -172,8 +172,8 @@ pub fn context_tool_json(session_id: Option<&str>) -> Value {
     }
 }
 
-/// Browser attached this turn (ChatRequest.focus present). Used for via=ux defaults
-/// on pure host short-circuit product tools — not for mid-ACP multi-step.
+// Browser attached this turn (ChatRequest.focus present). Used for via=ux defaults
+// on pure host short-circuit product tools — not for mid-ACP multi-step.
 tokio::task_local! {
     pub static CLIENT_PRESENT: bool;
 }

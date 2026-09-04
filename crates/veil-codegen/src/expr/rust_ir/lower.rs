@@ -9,7 +9,6 @@ use crate::rust::to_snake;
 use super::super::context::GenCtx;
 use super::super::inference::{
     infer_expr_type, binop_to_rust, unaryop_to_rust, normalize_match_pattern, element_type_of,
-    bus_message_name_from_args, bus_return_type_in_scope,
 };
 use super::super::types::{
     expr_is_numeric, flatten_str_add_chain, peel_option_rust, rust_ty_is_stringish,
@@ -19,15 +18,14 @@ use super::super::types::{
 use super::super::calls::{
     resolve_self_field_name, is_json_rooted_expr, is_json_type_name, expr_is_json,
     list_index_get_ir, translate_call, receiver_call_finish, clone_args_ir, rust_method_name,
-    arg_to_ir, json_message_ir, json_envelope_ir, param_types_for,
+    arg_to_ir, param_types_for,
 };
 use super::super::patterns::{pattern_to_rust, pattern_to_rust_qualified, pattern_binding_names};
 use super::super::actions::translate_action;
 use super::super::analysis::analyze_mut_locals;
 use super::{
     apply_finish, apply_ownership, assign, assign_op, clone_of, compile_error, field,
-    fn_call, ident, ident_ty, is_none_node, is_unit_node, is_vec_node, lower_owned, lower_value,
-    map_err_to_string, method, none, ok_or_not_found, owned_str, ret, ret_err, ret_ok, some_of,
+    fn_call, ident, ident_ty, is_none_node, is_unit_node, is_vec_node, lower_owned, lower_value, method, none, ok_or_not_found, owned_str, ret, ret_err, ret_ok, some_of,
     strip_try_ir, to_string_of, try_of, unit, wrap_as_option_ir, Arm, CallFinish, RustExpr,
     RustType,
 };

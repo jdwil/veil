@@ -1661,15 +1661,15 @@ pub fn open_s3_project_at(
     .with_subpath(subpath))
 }
 
-/// Request-scoped coding session id (HTTP header `X-Veil-Session-Id`).
+// Request-scoped coding session id (HTTP header `X-Veil-Session-Id`).
 tokio::task_local! {
     pub static CURRENT_SESSION: String;
 }
 
-/// Turn-scoped agent turn id. Set once per `run_turn` so tool-dispatch code
-/// (e.g. `write_source` edit-capture) can key durable `EditRecord`s to the
-/// turn without threading the id through every call. Empty when no agent turn
-/// is active (e.g. a raw viewer `POST /api/edit`).
+// Turn-scoped agent turn id. Set once per `run_turn` so tool-dispatch code
+// (e.g. `write_source` edit-capture) can key durable `EditRecord`s to the
+// turn without threading the id through every call. Empty when no agent turn
+// is active (e.g. a raw viewer `POST /api/edit`).
 tokio::task_local! {
     pub static CURRENT_TURN: String;
 }

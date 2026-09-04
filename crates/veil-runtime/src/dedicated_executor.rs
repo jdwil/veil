@@ -24,6 +24,9 @@
 use crate::execution_topology::{dedicated_service_name, DedicatedSizing};
 
 /// Inputs to render a dedicated executor terraform config.
+// Retained: in-flight dedicated-executor terraform provisioning (execution
+// topology). Not yet invoked by the deploy pipeline. See module docs.
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct DedicatedExecutorPlan {
     /// Project slug — names `veil-<slug>-executor` and scopes the artifact set.
@@ -32,6 +35,8 @@ pub struct DedicatedExecutorPlan {
     pub sizing: DedicatedSizing,
 }
 
+// Retained: in-flight dedicated-executor provisioning API (execution topology).
+#[allow(dead_code)]
 impl DedicatedExecutorPlan {
     pub fn new(slug: impl Into<String>, sizing: DedicatedSizing) -> Self {
         Self {

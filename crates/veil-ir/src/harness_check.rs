@@ -4,7 +4,7 @@
 //! (HTTP verbs, bind sources) are allowed engine knowledge.
 
 use crate::ast::{Construct, Field, Solution, TopLevelItem, TypeExpr};
-use crate::diagnostics::{Diagnostic, Severity};
+use crate::diagnostics::Diagnostic;
 use crate::harness::{is_http_verb, CompatMode, EmitBin};
 use crate::layer::{LayerRegistry, Shape};
 
@@ -592,6 +592,7 @@ pub fn skip_name_check_for_field(
 mod tests {
     use super::*;
     use crate::ast::{Construct, Field, NamedBlock, Solution, TopLevelItem};
+    use crate::diagnostics::Severity;
     use crate::layer::LayerRegistry;
     use crate::span::Span;
 
