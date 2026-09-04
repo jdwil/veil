@@ -1,0 +1,10 @@
+# Workspace root for bundled VEIL examples.
+#
+# These are language/codegen demonstration sources, not a single compilable
+# product. Marking the directory as a `[workspace]` gives each example an
+# ancestor `veil.toml` so `veil check`/`gen` accept them without weakening the
+# veil.toml enforcement rule (decision-registry-repo-structure, Decision 3).
+#
+# A `[workspace]`-only root has no `[package]`, so it is inert to check/gen.
+[workspace]
+members = ["adapt"]

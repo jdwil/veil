@@ -661,6 +661,13 @@ struct MigrateSubpathBody {
     /// Default branch (default `main`).
     #[serde(default)]
     branch: Option<String>,
+    /// Spec 3: when the target repo ROOT is not yet a multi-project VEIL
+    /// workspace (`veil.toml [workspace]` missing), the flow does NOT silently
+    /// seed — it returns `needs_workspace_init: true`. Re-submitting with this
+    /// flag set to `true` confirms the fix: initialise the root `[workspace]`,
+    /// seed the subpath, and append the member — all in one commit. Idempotent.
+    #[serde(default)]
+    init_workspace: bool,
 }
 
 /// POST /api/repos/{id}/migrate-to-subpath — move an existing (usually
@@ -721,13 +728,20 @@ async fn migrate_to_subpath(
         })));
     }
 
-    // 2) Provision (create/bind) the target shared repo and 3) seed the subpath
-    //    with a fresh commit. Runs on the blocking pool (git + provider REST).
+    // 2) Provision (create/bind) the target shared repo, then DETECT whether the
+    //    repo ROOT is already a multi-project VEIL workspace (Spec 3). Depending
+    //    on that + the caller's `init_workspace` confirm, either:
+    //      - PRESENT: seed the subpath and append the member (one commit).
+    //      - ABSENT + no confirm: do NOT seed; return needs_workspace_init.
+    //      - ABSENT + confirm (init_workspace=true): init root [workspace],
+    //        seed, append member — one commit (the fix).
+    //    Runs on the blocking pool (git + provider REST).
     let provider_owned = provider_s.clone();
     let full_owned = full_name.clone();
     let sub_owned = subpath.clone();
     let br_owned = branch.clone();
     let create = body.create;
+    let init_workspace = body.init_workspace;
     let repo_id_seed = repo_id.clone();
     let slug_seed = slug.clone();
     let seed_result = tokio::task::spawn_blocking(move || -> Result<Value, String> {
@@ -742,13 +756,33 @@ async fn migrate_to_subpath(
         });
         let spec = veil_server::git_provider::OriginRequest::from_value(Some(&origin_spec), &slug_seed)?;
         // Create/verify the target repo (registers the origin under repo_id with
-        // the subpath so seed_subpath sees it).
+        // the subpath so the seed methods see it).
         let _cfg = veil_server::git_provider::provision_origin(
             &repo_id_seed, &slug_seed, None, &spec,
         )?;
         let origin = veil_server::git_origin::GitOrigin::for_repo(&repo_id_seed);
-        let seeded = origin.seed_subpath(&seed_files, &br_owned)?;
-        Ok(json!({ "seed_commit": seeded }))
+
+        // Detect-before-seed: inspect the checked-out ROOT for a workspace.
+        let is_workspace = origin.subpath_root_is_workspace(&br_owned)?;
+        if !is_workspace && !init_workspace {
+            // OFFER to fix — do NOT seed. The caller decides.
+            return Ok(json!({
+                "needs_workspace_init": true,
+                "can_fix": true,
+                "seeded": false,
+            }));
+        }
+        // Combined idempotent op. When the root is already a workspace we still
+        // append the member (init_workspace_root=false is a fast path); when
+        // absent + confirmed, we also initialise the root [workspace].
+        let init_root = !is_workspace; // true => also create root [workspace]
+        let seeded = origin.init_workspace_and_seed_subpath(&seed_files, &br_owned, init_root)?;
+        Ok(json!({
+            "needs_workspace_init": false,
+            "seeded": true,
+            "workspace_initialized": init_root,
+            "seed_commit": seeded,
+        }))
     })
     .await
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -763,6 +797,30 @@ async fn migrate_to_subpath(
             })));
         }
     };
+
+    // Spec 3 detect-and-offer-fix: the repo root is not a workspace and the
+    // caller has not confirmed. Return the offer WITHOUT seeding or rebinding —
+    // the project keeps its current origin until the fix is confirmed.
+    if seed_json
+        .get("needs_workspace_init")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return Ok(Json(json!({
+            "ok": true,
+            "repo_id": repo_id,
+            "slug": slug,
+            "needs_workspace_init": true,
+            "can_fix": true,
+            "repo": full_name,
+            "subpath": subpath,
+            "branch": branch,
+            "message": format!(
+                "`{full_name}` is not set up as a multi-project VEIL repo yet (no root veil.toml [workspace]). Initialize workspace structure and add `{subpath}`?"
+            ),
+            "hint": "Re-submit migrate-to-subpath with init_workspace=true, POST /api/repos/{id}/init-workspace, or call the init_repo_workspace agent tool to confirm the fix.",
+        })));
+    }
 
     // 4) Rebind the catalog origin to {repo, subpath}, preserving repo_id.
     let provider = match provider_s.trim().to_ascii_lowercase().as_str() {
@@ -788,6 +846,189 @@ async fn migrate_to_subpath(
         "seed": seed_json,
         "origin": updated.origin,
         "note": "Project identity preserved (repo_id + catalog). Fresh seed commit under the subpath; S3-bundle history was not grafted.",
+    })))
+}
+
+#[derive(Deserialize, Default)]
+struct InitWorkspaceBody {
+    /// Target shared repo `org/name`. Optional — defaults to the project's
+    /// currently bound git origin repo when it is subpath-backed.
+    #[serde(default)]
+    repo: Option<String>,
+    /// Provider: `github` | `bitbucket`. Optional — defaults to the bound origin.
+    #[serde(default)]
+    provider: Option<String>,
+    /// Subpath to seed under. Optional — defaults to the bound origin subpath,
+    /// else the project slug.
+    #[serde(default)]
+    subpath: Option<String>,
+    /// Default branch (default: bound origin branch → `main`).
+    #[serde(default)]
+    branch: Option<String>,
+    /// Create the target repo if missing (default false).
+    #[serde(default)]
+    create: bool,
+    /// Target repo privacy when `create` (default true).
+    #[serde(default)]
+    private: Option<bool>,
+}
+
+/// POST /api/repos/{id}/init-workspace — Spec 3 fix operation (UI + agent).
+///
+/// The confirmed "make this repo a multi-project VEIL workspace and add this
+/// subproject" action. In ONE commit it: initialises the repo-root
+/// `veil.toml [workspace]`, seeds the subproject scaffold under `<subpath>/`,
+/// and appends `<subpath>` to the workspace members. Rebinds the catalog origin
+/// to `{repo, subpath}` (preserving repo_id). Fully idempotent: re-running when
+/// the repo is already a workspace / subpath already seeded is a no-op.
+///
+/// Available via both this HTTP path and the `init_repo_workspace` agent tool
+/// (Law 12 "UI OR agent").
+async fn init_repo_workspace(
+    State(st): State<StorageState>,
+    Path(id): Path<String>,
+    Json(body): Json<InitWorkspaceBody>,
+) -> Result<Json<Value>, StatusCode> {
+    use storage::domain::types::{GitProvider as BindProvider, OriginBinding};
+
+    let repo = crate::origin_resolve::resolve_repo_full(&st.deps, &id)
+        .await
+        .map_err(domain_status)?;
+    let repo_id = repo.id.value.clone();
+    let slug = repo.slug.clone();
+
+    // Resolve target repo/provider/subpath/branch: prefer the request, else the
+    // project's currently bound git origin.
+    let bound = match &repo.origin {
+        Some(OriginBinding::Git {
+            provider,
+            repo: r,
+            subpath,
+            branch,
+        }) => Some((
+            match provider {
+                BindProvider::Github => "github".to_string(),
+                _ => "bitbucket".to_string(),
+            },
+            r.clone(),
+            subpath.clone(),
+            branch.clone(),
+        )),
+        _ => None,
+    };
+
+    let full_name = body
+        .repo
+        .clone()
+        .or_else(|| bound.as_ref().map(|b| b.1.clone()))
+        .map(|s| s.trim().trim_matches('/').to_string())
+        .unwrap_or_default();
+    if !full_name.contains('/') {
+        return Ok(Json(json!({
+            "ok": false,
+            "error": "no_repo",
+            "message": "init-workspace needs a target repo (org/name) — pass `repo` or bind a subpath git origin first",
+        })));
+    }
+    let provider_s = body
+        .provider
+        .clone()
+        .or_else(|| bound.as_ref().map(|b| b.0.clone()))
+        .unwrap_or_else(|| "bitbucket".into());
+    let branch = body
+        .branch
+        .clone()
+        .or_else(|| bound.as_ref().and_then(|b| b.3.clone()))
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "main".into());
+    let subpath = veil_server::git_origin::normalize_subpath(
+        body.subpath
+            .as_deref()
+            .or_else(|| bound.as_ref().and_then(|b| b.2.as_deref()))
+            .or(Some(slug.as_str())),
+    )
+    .unwrap_or_else(|| slug.clone());
+    let private = body.private.unwrap_or(true);
+
+    // Snapshot current source to seed under the subpath (mirrors migrate).
+    let seed_files: Vec<(String, String)> = {
+        let rid = repo_id.clone();
+        let br = branch.clone();
+        tokio::task::spawn_blocking(move || {
+            let origin = veil_server::git_origin::GitOrigin::for_repo(&rid);
+            collect_source_files_from_origin(&origin, &br)
+        })
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    };
+
+    // Provision + combined init-workspace + seed + add-member (one commit).
+    let provider_owned = provider_s.clone();
+    let full_owned = full_name.clone();
+    let sub_owned = subpath.clone();
+    let br_owned = branch.clone();
+    let create = body.create;
+    let repo_id_seed = repo_id.clone();
+    let slug_seed = slug.clone();
+    let fix_result = tokio::task::spawn_blocking(move || -> Result<Value, String> {
+        let origin_spec = json!({
+            "kind": "git",
+            "provider": provider_owned,
+            "repo": full_owned,
+            "subpath": sub_owned,
+            "create": create,
+            "private": private,
+            "branch": br_owned,
+        });
+        let spec = veil_server::git_provider::OriginRequest::from_value(Some(&origin_spec), &slug_seed)?;
+        let _cfg = veil_server::git_provider::provision_origin(
+            &repo_id_seed, &slug_seed, None, &spec,
+        )?;
+        let origin = veil_server::git_origin::GitOrigin::for_repo(&repo_id_seed);
+        // Always init the root [workspace] (idempotent no-op if present) so this
+        // endpoint is the single confirmed fix regardless of prior state.
+        let seeded = origin.init_workspace_and_seed_subpath(&seed_files, &br_owned, true)?;
+        Ok(json!({ "seed_commit": seeded }))
+    })
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let fix_json = match fix_result {
+        Ok(v) => v,
+        Err(e) => {
+            return Ok(Json(json!({
+                "ok": false,
+                "error": "init_workspace_failed",
+                "message": e,
+            })));
+        }
+    };
+
+    // Rebind the catalog origin to {repo, subpath} (preserve repo_id).
+    let provider = match provider_s.trim().to_ascii_lowercase().as_str() {
+        "github" | "gh" => BindProvider::Github,
+        _ => BindProvider::Bitbucket,
+    };
+    let binding = OriginBinding::Git {
+        provider,
+        repo: full_name.clone(),
+        subpath: Some(subpath.clone()),
+        branch: Some(branch.clone()),
+    };
+    let updated = storage::application::set_repo_origin(&st.deps, repo_id.clone(), Some(binding))
+        .await
+        .map_err(domain_status)?;
+    let _ = crate::origin_resolve::git_origin_for(&updated);
+
+    Ok(Json(json!({
+        "ok": true,
+        "repo_id": repo_id,
+        "slug": slug,
+        "workspace_initialized": true,
+        "workspace": { "repo": full_name, "subpath": subpath, "branch": branch },
+        "seed": fix_json,
+        "origin": updated.origin,
+        "note": "Root veil.toml [workspace] initialized, subproject seeded, member appended — one commit. Idempotent.",
     })))
 }
 
@@ -5783,6 +6024,10 @@ pub async fn build_platform_router(
         .route(
             "/api/repos/{id}/migrate-to-subpath",
             post(migrate_to_subpath),
+        )
+        .route(
+            "/api/repos/{id}/init-workspace",
+            post(init_repo_workspace),
         )
         .route("/api/git/status", get(git_status))
         .route("/api/read-file", post(read_file_api))

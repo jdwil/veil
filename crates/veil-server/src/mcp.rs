@@ -1906,9 +1906,8 @@ mod branch_visibility_tests {
     use super::*;
     use crate::git_origin::{CheckoutMode, GitOrigin};
     use std::path::{Path, PathBuf};
-    use std::sync::Mutex;
 
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
+    fn env_lock() -> &'static std::sync::Mutex<()> { crate::git_origin::test_env_lock() }
 
     fn tmp(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
@@ -1931,7 +1930,7 @@ mod branch_visibility_tests {
     /// branches exist. Regression guard for `incident-inner-agent-stale-branch`.
     #[test]
     fn branches_for_repo_lists_others_excluding_current() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = env_lock().lock().unwrap_or_else(|e| e.into_inner());
         let store = tmp("store");
         std::fs::create_dir_all(&store).unwrap();
         // SAFETY: serialized by ENV_LOCK; sole writer for this process window.
@@ -1984,7 +1983,7 @@ mod branch_visibility_tests {
     /// current branch and never errors.
     #[test]
     fn branches_for_repo_degrades_without_origin() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = env_lock().lock().unwrap_or_else(|e| e.into_inner());
         // SAFETY: serialized by ENV_LOCK.
         unsafe {
             std::env::set_var("VEIL_GIT_ORIGIN", "0");

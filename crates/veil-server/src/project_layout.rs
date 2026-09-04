@@ -14,6 +14,19 @@ pub struct ProjectInfo {
     pub is_git: bool,
     /// Count of `*.veil` packages at project root.
     pub package_count: usize,
+    /// Whether the dir is a valid VEIL project root (has `veil.toml`).
+    /// Spec 1: dirs with `.veil` but no `veil.toml` are listed as invalid
+    /// (with `invalid_reason`) rather than silently omitted, so the UI/agent
+    /// can offer to scaffold one.
+    #[serde(default = "default_valid")]
+    pub valid: bool,
+    /// Human-readable reason when `valid` is false (e.g. missing veil.toml).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub invalid_reason: Option<String>,
+}
+
+fn default_valid() -> bool {
+    true
 }
 
 /// Active IDE session context (single project).
@@ -45,17 +58,23 @@ pub fn ensure_projects_dir(dir: &Path) -> Result<(), String> {
 }
 
 /// Whether `path` looks like a VEIL product project root.
+///
+/// Spec 1 (decision-registry-repo-structure, Decision 3): a `veil.toml` is
+/// REQUIRED. A `.git` dir or bare `*.veil` files no longer qualify on their own
+/// — correct project structure is forced everywhere. Use [`has_veil_sources`]
+/// to detect dirs that hold `.veil` but are missing the required `veil.toml`
+/// (surfaced as INVALID projects rather than silently hidden).
 pub fn is_project_root(path: &Path) -> bool {
     if !path.is_dir() {
         return false;
     }
-    if path.join(".git").exists() {
-        return true;
-    }
-    if path.join("veil.toml").is_file() {
-        return true;
-    }
-    read_dir_ext(path, "veil").next().is_some()
+    path.join("veil.toml").is_file()
+}
+
+/// True when `path` contains `.veil` sources directly (no `veil.toml` check).
+/// Used to surface dirs that have VEIL source but lack the required `veil.toml`.
+pub fn has_veil_sources(path: &Path) -> bool {
+    path.is_dir() && read_dir_ext(path, "veil").next().is_some()
 }
 
 /// List product projects under `projects_dir` (immediate children only).
@@ -81,6 +100,26 @@ pub fn list_projects(projects_dir: &Path) -> Result<Vec<ProjectInfo>, String> {
             continue;
         }
         if !is_project_root(&path) {
+            // Spec 1: a dir holding .veil sources but no veil.toml is INVALID,
+            // not omitted — surface it so the UI/agent can offer to scaffold one.
+            if has_veil_sources(&path) {
+                let name = path
+                    .file_name()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                out.push(ProjectInfo {
+                    name,
+                    path: path.to_string_lossy().to_string(),
+                    is_git: path.join(".git").exists(),
+                    package_count: read_dir_ext(&path, "veil").count(),
+                    valid: false,
+                    invalid_reason: Some(format!(
+                        "{}: {} has .veil sources but no veil.toml",
+                        veil_ir::MISSING_VEIL_TOML,
+                        path.display()
+                    )),
+                });
+            }
             continue;
         }
         let name = path
@@ -93,6 +132,8 @@ pub fn list_projects(projects_dir: &Path) -> Result<Vec<ProjectInfo>, String> {
             path: path.to_string_lossy().to_string(),
             is_git: path.join(".git").exists(),
             package_count,
+            valid: true,
+            invalid_reason: None,
         });
     }
     out.sort_by(|a, b| a.name.cmp(&b.name));
@@ -354,6 +395,8 @@ pub fn init_project(root: &Path, opts: &InitOptions) -> Result<ProjectInfo, Stri
         path: root.to_string_lossy().to_string(),
         is_git: root.join(".git").exists(),
         package_count: 1,
+        valid: true,
+        invalid_reason: None,
     })
 }
 
@@ -559,6 +602,177 @@ pub fn project_display_name(root: &Path) -> String {
         .unwrap_or_else(|| root.to_string_lossy().to_string())
 }
 
+// ---------------------------------------------------------------------------
+// Multi-project workspace root manifest (Spec 2, decision-registry-repo-structure)
+//
+// A repo-root `veil.toml` carries `[workspace] members = [...]` (Cargo shape).
+// The list is a GENERATED convenience index — the authority for each project is
+// that subdir's own `veil.toml [package]`. Writes are deterministic (members
+// sorted, no churn) so re-serialization round-trips identically, and MUST NOT
+// clobber other top-level sections that the root manifest may carry.
+// ---------------------------------------------------------------------------
+
+/// Canonical root workspace manifest text for the given members.
+///
+/// Members are normalized ([`veil_ir::normalize_member`]), de-duplicated, and
+/// sorted for a stable, churn-free serialization (MISSION: deterministic
+/// round-trips). Produces valid TOML that parses back to the same member set.
+pub fn workspace_root_veil_toml(members: &[&str]) -> String {
+    let mut norm: Vec<String> = members
+        .iter()
+        .filter_map(|m| veil_ir::normalize_member(m))
+        .collect();
+    norm.sort();
+    norm.dedup();
+    render_workspace_toml(&norm)
+}
+
+/// Render a `[workspace]` root manifest from an already-sorted member list.
+fn render_workspace_toml(members: &[String]) -> String {
+    let mut out = String::from("[workspace]\n");
+    if members.is_empty() {
+        out.push_str("members = []\n");
+    } else {
+        out.push_str("members = [\n");
+        for m in members {
+            // TOML basic-string escape for the (already traversal-safe) member.
+            let escaped = m.replace('\\', "\\\\").replace('"', "\\\"");
+            out.push_str(&format!("  \"{escaped}\",\n"));
+        }
+        out.push_str("]\n");
+    }
+    out
+}
+
+/// Initialize a workspace root `veil.toml` at `root` (INIT workspace).
+///
+/// - If no `veil.toml` exists: create one with an empty `[workspace] members = []`.
+/// - If a `veil.toml` exists WITH a `[workspace]` section: no-op (idempotent).
+/// - If a `veil.toml` exists WITHOUT `[workspace]`: add an empty `[workspace]`
+///   while PRESERVING every existing top-level key/section (never clobber a root
+///   that also carries `[package]`, `[codegen]`, etc.).
+pub fn init_workspace_root(root: &Path) -> Result<(), String> {
+    let toml_path = root.join("veil.toml");
+    if !toml_path.exists() {
+        if let Some(parent) = toml_path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("cannot create {}: {e}", parent.display()))?;
+        }
+        return std::fs::write(&toml_path, workspace_root_veil_toml(&[]))
+            .map_err(|e| format!("cannot write {}: {e}", toml_path.display()));
+    }
+
+    let content = std::fs::read_to_string(&toml_path)
+        .map_err(|e| format!("cannot read {}: {e}", toml_path.display()))?;
+    let mut doc: toml::Value = toml::from_str(&content)
+        .map_err(|e| format!("cannot parse {}: {e}", toml_path.display()))?;
+    let table = doc
+        .as_table_mut()
+        .ok_or_else(|| format!("{} is not a TOML table", toml_path.display()))?;
+    if table.contains_key("workspace") {
+        // Already a workspace root — idempotent no-op.
+        return Ok(());
+    }
+    let mut ws = toml::value::Table::new();
+    ws.insert("members".into(), toml::Value::Array(Vec::new()));
+    table.insert("workspace".into(), toml::Value::Table(ws));
+    let serialized = serialize_root_toml(&doc, &toml_path)?;
+    std::fs::write(&toml_path, serialized)
+        .map_err(|e| format!("cannot write {}: {e}", toml_path.display()))
+}
+
+/// Add `member` to the root `veil.toml [workspace] members`.
+///
+/// Returns `Ok(true)` if the member was added, `Ok(false)` if it was already
+/// present (idempotent). Members are normalized + sorted so re-serialization is
+/// byte-stable (adding the same member twice yields identical bytes). Preserves
+/// all other top-level sections. Creates the root manifest if absent.
+pub fn add_workspace_member(root: &Path, member: &str) -> Result<bool, String> {
+    let normalized = veil_ir::normalize_member(member)
+        .ok_or_else(|| format!("invalid workspace member (empty or traversal): {member:?}"))?;
+    let toml_path = root.join("veil.toml");
+
+    // Load existing document (or start a fresh workspace root).
+    let mut doc: toml::Value = if toml_path.exists() {
+        let content = std::fs::read_to_string(&toml_path)
+            .map_err(|e| format!("cannot read {}: {e}", toml_path.display()))?;
+        toml::from_str(&content)
+            .map_err(|e| format!("cannot parse {}: {e}", toml_path.display()))?
+    } else {
+        if let Some(parent) = toml_path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("cannot create {}: {e}", parent.display()))?;
+        }
+        toml::Value::Table(toml::value::Table::new())
+    };
+
+    let table = doc
+        .as_table_mut()
+        .ok_or_else(|| format!("{} is not a TOML table", toml_path.display()))?;
+
+    // Ensure a [workspace] table with a members array.
+    let ws = table
+        .entry("workspace".to_string())
+        .or_insert_with(|| toml::Value::Table(toml::value::Table::new()));
+    let ws_table = ws
+        .as_table_mut()
+        .ok_or_else(|| "[workspace] is not a table".to_string())?;
+    let members_val = ws_table
+        .entry("members".to_string())
+        .or_insert_with(|| toml::Value::Array(Vec::new()));
+    let arr = members_val
+        .as_array_mut()
+        .ok_or_else(|| "[workspace].members is not an array".to_string())?;
+
+    // Normalize existing members, add the new one, sort + dedup.
+    let mut set: Vec<String> = arr
+        .iter()
+        .filter_map(|v| v.as_str())
+        .filter_map(veil_ir::normalize_member)
+        .collect();
+    let existed = set.iter().any(|m| m == &normalized);
+    if !existed {
+        set.push(normalized);
+    }
+    set.sort();
+    set.dedup();
+    *arr = set.into_iter().map(toml::Value::String).collect();
+
+    let serialized = serialize_root_toml(&doc, &toml_path)?;
+    std::fs::write(&toml_path, serialized)
+        .map_err(|e| format!("cannot write {}: {e}", toml_path.display()))?;
+    Ok(!existed)
+}
+
+/// Serialize a root `veil.toml` document deterministically.
+///
+/// When the document is workspace-ONLY (its sole top-level key is `workspace`),
+/// emit the canonical hand-authored shape via [`render_workspace_toml`] so the
+/// bytes match [`workspace_root_veil_toml`] exactly (stable round-trips). When
+/// other sections are present, fall back to `toml::to_string_pretty`, which
+/// preserves every section (BTreeMap ordering is deterministic).
+fn serialize_root_toml(doc: &toml::Value, toml_path: &Path) -> Result<String, String> {
+    if let Some(table) = doc.as_table() {
+        let only_workspace = table.len() == 1 && table.contains_key("workspace");
+        if only_workspace {
+            let members: Vec<String> = table
+                .get("workspace")
+                .and_then(|w| w.as_table())
+                .and_then(|w| w.get("members"))
+                .and_then(|m| m.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default();
+            return Ok(render_workspace_toml(&members));
+        }
+    }
+    toml::to_string_pretty(doc)
+        .map_err(|e| format!("cannot serialize {}: {e}", toml_path.display()))
+}
+
 fn read_dir_ext(dir: &Path, ext: &str) -> impl Iterator<Item = PathBuf> {
     let ext = ext.to_string();
     std::fs::read_dir(dir)
@@ -651,6 +865,146 @@ mod tests {
         assert!(validate_project_name("ok_name-1").is_ok());
         assert!(validate_project_name("has space").is_err());
         assert!(validate_project_name("").is_err());
+    }
+
+    #[test]
+    fn workspace_root_scaffold_is_canonical_and_sorted() {
+        // Unsorted, with dupes and a trailing slash → normalized + sorted set.
+        let text = workspace_root_veil_toml(&["di", "ddd", "bus/", "ddd"]);
+        assert!(text.contains("[workspace]"), "{text}");
+        // Sorted order: bus, ddd, di
+        let pos_bus = text.find("\"bus\"").expect("bus present");
+        let pos_ddd = text.find("\"ddd\"").expect("ddd present");
+        let pos_di = text.find("\"di\"").expect("di present");
+        assert!(pos_bus < pos_ddd && pos_ddd < pos_di, "sorted: {text}");
+        // Round-trips through the parser to the same normalized set.
+        let tmp = tempfile_dir("veil_ws_scaffold");
+        fs::write(tmp.join("veil.toml"), &text).unwrap();
+        assert_eq!(
+            veil_ir::load_workspace_members(&tmp),
+            vec!["bus", "ddd", "di"]
+        );
+        // Empty scaffold is valid TOML with an empty members array.
+        let empty = workspace_root_veil_toml(&[]);
+        assert!(empty.contains("members = []"), "{empty}");
+    }
+
+    #[test]
+    fn init_workspace_root_is_idempotent() {
+        let root = tempfile_dir("veil_ws_init");
+        // First init: creates the manifest.
+        init_workspace_root(&root).unwrap();
+        assert!(is_project_root(&root));
+        assert!(veil_ir::is_workspace_root(&root));
+        let first = fs::read_to_string(root.join("veil.toml")).unwrap();
+        // Second init: no-op, identical bytes.
+        init_workspace_root(&root).unwrap();
+        let second = fs::read_to_string(root.join("veil.toml")).unwrap();
+        assert_eq!(first, second, "init_workspace_root must be idempotent");
+    }
+
+    #[test]
+    fn init_workspace_root_preserves_existing_sections() {
+        let root = tempfile_dir("veil_ws_preserve_init");
+        fs::write(
+            root.join("veil.toml"),
+            "name = \"acme\"\n\n[package]\nname = \"acme\"\nveil = \"main.veil\"\n",
+        )
+        .unwrap();
+        init_workspace_root(&root).unwrap();
+        let out = fs::read_to_string(root.join("veil.toml")).unwrap();
+        // Existing package section preserved, workspace added.
+        assert!(out.contains("[package]"), "package preserved: {out}");
+        assert!(out.contains("veil = \"main.veil\""), "keys preserved: {out}");
+        assert!(veil_ir::is_workspace_root(&root), "workspace added: {out}");
+        // Second call is a no-op (already has [workspace]).
+        let before = out.clone();
+        init_workspace_root(&root).unwrap();
+        let after = fs::read_to_string(root.join("veil.toml")).unwrap();
+        assert_eq!(before, after);
+    }
+
+    #[test]
+    fn add_workspace_member_idempotent_and_returns_added_flag() {
+        let root = tempfile_dir("veil_ws_add");
+        // First add creates the root and returns true.
+        assert!(add_workspace_member(&root, "ddd").unwrap(), "first add");
+        // Re-add returns false and does not churn bytes.
+        let after_first = fs::read_to_string(root.join("veil.toml")).unwrap();
+        assert!(!add_workspace_member(&root, "ddd").unwrap(), "re-add existed");
+        let after_second = fs::read_to_string(root.join("veil.toml")).unwrap();
+        assert_eq!(
+            after_first, after_second,
+            "adding same member twice must be byte-stable"
+        );
+        // Members are readable via the ir helper.
+        assert_eq!(veil_ir::load_workspace_members(&root), vec!["ddd"]);
+    }
+
+    #[test]
+    fn add_workspace_member_round_trips_and_sorts() {
+        let root = tempfile_dir("veil_ws_roundtrip");
+        add_workspace_member(&root, "di").unwrap();
+        add_workspace_member(&root, "bus").unwrap();
+        add_workspace_member(&root, "ddd").unwrap();
+        // parse → add → serialize → re-parse yields the full sorted set.
+        assert_eq!(
+            veil_ir::load_workspace_members(&root),
+            vec!["bus", "ddd", "di"]
+        );
+        // Re-serialization is stable: adding an existing member changes nothing.
+        let before = fs::read_to_string(root.join("veil.toml")).unwrap();
+        assert!(!add_workspace_member(&root, "ddd").unwrap());
+        let after = fs::read_to_string(root.join("veil.toml")).unwrap();
+        assert_eq!(before, after);
+    }
+
+    #[test]
+    fn add_workspace_member_rejects_traversal() {
+        let root = tempfile_dir("veil_ws_traversal");
+        let err = add_workspace_member(&root, "../evil").unwrap_err();
+        assert!(err.contains("invalid workspace member"), "{err}");
+        assert!(add_workspace_member(&root, "a/../b").is_err());
+        // No manifest was written for a purely-invalid first call.
+        assert!(veil_ir::load_workspace_members(&root).is_empty());
+    }
+
+    #[test]
+    fn add_workspace_member_preserves_unrelated_section() {
+        let root = tempfile_dir("veil_ws_add_preserve");
+        // Root veil.toml with [workspace] plus an unrelated top-level section.
+        fs::write(
+            root.join("veil.toml"),
+            "[workspace]\nmembers = [\"ddd\"]\n\n[codegen]\nbus_strip_prefix = \"Cmd\"\n",
+        )
+        .unwrap();
+        assert!(add_workspace_member(&root, "di").unwrap());
+        let out = fs::read_to_string(root.join("veil.toml")).unwrap();
+        // Unrelated section survives the write.
+        assert!(out.contains("[codegen]"), "codegen preserved: {out}");
+        assert!(
+            out.contains("bus_strip_prefix") && out.contains("Cmd"),
+            "codegen keys preserved: {out}"
+        );
+        // Members updated + sorted.
+        assert_eq!(
+            veil_ir::load_workspace_members(&root),
+            vec!["ddd", "di"]
+        );
+    }
+
+    #[test]
+    fn workspace_only_root_is_not_compilable() {
+        // Spec 1 guarantees a [workspace]-only root has no packages; assert it.
+        let root = tempfile_dir("veil_ws_noncompile");
+        init_workspace_root(&root).unwrap();
+        add_workspace_member(&root, "ddd").unwrap();
+        // No [package] present → not a compilable project (declares no packages).
+        let toml = fs::read_to_string(root.join("veil.toml")).unwrap();
+        assert!(!toml.contains("[package]"), "workspace-only: {toml}");
+        // load_product_deps parses cleanly with no deps (workspace ≠ package).
+        let deps = veil_ir::load_product_deps(&root).expect("workspace root parses");
+        assert!(deps.is_empty());
     }
 
     fn tempfile_dir(prefix: &str) -> PathBuf {

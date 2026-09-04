@@ -1521,6 +1521,15 @@ impl LayerRegistry {
             }
         }
 
+        // 1f. Registered resolution points (VEIL_SEARCH_PATHS) — Spec 4.
+        // AFTER project/[dependencies]/library-path (local always wins), BEFORE
+        // the external (DDB/S3) resolver. Each root may be a workspace repo.
+        for root in Self::search_path_roots() {
+            if let Some(content) = Self::load_layer_from_search_root(name, &root) {
+                return Ok(content);
+            }
+        }
+
         // 2. Non-listed names may still live in the platform install (extensions)
         if let Some(content) = crate::platform_layers::resolve_platform_layer_content(name) {
             return Ok(content);
@@ -1554,6 +1563,151 @@ impl LayerRegistry {
     fn load_layer_from_product_root(name: &str, root: &Path) -> Option<String> {
         if let Some(p) = crate::deps::layer_source_in_root(root, name) {
             return std::fs::read_to_string(p).ok();
+        }
+        None
+    }
+
+    /// Registered resolution-point roots from `VEIL_SEARCH_PATHS`.
+    ///
+    /// Colon/semicolon/newline separated, each entry `/abs/path` or
+    /// `name=/abs/path`. Empty/blank entries are skipped. Only existing
+    /// directories are returned. Order preserved (deterministic — no ambient
+    /// `$HOME`/`/tmp` scanning). The `name=` prefix is a display id only; it
+    /// does NOT constrain which `use <name>` resolves against the root.
+    ///
+    /// Spec: registry-repo-structure-04-search-path-settings.md.
+    /// Populated by veil-server `search_fs::export_env` (in-process) or the
+    /// shell env (child `veil` CLI process).
+    fn search_path_roots() -> Vec<PathBuf> {
+        let Ok(raw) = std::env::var("VEIL_SEARCH_PATHS") else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for part in raw.split([':', ';', '\n']) {
+            let entry = part.trim().trim_matches('"');
+            if entry.is_empty() {
+                continue;
+            }
+            // Strip optional `name=` prefix (id is display-only here).
+            let path_str = match entry.split_once('=') {
+                Some((name, path))
+                    if !name.trim().is_empty()
+                        && !name.contains('/')
+                        && !name.contains('\\')
+                        && !path.trim().is_empty() =>
+                {
+                    path.trim()
+                }
+                _ => entry,
+            };
+            let root = Path::new(path_str);
+            if root.is_dir() {
+                out.push(root.to_path_buf());
+            }
+        }
+        out
+    }
+
+    /// Resolve `use <name>` layer content from a single search-path root.
+    ///
+    /// Deterministic lookup order (a search-path root may be a multi-project
+    /// workspace repo OR a single project):
+    ///   1. `<root>/<name>/layers/<name>.layer`  (workspace member subdir)
+    ///   2. `<root>/<name>/<name>.layer`          (workspace member subdir, flat)
+    ///   3. `<root>/layers/<name>.layer`          (root-level layers dir)
+    ///   4. `<root>/<name>.layer`                 (root-level flat)
+    /// Steps 3-4 also honor the root's own `veil.toml [package] provides_use`
+    /// via `layer_source_in_root`.
+    fn load_layer_from_search_root(name: &str, root: &Path) -> Option<String> {
+        let member = root.join(name);
+        for rel in [
+            member.join("layers").join(format!("{name}.layer")),
+            member.join(format!("{name}.layer")),
+        ] {
+            if rel.is_file() {
+                if let Ok(s) = std::fs::read_to_string(&rel) {
+                    return Some(s);
+                }
+            }
+        }
+        // Root-level (also checks veil.toml [package] provides_use).
+        if let Some(s) = Self::load_layer_from_product_root(name, root) {
+            return Some(s);
+        }
+        None
+    }
+
+    /// Resolve a companion `.veil` (library) relative path from a search root.
+    /// Checks `<root>/<lib_path>` and each workspace member `<root>/<m>/<lib_path>`.
+    fn load_library_from_search_root(root: &Path, lib_path: &str) -> Option<String> {
+        let direct = root.join(lib_path);
+        if direct.is_file() {
+            if let Ok(s) = std::fs::read_to_string(&direct) {
+                return Some(s);
+            }
+        }
+        if let Ok(rd) = std::fs::read_dir(root) {
+            let mut members: Vec<_> = rd.filter_map(|e| e.ok()).collect();
+            members.sort_by_key(|e| e.file_name());
+            for ent in members {
+                let p = ent.path();
+                if !p.is_dir() {
+                    continue;
+                }
+                let candidate = p.join(lib_path);
+                if candidate.is_file() {
+                    if let Ok(s) = std::fs::read_to_string(&candidate) {
+                        return Some(s);
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Resolve a `.stub` by crate name from a search root.
+    /// Checks `<root>/stubs/<name>.stub`, `<root>/<name>.stub`, and each
+    /// workspace member's `stubs/` dir. Honors dashed/underscored stem variants.
+    fn find_stub_in_search_root(name: &str, root: &Path) -> Option<PathBuf> {
+        let stems: Vec<String> = {
+            let mut v = vec![name.to_string()];
+            let u = name.replace('-', "_");
+            let d = name.replace('_', "-");
+            if u != name {
+                v.push(u);
+            }
+            if d != name && !v.iter().any(|s| s == &d) {
+                v.push(d);
+            }
+            v
+        };
+        let try_dir = |dir: &Path| -> Option<PathBuf> {
+            for stem in &stems {
+                let p = dir.join(format!("{stem}.stub"));
+                if p.is_file() {
+                    return Some(p);
+                }
+            }
+            None
+        };
+        if let Some(p) = try_dir(&root.join("stubs")) {
+            return Some(p);
+        }
+        if let Some(p) = try_dir(root) {
+            return Some(p);
+        }
+        if let Ok(rd) = std::fs::read_dir(root) {
+            let mut members: Vec<_> = rd.filter_map(|e| e.ok()).collect();
+            members.sort_by_key(|e| e.file_name());
+            for ent in members {
+                let p = ent.path();
+                if !p.is_dir() {
+                    continue;
+                }
+                if let Some(hit) = try_dir(&p.join("stubs")) {
+                    return Some(hit);
+                }
+            }
         }
         None
     }
@@ -1738,6 +1892,14 @@ impl LayerRegistry {
             }
         }
 
+        // 5. Registered resolution points (VEIL_SEARCH_PATHS) — Spec 4.
+        for root in Self::search_path_roots() {
+            if let Some(source) = Self::load_library_from_search_root(&root, lib_path) {
+                self.library_constructs.push((layer_name.to_string(), source));
+                return;
+            }
+        }
+
         // Not found — silently skip (library is optional / may only be available in runtime)
     }
 
@@ -1792,6 +1954,13 @@ impl LayerRegistry {
                     Some(stub_subdir_path)
                 } else {
                     Self::find_system_stub(name)
+                        // Search paths (VEIL_SEARCH_PATHS) — Spec 4: after
+                        // local/system, before the external (DDB/S3) resolver.
+                        .or_else(|| {
+                            Self::search_path_roots()
+                                .iter()
+                                .find_map(|root| Self::find_stub_in_search_root(name, root))
+                        })
                 };
                 if let Some(path) = found_stub {
                     if let Ok(stub_content) = std::fs::read_to_string(&path) {
@@ -6842,5 +7011,148 @@ layer plain
         assert_eq!(reg.library_constructs.len(), 1);
 
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    // ── Spec 4: resolution search path (VEIL_SEARCH_PATHS) ──────────────────
+
+    /// Serialize VEIL_SEARCH_PATHS mutation across tests (env is process-global).
+    static SEARCH_PATHS_LOCK: Mutex<()> = Mutex::new(());
+
+    fn mk_search_repo(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "veil-sp-{}-{}-{}",
+            tag,
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn write_layer(path: &Path, kw: &str) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        // Minimal parseable layer declaring a construct so codegen/check has vocab.
+        let src = format!(
+            "layer {kw}\n\n  construct {}\n    kw {kw}\n    mt struct\n",
+            {
+                let mut c = kw.chars();
+                c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default()
+            }
+        );
+        std::fs::write(path, src).unwrap();
+    }
+
+    #[test]
+    fn search_root_lookup_order_is_deterministic() {
+        // Root-level layers/<name>.layer resolves.
+        let root = mk_search_repo("order-root");
+        write_layer(&root.join("layers").join("shopkit.layer"), "shopkit");
+        assert!(
+            LayerRegistry::load_layer_from_search_root("shopkit", &root).is_some(),
+            "root-level layers/<name>.layer should resolve"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+
+        // Workspace member subdir <root>/<name>/layers/<name>.layer resolves.
+        let ws = mk_search_repo("order-ws");
+        write_layer(&ws.join("orders").join("layers").join("orders.layer"), "orders");
+        assert!(
+            LayerRegistry::load_layer_from_search_root("orders", &ws).is_some(),
+            "workspace member layers/<name>.layer should resolve"
+        );
+        // Unknown name must not resolve.
+        assert!(
+            LayerRegistry::load_layer_from_search_root("missing", &ws).is_none(),
+            "unknown name must not resolve"
+        );
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn layer_resolves_from_search_path_and_project_local_overrides() {
+        let _guard = SEARCH_PATHS_LOCK.lock().unwrap();
+
+        // A registered search-path repo supplies `inventory.layer` (workspace member).
+        // Uses a NON-platform name so it flows through the userland chain where
+        // search paths are consulted (platform names like `di`/`ddd` take a
+        // different branch).
+        let repo = mk_search_repo("resolve");
+        write_layer(
+            &repo.join("inventory").join("layers").join("inventory.layer"),
+            "inventory",
+        );
+
+        // A consumer project directory that does NOT contain inventory.layer.
+        let proj = mk_search_repo("consumer");
+        std::fs::write(proj.join("main.veil"), "sol App\n").unwrap();
+
+        // Without the search path: resolution fails with the normal diagnostic.
+        unsafe {
+            std::env::remove_var("VEIL_SEARCH_PATHS");
+        }
+        let reg = LayerRegistry::default();
+        let err = reg.resolve_layer_content("inventory", &proj).unwrap_err();
+        assert!(err.contains("not found"), "expected not-found diagnostic, got: {err}");
+
+        // With the search path: `inventory` resolves from the registered repo.
+        unsafe {
+            std::env::set_var("VEIL_SEARCH_PATHS", format!("libs={}", repo.display()));
+        }
+        let reg = LayerRegistry::default();
+        let content = reg
+            .resolve_layer_content("inventory", &proj)
+            .expect("inventory must resolve from the registered search path");
+        assert!(
+            content.contains("layer inventory"),
+            "resolved wrong content: {content}"
+        );
+
+        // Project-local layer of the same name OVERRIDES the search-path one.
+        std::fs::write(
+            proj.join("inventory.layer"),
+            "layer inventory\n  # LOCAL-OVERRIDE\n\n  construct Inventory\n    kw inventory\n    mt struct\n",
+        )
+        .unwrap();
+        let reg = LayerRegistry::default();
+        let local = reg.resolve_layer_content("inventory", &proj).unwrap();
+        assert!(
+            local.contains("LOCAL-OVERRIDE"),
+            "project-local inventory.layer must win over search path: {local}"
+        );
+
+        // Removing the search path → a search-only name fails again.
+        unsafe {
+            std::env::remove_var("VEIL_SEARCH_PATHS");
+        }
+        let reg = LayerRegistry::default();
+        let err2 = reg.resolve_layer_content("orders", &proj).unwrap_err();
+        assert!(err2.contains("not found"), "expected not-found, got: {err2}");
+
+        let _ = std::fs::remove_dir_all(&repo);
+        let _ = std::fs::remove_dir_all(&proj);
+    }
+
+    #[test]
+    fn search_path_roots_parses_named_and_skips_missing() {
+        let _guard = SEARCH_PATHS_LOCK.lock().unwrap();
+        let repo = mk_search_repo("roots-parse");
+        unsafe {
+            std::env::set_var(
+                "VEIL_SEARCH_PATHS",
+                format!("libs={}:/no/such/veil/repo", repo.display()),
+            );
+        }
+        let roots = LayerRegistry::search_path_roots();
+        // Only the existing dir survives; the `name=` prefix is stripped.
+        assert_eq!(roots.len(), 1, "{roots:?}");
+        assert_eq!(roots[0], repo);
+        unsafe {
+            std::env::remove_var("VEIL_SEARCH_PATHS");
+        }
+        let _ = std::fs::remove_dir_all(&repo);
     }
 }

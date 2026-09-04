@@ -23,6 +23,9 @@
 	let reference_dirs_text = $state('');
 	let reference_roots: { id?: string; path?: string; usable?: boolean; skip_reason?: string | null }[] =
 		$state([]);
+	let search_paths_text = $state('');
+	let search_roots: { id?: string; path?: string; usable?: boolean; skip_reason?: string | null }[] =
+		$state([]);
 
 	async function load() {
 		loading = true;
@@ -43,6 +46,16 @@
 				reference_roots = (rr as { roots: typeof reference_roots }).roots;
 			} else {
 				reference_roots = [];
+			}
+			const sp = Array.isArray(data.search_paths)
+				? data.search_paths.map((x: unknown) => String(x)).filter((s: string) => s.trim())
+				: [];
+			search_paths_text = sp.join('\n');
+			const sr = data.search_roots;
+			if (sr && typeof sr === 'object' && Array.isArray((sr as { roots?: unknown }).roots)) {
+				search_roots = (sr as { roots: typeof search_roots }).roots;
+			} else {
+				search_roots = [];
 			}
 			config_path = String(data.config_path ?? '');
 			veil_home = String(data.veil_home ?? '');
@@ -84,6 +97,10 @@
 						.split('\n')
 						.map((s) => s.trim())
 						.filter((s) => s.length > 0 && !s.startsWith('#')),
+					search_paths: search_paths_text
+						.split('\n')
+						.map((s) => s.trim())
+						.filter((s) => s.length > 0 && !s.startsWith('#')),
 				}),
 			});
 			if (!r.ok) throw new Error((await r.text()) || `HTTP ${r.status}`);
@@ -97,6 +114,13 @@
 			const rr = data.reference_roots;
 			if (rr && typeof rr === 'object' && Array.isArray((rr as { roots?: unknown }).roots)) {
 				reference_roots = (rr as { roots: typeof reference_roots }).roots;
+			}
+			if (Array.isArray(data.search_paths)) {
+				search_paths_text = data.search_paths.map((x: unknown) => String(x)).join('\n');
+			}
+			const sr = data.search_roots;
+			if (sr && typeof sr === 'object' && Array.isArray((sr as { roots?: unknown }).roots)) {
+				search_roots = (sr as { roots: typeof search_roots }).roots;
 			}
 			config_path = String(data.config_path ?? config_path);
 			saved = true;
@@ -152,6 +176,30 @@
 				{#if reference_roots.length}
 					<ul class="git-facts">
 						{#each reference_roots as r}
+							<li>
+								<code>{r.id || 'root'}</code>
+								{r.path || ''}
+								{#if r.usable === false}
+									— skipped{r.skip_reason ? `: ${r.skip_reason}` : ''}
+								{/if}
+							</li>
+						{/each}
+					</ul>
+				{/if}
+			</FormSection>
+			<FormSection title="Search paths (resolution points)" columns={1}>
+				<FormField
+					id="search_paths"
+					label="Repos/dirs the resolver treats as roots"
+					input_type="textarea"
+					rows={4}
+					bind:value={search_paths_text}
+					placeholder={'~/dev/veil-libs\nlibs=~/dev/veil-libs'}
+					hint="Resolved-from (unlike Reference trees). A `use <name>` in a consumer project resolves layers/stubs/library .veil against these roots — after local/project and [dependencies], before any remote registry. One path per line (optional name=/abs/path). Env VEIL_SEARCH_PATHS overlays this list."
+				/>
+				{#if search_roots.length}
+					<ul class="git-facts">
+						{#each search_roots as r}
 							<li>
 								<code>{r.id || 'root'}</code>
 								{r.path || ''}

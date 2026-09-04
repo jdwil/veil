@@ -70,6 +70,26 @@ struct VeilTomlFile {
     /// project and provides variable overrides.
     #[serde(default)]
     deploy: Option<DeployToml>,
+    /// Multi-project repo workspace section (Cargo-workspace shape). A root
+    /// `veil.toml` with `[workspace] members = [...]` lists subproject dirs.
+    /// Parsing only here (Spec 1 shared contract); Spec 2 consumes it.
+    #[serde(default)]
+    workspace: Option<WorkspaceToml>,
+}
+
+/// `[workspace]` section in a root `veil.toml` for multi-project VEIL repos.
+///
+/// Shape mirrors a Cargo workspace: a generated convenience list of subproject
+/// directories. The authority for each member is its own `veil.toml`; this list
+/// is written when a subproject is added and is used by registry crawlers /
+/// resolution-point registration to enumerate members.
+///
+/// A root `veil.toml` that has `[workspace]` and NO `[package]` parses without
+/// error and is NOT a compilable project (it declares no packages).
+#[derive(Debug, Deserialize, Default)]
+struct WorkspaceToml {
+    #[serde(default)]
+    members: Vec<String>,
 }
 
 /// `[codegen]` section in `veil.toml` — product knobs over layer policies.
@@ -965,6 +985,102 @@ pub fn find_project_root(start: &Path) -> Option<PathBuf> {
     None
 }
 
+/// Substring every `missing veil.toml` diagnostic MUST contain (tests assert this).
+pub const MISSING_VEIL_TOML: &str = "missing veil.toml";
+
+/// Enforce that a `.veil` leaf (or directory) belongs to a project root that
+/// has a `veil.toml` (Decision 3, `decision-registry-repo-structure`).
+///
+/// Returns the resolved project root on success. On failure returns a
+/// diagnostic string containing the [`MISSING_VEIL_TOML`] substring and the
+/// offending absolute path. Never panics — Law 11 (no silent miscompile) and
+/// Law 7 (diagnostics outrank terseness).
+///
+/// Enforcement fires whenever a `.veil` has no ancestor `veil.toml`: previously
+/// tolerated, now a hard error. Bare single-file parser fixtures must be given a
+/// `veil.toml` (or a `[workspace]` root) rather than weakening this check.
+pub fn require_project_root(leaf_path: &Path) -> Result<PathBuf, String> {
+    if let Some(root) = find_project_root(leaf_path) {
+        return Ok(root);
+    }
+    // No ancestor veil.toml — surface the directory that should hold one.
+    let offending = if leaf_path.is_dir() {
+        leaf_path.to_path_buf()
+    } else {
+        leaf_path
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| leaf_path.to_path_buf())
+    };
+    let abs = offending
+        .canonicalize()
+        .unwrap_or_else(|_| {
+            std::env::current_dir()
+                .map(|cwd| cwd.join(&offending))
+                .unwrap_or(offending.clone())
+        });
+    Err(format!(
+        "{MISSING_VEIL_TOML}: {} has no veil.toml (a VEIL project root must contain one)",
+        abs.display()
+    ))
+}
+
+/// Read `[workspace] members` from a root `veil.toml` (empty if absent or no
+/// `[workspace]`).
+///
+/// Members are subdir paths relative to the workspace root, normalized: no
+/// leading `./`, no trailing slash, backslashes folded to `/`. Entries with
+/// `..`/`.` traversal segments are REJECTED (dropped) so a `members` list can
+/// never point outside the workspace — same safety posture as
+/// `git_origin::normalize_subpath` (Spec 2, `decision-registry-repo-structure`).
+pub fn load_workspace_members(project_root: &Path) -> Vec<String> {
+    let toml_path = project_root.join("veil.toml");
+    let Ok(content) = std::fs::read_to_string(&toml_path) else {
+        return Vec::new();
+    };
+    match toml::from_str::<VeilTomlFile>(&content) {
+        Ok(parsed) => parsed
+            .workspace
+            .map(|w| {
+                w.members
+                    .iter()
+                    .filter_map(|m| normalize_member(m))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// True if `path/veil.toml` has a `[workspace]` section (i.e. `path` is a
+/// multi-project VEIL repo root). A missing or unparseable `veil.toml` is false.
+pub fn is_workspace_root(path: &Path) -> bool {
+    let toml_path = path.join("veil.toml");
+    let Ok(content) = std::fs::read_to_string(&toml_path) else {
+        return false;
+    };
+    matches!(
+        toml::from_str::<VeilTomlFile>(&content),
+        Ok(parsed) if parsed.workspace.is_some()
+    )
+}
+
+/// Normalize a workspace `members` entry: trimmed, backslashes → `/`, no
+/// leading/trailing slashes, `None` if empty. Rejects `..`/`.` traversal
+/// segments (returns `None`) so a member can never escape the workspace root.
+/// Mirrors `git_origin::normalize_subpath` (single safety posture).
+pub fn normalize_member(raw: &str) -> Option<String> {
+    let s = raw.trim().replace('\\', "/");
+    let s = s.trim_matches('/');
+    if s.is_empty() {
+        return None;
+    }
+    if s.split('/').any(|seg| seg == ".." || seg == ".") {
+        return None;
+    }
+    Some(s.to_string())
+}
+
 /// Projects hub directory for resolving `{ project = "…" }` deps.
 ///
 /// Order: `VEIL_PROJECTS_DIR` → parent of project root (hub) → project root.
@@ -1842,6 +1958,99 @@ layer = "layers/main.layer"
 
         let found = crate::adapt::find_package_source("application", &[root.clone()]);
         assert!(found.unwrap().ends_with("main.veil"));
+    }
+
+    #[test]
+    fn require_project_root_fails_without_veil_toml() {
+        let dir = tempfile_dir();
+        let leaf = dir.join("app.veil");
+        std::fs::write(&leaf, "pkg App\n").unwrap();
+        let err = require_project_root(&leaf).expect_err("must fail without veil.toml");
+        assert!(
+            err.contains(MISSING_VEIL_TOML),
+            "diagnostic must contain '{MISSING_VEIL_TOML}': {err}"
+        );
+        // Offending absolute path is surfaced.
+        assert!(err.contains(&dir.to_string_lossy().to_string()) || err.contains("app.veil") || err.contains("veil"), "{err}");
+    }
+
+    #[test]
+    fn require_project_root_succeeds_with_veil_toml() {
+        let dir = tempfile_dir();
+        std::fs::write(dir.join("veil.toml"), "[package]\nname = \"app\"\n").unwrap();
+        let leaf = dir.join("app.veil");
+        std::fs::write(&leaf, "pkg App\n").unwrap();
+        let root = require_project_root(&leaf).expect("must succeed with veil.toml");
+        assert_eq!(root, dir);
+    }
+
+    #[test]
+    fn workspace_only_root_parses_and_lists_members() {
+        let dir = tempfile_dir();
+        std::fs::write(
+            dir.join("veil.toml"),
+            "[workspace]\nmembers = [\"ddd\", \"di\", \"bus\"]\n",
+        )
+        .unwrap();
+        // Parses without error (no [package]) and yields members.
+        let members = load_workspace_members(&dir);
+        assert_eq!(members, vec!["ddd", "di", "bus"]);
+        // A [workspace]-only root has no packages: load_product_deps parses cleanly.
+        let deps = load_product_deps(&dir).expect("workspace-only veil.toml must parse");
+        assert!(deps.is_empty());
+        // require_project_root treats it as a valid root (has veil.toml).
+        let leaf = dir.join("sub.veil");
+        std::fs::write(&leaf, "pkg Sub\n").unwrap();
+        assert_eq!(require_project_root(&leaf).unwrap(), dir);
+    }
+
+    #[test]
+    fn workspace_members_empty_when_no_workspace_section() {
+        let dir = tempfile_dir();
+        std::fs::write(dir.join("veil.toml"), "[package]\nname = \"app\"\n").unwrap();
+        assert!(load_workspace_members(&dir).is_empty());
+    }
+
+    #[test]
+    fn is_workspace_root_detects_workspace_section() {
+        let ws = tempfile_dir();
+        std::fs::write(ws.join("veil.toml"), "[workspace]\nmembers = []\n").unwrap();
+        assert!(is_workspace_root(&ws));
+
+        let pkg = tempfile_dir();
+        std::fs::write(pkg.join("veil.toml"), "[package]\nname = \"app\"\n").unwrap();
+        assert!(!is_workspace_root(&pkg));
+
+        // Missing veil.toml → not a workspace root.
+        let empty = tempfile_dir();
+        assert!(!is_workspace_root(&empty));
+    }
+
+    #[test]
+    fn normalize_member_trims_and_rejects_traversal() {
+        assert_eq!(normalize_member("  ddd/ ").as_deref(), Some("ddd"));
+        assert_eq!(normalize_member("a/b/c").as_deref(), Some("a/b/c"));
+        assert_eq!(normalize_member("libs\\di").as_deref(), Some("libs/di"));
+        // Reuses normalize_subpath posture: `.` and `..` segments are rejected.
+        assert_eq!(normalize_member("./ddd"), None);
+        assert_eq!(normalize_member(""), None);
+        assert_eq!(normalize_member("   "), None);
+        // Traversal is refused.
+        assert_eq!(normalize_member("../evil"), None);
+        assert_eq!(normalize_member("a/../b"), None);
+        assert_eq!(normalize_member("a/./b"), None);
+    }
+
+    #[test]
+    fn load_workspace_members_drops_traversal_and_normalizes() {
+        let dir = tempfile_dir();
+        std::fs::write(
+            dir.join("veil.toml"),
+            "[workspace]\nmembers = [\"ddd/\", \"../evil\", \"libs\\\\di\", \"a/../b\"]\n",
+        )
+        .unwrap();
+        // `../evil` and `a/../b` dropped; `ddd/` trimmed; backslash folded.
+        assert_eq!(load_workspace_members(&dir), vec!["ddd", "libs/di"]);
     }
 
     fn tempfile_dir() -> PathBuf {

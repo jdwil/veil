@@ -39,13 +39,14 @@ pub use adapt::{
 };
 pub use deps::{
     adapt_search_paths_for_file, build_deploy_dag, deps_cache_dir, find_project_root,
-    interpolate_deploy_var, layer_source_in_root, load_codegen_overrides,
+    interpolate_deploy_var, is_workspace_root, layer_source_in_root, load_codegen_overrides,
     load_codegen_overrides_for, load_deploy_config, load_deploy_config_for,
     load_harness_overrides, load_harness_overrides_for, load_package_entry, load_product_deps,
-    missing_package_hint, package_source_in_root, product_provides_use, projects_hub,
-    render_deploy_value, resolve_dep_root, resolve_dependency_graph, resolve_dependency_roots,
-    resolve_dependency_roots_for, CodegenToml, DeployContext, DeployDagError, DeployNode,
-    DeployToml, DeployUsesToml, HarnessToml, PackageEntry, ProductDep,
+    load_workspace_members, missing_package_hint, normalize_member, package_source_in_root,
+    product_provides_use, projects_hub, render_deploy_value, require_project_root, resolve_dep_root,
+    resolve_dependency_graph, resolve_dependency_roots, resolve_dependency_roots_for, CodegenToml,
+    DeployContext, DeployDagError, DeployNode, DeployToml, DeployUsesToml, HarnessToml,
+    PackageEntry, ProductDep, MISSING_VEIL_TOML,
 };
 pub use deploy_hooks::{
     collect_construct_inventory, collect_deploy_hooks, constructs_json, is_deploy_hook,

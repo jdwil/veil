@@ -632,6 +632,19 @@ fn origin_cache() -> &'static Mutex<HashMap<String, CachedOrigin>> {
     C.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// Process-wide lock serializing tests that mutate the global git env vars
+/// (`VEIL_GIT_STORE_ROOT` / `VEIL_GIT_ORIGIN`). Env vars are process-global, so
+/// per-module locks in different test files do NOT serialize against each other
+/// — that races (e.g. `mcp.rs` branch-visibility tests vs `git_origin.rs` origin
+/// tests running in parallel). Every test that touches those vars, in ANY module
+/// of this crate, MUST acquire THIS lock so there is a single serialization
+/// point. Test-only (`#[cfg(test)]`), so it is not compiled into shipped code.
+#[cfg(test)]
+pub(crate) fn test_env_lock() -> &'static Mutex<()> {
+    static ENV: OnceLock<Mutex<()>> = OnceLock::new();
+    ENV.get_or_init(|| Mutex::new(()))
+}
+
 #[cfg(test)]
 pub fn clear_origin_cache() {
     if let Ok(mut g) = origin_cache().lock() {
@@ -916,6 +929,129 @@ impl GitOrigin {
             return Ok(None);
         }
         git(&work, &["commit", "-m", &format!("seed {sub}: initial project scaffold")])?;
+        let sha = self.push(&work, branch);
+        let _ = fs::remove_dir_all(&work);
+        sha.map(Some)
+    }
+
+    /// Detect whether the checked-out repo ROOT is already a multi-project VEIL
+    /// workspace (has a root `veil.toml [workspace]`). Spec 3
+    /// (decision-registry-repo-structure §"Detect-and-Offer-Fix Behavior").
+    ///
+    /// Checks out the branch into a scratch dir and inspects the ROOT — NOT the
+    /// subpath — via [`veil_ir::is_workspace_root`]. An empty/uninitialised
+    /// remote counts as "not a workspace" (`Ok(false)`), never an error, so the
+    /// caller can offer to initialise. Only meaningful for a subpath-bound
+    /// GitRemote origin.
+    pub fn subpath_root_is_workspace(&self, branch: &str) -> Result<bool, String> {
+        if self.subpath().is_none() {
+            return Err("subpath_root_is_workspace: origin has no subpath binding".into());
+        }
+        let work = unique_tmp(&format!(
+            "veil-ws-detect-{}",
+            &self.repo_id[..8.min(self.repo_id.len())]
+        ));
+        // Fresh/empty remote → not a workspace yet (offer to init).
+        if self.checkout(&work, branch, CheckoutMode::ResetHard).is_err() {
+            let _ = fs::remove_dir_all(&work);
+            return Ok(false);
+        }
+        let is_ws = veil_ir::is_workspace_root(&work);
+        let _ = fs::remove_dir_all(&work);
+        Ok(is_ws)
+    }
+
+    /// Combined, idempotent "seed subproject into a workspace repo" operation
+    /// (Spec 3 fix operation). In ONE checkout / commit / push it:
+    ///
+    /// 1. Optionally initialises the workspace ROOT (`veil.toml [workspace]`)
+    ///    when `init_workspace_root` is true (safe if the root already carries
+    ///    `[workspace]` — [`project_layout::init_workspace_root`] is a no-op then).
+    /// 2. Seeds the subproject scaffold under `<subpath>/` — no-op if the
+    ///    subpath already has source files (mirrors [`Self::seed_subpath`]).
+    /// 3. Appends `<subpath>` to the root `[workspace] members` list
+    ///    ([`project_layout::add_workspace_member`], idempotent + sorted).
+    ///
+    /// The commit is scoped: it adds ONLY the root `veil.toml` plus the
+    /// `<subpath>/` tree (`git add -A -- veil.toml <sub>`) — never sweeping
+    /// sibling projects (mirrors `seed_subpath`'s discipline). Returns the
+    /// pushed commit sha, or `Ok(None)` when nothing changed (fully idempotent
+    /// re-run: workspace present, subpath seeded, member listed).
+    ///
+    /// When `init_workspace_root` is false this behaves like [`Self::seed_subpath`]
+    /// but ALSO appends the member (the "already a workspace" fast path).
+    pub fn init_workspace_and_seed_subpath(
+        &self,
+        files: &[(String, String)],
+        branch: &str,
+        init_workspace_root: bool,
+    ) -> Result<Option<String>, String> {
+        let Some(sub) = self.subpath() else {
+            return Err("init_workspace_and_seed_subpath: origin has no subpath binding".into());
+        };
+        let work = unique_tmp(&format!(
+            "veil-ws-seed-{}",
+            &self.repo_id[..8.min(self.repo_id.len())]
+        ));
+        // Materialize the shared repo. An empty remote is fine — we create the
+        // first commit (root manifest + subpath) here.
+        if let Err(e) = self.checkout(&work, branch, CheckoutMode::ResetHard) {
+            init_repo(&work, branch).map_err(|_| e)?;
+        }
+
+        // 1) Workspace ROOT manifest (idempotent: no-op if already a workspace).
+        if init_workspace_root {
+            crate::project_layout::init_workspace_root(&work)?;
+        }
+
+        // 2) Seed the subproject scaffold (skip if already populated).
+        let proj_root = work.join(&sub);
+        if !has_source_files(&proj_root) {
+            fs::create_dir_all(&proj_root)
+                .map_err(|e| format!("mkdir subpath {}: {e}", proj_root.display()))?;
+            for (rel, content) in files {
+                let rel = rel.trim_start_matches('/');
+                let p = proj_root.join(rel);
+                if let Some(parent) = p.parent() {
+                    fs::create_dir_all(parent)
+                        .map_err(|e| format!("mkdir {}: {e}", parent.display()))?;
+                }
+                fs::write(&p, content).map_err(|e| format!("write seed {}: {e}", p.display()))?;
+            }
+        }
+
+        // 3) Append the member to the root manifest (idempotent + sorted).
+        //    Ensures the members list carries this subpath even on a fast-path
+        //    (already-a-workspace) re-run where the root manifest already exists.
+        crate::project_layout::add_workspace_member(&work, &sub)?;
+
+        ensure_gitignore(&work)?;
+        // Ensure we are on the target branch (fresh repo starts detached/default).
+        if current_branch(&work).ok().as_deref() != Some(branch) {
+            let _ = git(&work, &["checkout", "-B", branch]);
+        }
+
+        // Deterministic, scoped stage: ONLY the root manifest + this subpath.
+        // Never sweep sibling projects (mirrors seed_subpath discipline).
+        git(&work, &["add", "-A", "--", "veil.toml", &sub])?;
+
+        // If nothing changed after staging root + subpath, this is a no-op
+        // re-run — idempotent, no double-commit.
+        let root_dirty = status_dirty_under(&work, Some("veil.toml"))?;
+        let sub_dirty = status_dirty_under(&work, Some(&sub))?;
+        if !root_dirty && !sub_dirty {
+            let _ = fs::remove_dir_all(&work);
+            return Ok(None);
+        }
+
+        git(
+            &work,
+            &[
+                "commit",
+                "-m",
+                &format!("init workspace + seed {sub}: root veil.toml [workspace] + project scaffold"),
+            ],
+        )?;
         let sha = self.push(&work, branch);
         let _ = fs::remove_dir_all(&work);
         sha.map(Some)
@@ -2428,10 +2564,10 @@ mod tests {
     use super::*;
     use std::sync::Mutex;
 
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
+    fn env_lock() -> &'static Mutex<()> { super::test_env_lock() }
 
     fn with_store<F: FnOnce(&Path)>(f: F) {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = env_lock().lock().unwrap_or_else(|e| e.into_inner());
         let root = unique_tmp("store");
         fs::create_dir_all(&root).unwrap();
         // SAFETY: tests are serialized by ENV_LOCK; this process is the only writer.
@@ -2647,7 +2783,7 @@ mod tests {
     /// re-checkout in a second workdir → diff → merge → verify on the remote.
     #[test]
     fn git_remote_backend_roundtrip() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = env_lock().lock().unwrap_or_else(|e| e.into_inner());
 
         // Bare "provider" repo, seeded with an initial commit on main.
         let bare = unique_tmp("provider.git");
@@ -2719,7 +2855,7 @@ mod tests {
     /// later op reusing that dir can never push/read conflicted content.
     #[test]
     fn merge_conflict_aborts_and_leaves_checkout_clean() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = env_lock().lock().unwrap_or_else(|e| e.into_inner());
 
         // Bare "provider" repo, seeded on main.
         let bare = unique_tmp("conflict-provider.git");
@@ -2871,7 +3007,7 @@ mod tests {
     /// commit must not sweep B's dirty files.
     #[test]
     fn subpath_scoped_status_diff_commit() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = env_lock().lock().unwrap_or_else(|e| e.into_inner());
         // A shared "provider" bare repo seeded with two subpaths.
         let bare = unique_tmp("mono-provider.git");
         fs::create_dir_all(&bare).unwrap();
@@ -2964,7 +3100,7 @@ mod tests {
     /// anonymous (None) when nothing is configured.
     #[test]
     fn credential_precedence_per_repo_org_global() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = env_lock().lock().unwrap_or_else(|e| e.into_inner());
         // Clean slate.
         let clear = || unsafe {
             for k in [
@@ -3009,7 +3145,7 @@ mod tests {
     /// tokenless URL is what would be written to config.
     #[test]
     fn auth_args_are_off_disk_header_and_url_is_tokenless() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = env_lock().lock().unwrap_or_else(|e| e.into_inner());
         unsafe {
             std::env::remove_var("VEIL_GITHUB_BASE_URL");
             std::env::set_var("VEIL_GITHUB_TOKEN", "secrettoken123");
@@ -3042,7 +3178,7 @@ mod tests {
 
     #[test]
     fn redact_secrets_strips_userinfo_and_tokens() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = env_lock().lock().unwrap_or_else(|e| e.into_inner());
         unsafe { std::env::set_var("VEIL_GITHUB_TOKEN", "ghp_supersecretvalue") };
         let s = "fatal: could not read from https://x-access-token:ghp_supersecretvalue@github.com/o/r.git";
         let r = redact_secrets(s);
@@ -3084,7 +3220,7 @@ mod tests {
     /// extraheader. Uses a local bare remote (no real creds needed).
     #[test]
     fn cloned_config_has_no_token_on_disk() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = env_lock().lock().unwrap_or_else(|e| e.into_inner());
         let bare = unique_tmp("scrub-provider.git");
         fs::create_dir_all(&bare).unwrap();
         assert!(
@@ -3143,7 +3279,7 @@ mod tests {
 
     #[test]
     fn for_repo_uses_registered_github_origin() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = env_lock().lock().unwrap_or_else(|e| e.into_inner());
         clear_origin_cache();
         unsafe {
             std::env::set_var("VEIL_GIT_STORE_ROOT", unique_tmp("reg-store"));
@@ -3169,7 +3305,7 @@ mod tests {
 
     #[test]
     fn git_remote_seeds_empty_provider_repo() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = env_lock().lock().unwrap_or_else(|e| e.into_inner());
         let bare = unique_tmp("empty-provider.git");
         fs::create_dir_all(&bare).unwrap();
         assert!(

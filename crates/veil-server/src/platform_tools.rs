@@ -41,6 +41,36 @@ fn arg_bool(arguments: &Value, key: &str, default: bool) -> bool {
         .unwrap_or(default)
 }
 
+/// Collect search-path entries from tool args. Accepts `paths` (array of
+/// strings), `path`/`search_paths` (string or array), or a newline/`:`
+/// separated string. Each entry is `/abs/path` or `name=/abs/path`. Trims
+/// blanks and comments; preserves order.
+fn collect_path_args(arguments: &Value) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut push = |raw: &str| {
+        for part in raw.split(['\n', ':', ';']) {
+            let t = part.trim().trim_matches('"');
+            if !t.is_empty() && !t.starts_with('#') {
+                out.push(t.to_string());
+            }
+        }
+    };
+    for key in ["paths", "search_paths", "path", "dir", "dirs", "repo", "root"] {
+        match arguments.get(key) {
+            Some(Value::Array(items)) => {
+                for it in items {
+                    if let Some(s) = it.as_str() {
+                        push(s);
+                    }
+                }
+            }
+            Some(Value::String(s)) => push(s),
+            _ => {}
+        }
+    }
+    out
+}
+
 /// Per-project git origin from tool args (`origin` object or flat origin_* keys).
 fn origin_arg(arguments: &Value) -> Option<Value> {
     if let Some(o) = arguments.get("origin") {
@@ -156,9 +186,14 @@ pub fn is_platform_tool(name: &str) -> bool {
             | "list_registry_stubs"
             | "search_registry"
             | "get_config"
+            | "search_paths_list"
+            | "search_paths_set"
+            | "search_paths_add"
             | "get_git_status"
             | "get_origin"
             | "bind_origin"
+            | "init_repo_workspace"
+            | "init_workspace"
             | "set_origin"
             | "update_origin"
             | "get_mission"
@@ -2003,6 +2038,77 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
             .to_string())
         }
 
+        // ─── Resolution points (search paths) — Spec 4 ────────────────────
+        "search_paths_list" => {
+            let cfg = crate::config::load_config_or_default();
+            let paths: Vec<String> = cfg.search_paths.iter().map(|e| e.to_line()).collect();
+            let roots = crate::search_fs::public_roots_json();
+            Ok(json!({
+                "ok": true,
+                "summary": if paths.is_empty() {
+                    "No resolution points registered".to_string()
+                } else {
+                    format!("{} resolution point(s) registered", paths.len())
+                },
+                "search_paths": paths,
+                "search_roots": roots,
+                "note": "Search paths are repos/dirs the layer/stub/source resolver treats as roots (resolved-from). Distinct from reference_dirs (read-only conversion source). Local/project resolution wins over these.",
+            })
+            .to_string())
+        }
+
+        "search_paths_set" => {
+            // Replace the whole list. Accepts `paths` (array) or `path` (string).
+            let paths = collect_path_args(arguments);
+            let body = json!({ "search_paths": paths });
+            let (status, data) = http_json("PATCH", "/api/config", Some(body)).await?;
+            let saved = data
+                .get("search_paths")
+                .cloned()
+                .unwrap_or_else(|| json!(paths));
+            Ok(json!({
+                "ok": ok_status(status),
+                "http_status": status,
+                "summary": format!("Set {} resolution point(s)", paths.len()),
+                "search_paths": saved,
+                "search_roots": data.get("search_roots"),
+            })
+            .to_string())
+        }
+
+        "search_paths_add" => {
+            // Append entries to the existing list (dedup by line).
+            let add = collect_path_args(arguments);
+            if add.is_empty() {
+                return Err(
+                    "search_paths_add requires `path` (string) or `paths` (array), e.g. libs=/home/jd/dev/veil-libs".into(),
+                );
+            }
+            let cfg = crate::config::load_config_or_default();
+            let mut lines: Vec<String> =
+                cfg.search_paths.iter().map(|e| e.to_line()).collect();
+            for p in &add {
+                if !lines.iter().any(|l| l == p) {
+                    lines.push(p.clone());
+                }
+            }
+            let body = json!({ "search_paths": lines });
+            let (status, data) = http_json("PATCH", "/api/config", Some(body)).await?;
+            let saved = data
+                .get("search_paths")
+                .cloned()
+                .unwrap_or_else(|| json!(lines));
+            Ok(json!({
+                "ok": ok_status(status),
+                "http_status": status,
+                "summary": format!("Added {} resolution point(s)", add.len()),
+                "added": add,
+                "search_paths": saved,
+                "search_roots": data.get("search_roots"),
+            })
+            .to_string())
+        }
+
         "get_origin" => {
             let id = arg_str(arguments, &["project", "slug", "id", "name"])
                 .or_else(|| crate::coding_gates::current_project_slug())
@@ -2112,6 +2218,48 @@ pub async fn dispatch(tool_name: &str, arguments: &Value) -> Result<String, Stri
                 "http_status": status,
                 "summary": format!("Git origin for `{id}`"),
                 "origin": data,
+                "navigation": { "action": "goto", "path": format!("/projects/{id}"), "project": id }
+            })
+            .to_string())
+        }
+
+        // Spec 3 (decision-registry-repo-structure): make a shared repo a
+        // multi-project VEIL workspace and add this subproject — the confirmed
+        // "fix" when add-to-subpath reports needs_workspace_init. Idempotent.
+        // Satisfies Law 12 "UI OR agent": JD can drive by asking the agent.
+        "init_repo_workspace" | "init_workspace" => {
+            let id = arg_str(arguments, &["project", "slug", "id", "name"])
+                .or_else(|| crate::coding_gates::current_project_slug())
+                .ok_or_else(|| "init_repo_workspace requires project/slug/id".to_string())?;
+            let mut body = json!({});
+            if let Some(repo) = arg_str(arguments, &["repo", "origin_repo"]) {
+                body["repo"] = json!(repo);
+            }
+            if let Some(provider) = arg_str(arguments, &["provider", "origin_provider"]) {
+                body["provider"] = json!(provider);
+            }
+            if let Some(subpath) = arg_str(arguments, &["subpath", "path"]) {
+                body["subpath"] = json!(subpath);
+            }
+            if let Some(branch) = arg_str(arguments, &["branch"]) {
+                body["branch"] = json!(branch);
+            }
+            if let Some(create) = arguments.get("create").and_then(|v| v.as_bool()) {
+                body["create"] = json!(create);
+            }
+            let (status, data) = http_json(
+                "POST",
+                &format!("/api/repos/{}/init-workspace", urlencoding_path(&id)),
+                Some(body),
+            )
+            .await?;
+            Ok(json!({
+                "ok": ok_status(status),
+                "http_status": status,
+                "summary": format!(
+                    "Initialized multi-project workspace for `{id}` (root veil.toml [workspace] + seeded subproject + member)"
+                ),
+                "workspace": data,
                 "navigation": { "action": "goto", "path": format!("/projects/{id}"), "project": id }
             })
             .to_string())
@@ -2484,7 +2632,8 @@ pub async fn create_project_domain(
     origin: Option<Value>,
 ) -> Result<Value, String> {
     use crate::provider::s3_workspace::{
-        IdeSourceMode, allow_disk_project_create, ide_source_mode, seed_new_repo_scaffold,
+        IdeSourceMode, SubpathSeedOutcome, allow_disk_project_create, ide_source_mode,
+        seed_new_repo_scaffold_ws,
     };
 
     let mode = ide_source_mode();
@@ -2550,6 +2699,8 @@ pub async fn create_project_domain(
     let mut scaffold: Option<Value> = None;
     let mut scaffold_err: Option<String> = None;
     let mut rebound_session: Option<Value> = None;
+    let mut needs_workspace_init = false;
+    let mut ws_subpath: Option<String> = None;
     if ok_status(status) {
         let repo_id = data
             .pointer("/id/value")
@@ -2563,8 +2714,20 @@ pub async fn create_project_domain(
             .unwrap_or_else(|| crate::project_layout::slugify_name(name));
         if let Some(rid) = repo_id {
             // Seed with slug (filesystem-safe); MISSION title still gets display name via scaffold.
-            match seed_new_repo_scaffold(&rid, name) {
-                Ok(files) => {
+            // Workspace-aware (Spec 3): a subpath into a non-workspace repo does
+            // NOT git-seed — it reports needs_workspace_init so we can offer the fix.
+            match seed_new_repo_scaffold_ws(&rid, name) {
+                Ok(SubpathSeedOutcome::NeedsWorkspaceInit { written }) => {
+                    needs_workspace_init = true;
+                    ws_subpath = crate::git_origin::GitOrigin::for_repo(&rid).subpath();
+                    scaffold = Some(json!({
+                        "repo_id": rid.clone(),
+                        "files": written,
+                        "store": "s3",
+                        "needs_workspace_init": true,
+                    }));
+                }
+                Ok(SubpathSeedOutcome::Seeded(files)) => {
                     let store = if crate::git_origin::GitOrigin::for_repo(&rid).is_git_remote() {
                         "github"
                     } else {
@@ -2699,7 +2862,11 @@ pub async fn create_project_domain(
         "scaffold": scaffold,
         "scaffold_error": scaffold_err,
         "session": rebound_session,
-        "hint": if ok_status(status) {
+        "needs_workspace_init": needs_workspace_init,
+        "workspace_subpath": ws_subpath,
+        "hint": if needs_workspace_init {
+            "The shared repo is not a multi-project VEIL workspace yet (no root veil.toml [workspace]). OFFER the fix, then call init_repo_workspace (or POST /api/repos/{id}/init-workspace) to initialize the root [workspace], seed this subproject, and add the member — one confirm. Do NOT write_source until the workspace is initialized."
+        } else if ok_status(status) {
             "Project is bound. Write layers/*.layer (declare product `ann`s there), MISSION.md, and main.veil via write_source/create_file NOW. Do not wiki-search for whether a product annotation exists in ddd — author it in the product layer. Do not create_project again."
         } else {
             "Report the error; do not invent a local disk tree."
@@ -3117,6 +3284,34 @@ pub fn tool_definitions() -> Vec<Value> {
             "inputSchema": { "type": "object", "properties": {}, "required": [] }
         }),
         json!({
+            "name": "search_paths_list",
+            "description": "List registered resolution points (search paths): repos/dirs the layer/stub/source resolver treats as roots so a consumer project's `use <name>` resolves against them. Distinct from reference_dirs (read-only conversion source, never resolved-from). Shows usability per root.",
+            "inputSchema": { "type": "object", "properties": {}, "required": [] }
+        }),
+        json!({
+            "name": "search_paths_add",
+            "description": "Register one or more repos/dirs as resolution points (search paths) for layer/stub/library resolution — e.g. 'register my veil-libs repo as a resolution point'. Appends to the existing list. Local/project resolution still wins over these. Entries are `/abs/path` or `name=/abs/path`.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "A single path `/abs/path` or `name=/abs/path`" },
+                    "paths": { "type": "array", "items": { "type": "string" }, "description": "Multiple entries; each `/abs/path` or `name=/abs/path`" }
+                },
+                "required": []
+            }
+        }),
+        json!({
+            "name": "search_paths_set",
+            "description": "Replace the entire set of registered resolution points (search paths). Pass an empty array to clear. Entries are `/abs/path` or `name=/abs/path`. Use search_paths_add to append instead of replace.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "paths": { "type": "array", "items": { "type": "string" }, "description": "Full replacement list; each `/abs/path` or `name=/abs/path`" }
+                },
+                "required": []
+            }
+        }),
+        json!({
             "name": "get_git_status",
             "description": "GitHub/Bitbucket connection for this runtime (login, orgs, default owner). No secrets. Use before create_project/bind_origin to pick origin_owner.",
             "inputSchema": { "type": "object", "properties": {}, "required": [] }
@@ -3148,6 +3343,24 @@ pub fn tool_definitions() -> Vec<Value> {
                     "origin_repo": { "type": "string", "description": "owner/name or repo name" },
                     "origin_create": { "type": "boolean", "description": "Create remote if missing (default false)" },
                     "origin": { "type": "object" }
+                },
+                "required": []
+            }
+        }),
+        json!({
+            "name": "init_repo_workspace",
+            "description": "Make a shared repo a multi-project VEIL workspace and add this subproject. Call this to CONFIRM the fix when adding a project to a repo subpath reported needs_workspace_init (the repo has no root veil.toml [workspace]). In one commit it initializes the root [workspace], seeds the subproject scaffold under <subpath>/, and appends <subpath> to workspace members, then rebinds the origin. Idempotent (re-run safe). NEVER curl /api/repos/*/init-workspace or hand-edit veil.toml.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "project": { "type": "string", "description": "Project id or slug (default: bound project)" },
+                    "slug": { "type": "string" },
+                    "id": { "type": "string" },
+                    "repo": { "type": "string", "description": "Target shared repo org/name (default: the project's bound git origin repo)" },
+                    "provider": { "type": "string", "enum": ["github", "bitbucket"], "description": "Git host (default: bound origin)" },
+                    "subpath": { "type": "string", "description": "Subdir to seed the project under (default: bound origin subpath, else the project slug)" },
+                    "branch": { "type": "string", "description": "Default branch (default: bound origin branch or main)" },
+                    "create": { "type": "boolean", "description": "Create the target repo if missing (default false)" }
                 },
                 "required": []
             }
@@ -3760,6 +3973,10 @@ pub fn rig_platform_tool_names() -> &'static [&'static str] {
         "provision_project",
         "deploy_status",
         "get_config",
+        "search_paths_list",
+        "search_paths_set",
+        "search_paths_add",
+        "init_repo_workspace",
         "list_outstanding",
         "request_sign_off",
         "sign_off",
@@ -3782,6 +3999,9 @@ mod tests {
         assert!(is_platform_tool("start_task"));
         assert!(is_platform_tool("end_task"));
         assert!(is_platform_tool("list_bundles"));
+        assert!(is_platform_tool("search_paths_list"));
+        assert!(is_platform_tool("search_paths_set"));
+        assert!(is_platform_tool("search_paths_add"));
         assert!(is_platform_tool("create_repo"));
         assert!(is_platform_tool("rename_project"));
         assert!(is_platform_tool("update_project"));
@@ -3858,6 +4078,13 @@ mod tests {
         );
         assert_eq!(names.iter().filter(|n| **n == "submit_pr").count(), 1);
         assert_eq!(names.iter().filter(|n| **n == "list_prs").count(), 1);
+        assert!(names.contains(&"search_paths_list"));
+        assert!(names.contains(&"search_paths_add"));
+        assert!(names.contains(&"search_paths_set"));
+        let rig = rig_platform_tool_names();
+        assert!(rig.contains(&"search_paths_list"));
+        assert!(rig.contains(&"search_paths_add"));
+        assert!(rig.contains(&"search_paths_set"));
         assert!(names.contains(&"approve_pr"));
         assert!(names.contains(&"merge_pr"));
         assert!(names.contains(&"provision_project"));

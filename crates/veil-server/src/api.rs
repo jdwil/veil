@@ -1911,6 +1911,8 @@ async fn get_config() -> axum::response::Response {
         "veil_home": crate::config::veil_home_dir().to_string_lossy(),
         "reference_dirs": cfg.reference_dirs.iter().map(|e| e.to_line()).collect::<Vec<_>>(),
         "reference_roots": crate::reference_fs::public_roots_json(),
+        "search_paths": cfg.search_paths.iter().map(|e| e.to_line()).collect::<Vec<_>>(),
+        "search_roots": crate::search_fs::public_roots_json(),
     });
     match serde_json::to_string(&body) {
         Ok(json) => json_response(json).into_response(),
@@ -1925,6 +1927,10 @@ struct ConfigPatchBody {
     layers_dir: Option<String>,
     /// One path per entry (`/abs/path` or `name=/abs/path`). Empty array clears.
     reference_dirs: Option<Vec<String>>,
+    /// Resolution points. One path per entry (`/abs/path` or `name=/abs/path`).
+    /// Empty array clears. DISTINCT from `reference_dirs` (resolved-from, not
+    /// a read-only conversion source).
+    search_paths: Option<Vec<String>>,
 }
 
 /// CAP-007: PATCH /api/config — update allowlisted keys only.
@@ -1941,6 +1947,8 @@ async fn patch_config(Json(body): Json<ConfigPatchBody>) -> axum::response::Resp
                 "config_path": crate::config::config_path().to_string_lossy(),
                 "reference_dirs": cfg.reference_dirs.iter().map(|e| e.to_line()).collect::<Vec<_>>(),
                 "reference_roots": crate::reference_fs::public_roots_json(),
+                "search_paths": cfg.search_paths.iter().map(|e| e.to_line()).collect::<Vec<_>>(),
+                "search_roots": crate::search_fs::public_roots_json(),
             });
             match serde_json::to_string(&body) {
                 Ok(json) => json_response(json).into_response(),
@@ -1978,6 +1986,14 @@ fn apply_config_patch(body: ConfigPatchBody) -> Result<crate::config::VeilConfig
                 .collect();
             save_config(&cfg)?;
         }
+        if let Some(sp) = body.search_paths {
+            cfg.search_paths = sp
+                .iter()
+                .filter_map(|s| crate::config::SearchPathEntry::from_line(s))
+                .collect();
+            save_config(&cfg)?;
+        }
+        crate::search_fs::export_env(&cfg.search_paths);
         return Ok(cfg);
     }
 
@@ -2002,11 +2018,19 @@ fn apply_config_patch(body: ConfigPatchBody) -> Result<crate::config::VeilConfig
             .collect();
         changed = true;
     }
+    if let Some(sp) = body.search_paths {
+        cfg.search_paths = sp
+            .iter()
+            .filter_map(|s| crate::config::SearchPathEntry::from_line(s))
+            .collect();
+        changed = true;
+    }
     if !changed {
-        return Err("no allowlisted fields in PATCH body (projects_dir, show_core_layers, layers_dir, reference_dirs)".into());
+        return Err("no allowlisted fields in PATCH body (projects_dir, show_core_layers, layers_dir, reference_dirs, search_paths)".into());
     }
     cfg.configured = true;
     save_config(&cfg)?;
+    crate::search_fs::export_env(&cfg.search_paths);
     Ok(cfg)
 }
 

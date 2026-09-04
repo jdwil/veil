@@ -31,6 +31,14 @@ pub struct VeilConfig {
     /// overlays the same list (colon-separated, optional `name=/path`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reference_dirs: Vec<ReferenceDirEntry>,
+    /// Operator-registered repos/dirs the layer/stub/source resolver treats as
+    /// resolution roots ("resolution points" / tier (a) of the registry model).
+    /// DISTINCT from `reference_dirs`: reference_dirs is a READ-ONLY conversion
+    /// source (never resolved-from); search_paths ARE resolved-from. Env
+    /// `VEIL_SEARCH_PATHS` overlays the same list (colon-separated, optional
+    /// `name=/path`). See Mind Palace `decision-registry-repo-structure`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub search_paths: Vec<SearchPathEntry>,
 }
 
 /// One allowlisted reference directory in `config.json`.
@@ -42,6 +50,67 @@ pub enum ReferenceDirEntry {
 }
 
 impl ReferenceDirEntry {
+    pub fn from_line(raw: &str) -> Option<Self> {
+        let s = raw.trim();
+        if s.is_empty() || s.starts_with('#') {
+            return None;
+        }
+        if let Some((name, path)) = s.split_once('=') {
+            let name = name.trim();
+            let path = path.trim();
+            if !name.is_empty()
+                && !path.is_empty()
+                && !name.contains('/')
+                && !name.contains('\\')
+                && name
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+            {
+                return Some(Self::Named {
+                    name: name.to_string(),
+                    path: path.to_string(),
+                });
+            }
+        }
+        Some(Self::Path(s.to_string()))
+    }
+
+    pub fn to_line(&self) -> String {
+        match self {
+            Self::Path(p) => p.clone(),
+            Self::Named { name, path } => format!("{name}={path}"),
+        }
+    }
+
+    pub fn to_pair(&self) -> (String, String) {
+        match self {
+            Self::Path(p) => {
+                let id = std::path::Path::new(p)
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("root")
+                    .to_string();
+                (id, p.clone())
+            }
+            Self::Named { name, path } => (name.clone(), path.clone()),
+        }
+    }
+}
+
+/// One registered resolution-point (search path) in `config.json`.
+///
+/// DISTINCT from [`ReferenceDirEntry`]: search paths are resolution roots for
+/// `.layer` / `.stub` / package `.veil` (they ARE resolved-from), whereas
+/// reference dirs are a read-only conversion source. Same on-disk shape and
+/// parsing so the Config UI / env override can be identical.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum SearchPathEntry {
+    Path(String),
+    Named { name: String, path: String },
+}
+
+impl SearchPathEntry {
     pub fn from_line(raw: &str) -> Option<Self> {
         let s = raw.trim();
         if s.is_empty() || s.starts_with('#') {
@@ -106,6 +175,7 @@ impl Default for VeilConfig {
             show_core_layers: false,
             configured: false,
             reference_dirs: Vec::new(),
+            search_paths: Vec::new(),
         }
     }
 }
@@ -385,6 +455,13 @@ mod tests {
                     path: "~/code/shop".into(),
                 },
             ],
+            search_paths: vec![
+                SearchPathEntry::Path("/tmp/veil-libs".into()),
+                SearchPathEntry::Named {
+                    name: "libs".into(),
+                    path: "~/code/veil-libs".into(),
+                },
+            ],
         };
         let s = serde_json::to_string(&cfg).unwrap();
         let back: VeilConfig = serde_json::from_str(&s).unwrap();
@@ -398,6 +475,27 @@ mod tests {
         )
         .unwrap();
         assert!(back.reference_dirs.is_empty());
+        assert!(back.search_paths.is_empty());
+    }
+
+    #[test]
+    fn search_path_entry_parses_named_and_plain() {
+        match SearchPathEntry::from_line("libs=/home/jd/dev/veil-libs").unwrap() {
+            SearchPathEntry::Named { name, path } => {
+                assert_eq!(name, "libs");
+                assert_eq!(path, "/home/jd/dev/veil-libs");
+            }
+            other => panic!("expected Named, got {other:?}"),
+        }
+        match SearchPathEntry::from_line("/home/jd/dev/veil-libs").unwrap() {
+            SearchPathEntry::Path(p) => assert_eq!(p, "/home/jd/dev/veil-libs"),
+            other => panic!("expected Path, got {other:?}"),
+        }
+        assert!(SearchPathEntry::from_line("   ").is_none());
+        assert!(SearchPathEntry::from_line("# comment").is_none());
+        // Round-trip through to_line().
+        let e = SearchPathEntry::from_line("libs=/x").unwrap();
+        assert_eq!(e.to_line(), "libs=/x");
     }
 
     #[test]

@@ -537,6 +537,8 @@ pub fn list_local_catalog_projects() -> Result<Vec<crate::project_layout::Projec
             path,
             is_git: true,
             package_count: 0,
+            valid: true,
+            invalid_reason: None,
         });
     }
     out.sort_by(|a, b| a.name.cmp(&b.name));
@@ -723,6 +725,93 @@ pub fn seed_new_repo_scaffold(repo_id: &str, name: &str) -> Result<Vec<String>, 
     Ok(written)
 }
 
+/// Outcome of [`seed_new_repo_scaffold_ws`] for a subpath-bound origin.
+#[derive(Debug)]
+pub enum SubpathSeedOutcome {
+    /// Seeded (or already present); files written to the source store. For a
+    /// workspace repo the member was appended. `Vec` = scaffold rel paths.
+    Seeded(Vec<String>),
+    /// Spec 3 detect-and-offer: the repo ROOT is not a multi-project VEIL
+    /// workspace yet (no root `veil.toml [workspace]`). The subpath was NOT
+    /// git-seeded — the caller must OFFER the fix (init_repo_workspace) before
+    /// proceeding. `written` = the S3 scaffold rel paths that were already
+    /// materialized (source-store write is safe; the git seed is what's held).
+    NeedsWorkspaceInit { written: Vec<String> },
+}
+
+/// Workspace-aware create-project seed (Spec 3, decision-registry-repo-structure).
+///
+/// Like [`seed_new_repo_scaffold`], but for a subpath-bound git origin it FIRST
+/// detects whether the repo ROOT is already a multi-project VEIL workspace:
+/// - workspace present → seed the subpath + append the member (one commit);
+/// - workspace absent   → do NOT git-seed; return
+///   [`SubpathSeedOutcome::NeedsWorkspaceInit`] so the UI/agent can offer the
+///   fix (`init_repo_workspace`). The S3 scaffold write still happens (it's
+///   idempotent and store-local), only the shared-repo commit is deferred.
+///
+/// Non-subpath origins behave exactly like [`seed_new_repo_scaffold`].
+pub fn seed_new_repo_scaffold_ws(repo_id: &str, name: &str) -> Result<SubpathSeedOutcome, String> {
+    if repo_id.trim().is_empty() {
+        return Err("seed_new_repo_scaffold_ws: empty repo_id".into());
+    }
+
+    // Non-subpath origins (repo-root / s3): identical to the standard scaffold.
+    let is_subpath = crate::git_origin::origin_enabled()
+        && crate::git_origin::GitOrigin::for_repo(repo_id)
+            .subpath()
+            .is_some();
+    if !is_subpath {
+        let written = seed_new_repo_scaffold(repo_id, name)?;
+        return Ok(SubpathSeedOutcome::Seeded(written));
+    }
+
+    // Subpath origin: write the S3 scaffold, then decide the git seed by the
+    // shared repo's workspace state.
+    let files = crate::project_layout::scaffold_file_contents(name)?;
+    let mut written = Vec::new();
+    let skip_s3 = matches!(ide_source_mode(), IdeSourceMode::Local);
+    for (rel, content) in files {
+        if !skip_s3 {
+            put_repo_text(repo_id, &rel, &content)?;
+        }
+        written.push(rel);
+    }
+    let slug = crate::project_layout::slugify_name(name);
+    cache_identity(&slug, repo_id);
+    cache_identity(name, repo_id);
+
+    let origin = crate::git_origin::GitOrigin::for_repo(repo_id);
+    // Detect-before-seed: is the shared repo ROOT already a workspace?
+    let is_ws = match origin.subpath_root_is_workspace(&branch()) {
+        Ok(v) => v,
+        Err(e) => {
+            if origin.is_git_remote() {
+                return Err(format!("git subpath workspace detect failed: {e}"));
+            }
+            tracing::warn!(%repo_id, error = %e, "subpath workspace detect failed");
+            false
+        }
+    };
+    if !is_ws {
+        // OFFER to fix — do NOT git-seed. S3 scaffold already written.
+        tracing::info!(%repo_id, %slug, "seed subpath: repo not a workspace — offering init");
+        return Ok(SubpathSeedOutcome::NeedsWorkspaceInit { written });
+    }
+    // Already a workspace: seed subpath + append member (one commit).
+    let files = crate::project_layout::scaffold_file_contents(name)?;
+    match origin.init_workspace_and_seed_subpath(&files, &branch(), false) {
+        Ok(_) => {}
+        Err(e) => {
+            if origin.is_git_remote() {
+                return Err(format!("git subpath seed failed: {e}"));
+            }
+            tracing::warn!(%repo_id, error = %e, "subpath seed after scaffold failed");
+        }
+    }
+    tracing::info!(%repo_id, %slug, display = %name, "seed_new_repo_scaffold_ws (subpath, workspace) ok");
+    Ok(SubpathSeedOutcome::Seeded(written))
+}
+
 /// Drop cached slug→repo_id mapping (e.g. before re-create).
 pub fn invalidate_repo_id_cache(slug: &str) {
     if let Ok(mut guard) = repo_id_cache().lock() {
@@ -776,6 +865,8 @@ pub fn list_s3_projects() -> Result<Vec<crate::project_layout::ProjectInfo>, Str
             // (each exists() is two S3 GETs via aws CLI).
             is_git: true,
             package_count: 0,
+            valid: true,
+            invalid_reason: None,
         })
         .collect())
 }

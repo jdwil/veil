@@ -1,0 +1,8 @@
+# Workspace root for the "ladder" codegen fixtures (l0/l1/l3).
+#
+# Snapshot/codegen tests read these `.veil` files directly via the library API,
+# but any `veil check`/`gen` invocation must resolve a project root. Marking the
+# directory as a `[workspace]` gives each fixture an ancestor `veil.toml`
+# (decision-registry-repo-structure, Decision 3) without weakening enforcement.
+[workspace]
+members = ["l0", "l1", "l3"]

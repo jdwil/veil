@@ -182,7 +182,12 @@ impl ProjectsHub {
             return Err(format!("project not found: {name}"));
         }
         if !is_project_root(&root) {
-            return Err(format!("project not found: {name} (not a VEIL project)"));
+            // Spec 1: enforce veil.toml on the IDE open / project load path.
+            return Err(format!(
+                "{}: {} (project '{name}' is not a valid VEIL project root)",
+                veil_ir::MISSING_VEIL_TOML,
+                root.display()
+            ));
         }
         let _ = ensure_project_shape(&root);
         let paths = match collect_project_files(&root, self.show_core_layers) {

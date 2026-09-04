@@ -53,6 +53,7 @@ pub mod review;
 pub mod revision;
 pub mod rig_tools;
 pub mod safety;
+pub mod search_fs;
 pub mod session;
 pub mod session_api;
 pub mod stub_ops;

@@ -2666,6 +2666,12 @@ fn main() {
 
             let (sol, registry) = parse_solution_or_exit(&source, &file);
 
+            // Spec 1: enforce veil.toml project root for .veil sources.
+            if let Err(e) = veil_ir::require_project_root(&file) {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+
             let started = std::time::Instant::now();
             let mut result = veil_ir::check_solution(&sol, &registry);
 
@@ -2913,6 +2919,11 @@ fn main() {
         }
         Commands::Gen { file, output, target, no_prune, trace_passes } => {
             let source = std::fs::read_to_string(&file).expect("Failed to read file");
+            // Spec 1: enforce veil.toml project root for .veil sources.
+            if let Err(e) = veil_ir::require_project_root(&file) {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
             let registry = registry_for(&file);
             let tokens = veil_parser::lex(&source);
             let veil_file = match veil_parser::parse_file_with_registry(&tokens, registry.clone()) {

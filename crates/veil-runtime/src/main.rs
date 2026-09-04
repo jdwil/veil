@@ -152,6 +152,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .mount_bus_router(extra)
         .ensure_config(non_interactive)?;
 
+    // Spec 4: make persisted resolution points visible to the in-process layer
+    // resolver from boot (before any /api/config PATCH). Respects an already-set
+    // VEIL_SEARCH_PATHS from the shell (config entries merged on save).
+    if std::env::var_os("VEIL_SEARCH_PATHS").is_none() {
+        let cfg = veil_server::config::load_config_or_default();
+        veil_server::search_fs::export_env(&cfg.search_paths);
+    }
+
     let projects_dir = host.projects_dir_path().to_path_buf();
     let viewer = host.viewer_url_ref().to_string();
 
