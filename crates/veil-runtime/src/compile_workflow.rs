@@ -214,6 +214,9 @@ pub async fn compile_and_register(
 /// as `CompileError::Registry` — the artifact is registered but triggers may be
 /// partial; re-running is safe (puts are idempotent by trigger id when the
 /// declaration supplies one).
+// Retained: in-flight trigger-aware compile path (registers artifact +
+// triggers + execution topology). Not yet wired into the live compile flow.
+#[allow(dead_code)]
 pub async fn compile_and_register_with_triggers(
     store: &Arc<ArtifactRegistryStore>,
     trigger_store: &Arc<crate::triggers::TriggerStore>,
@@ -253,6 +256,8 @@ pub async fn compile_and_register_with_triggers(
 /// the workflow/artifact id. Workflow ids look like `wf:tenant/onboarding`; the
 /// slug is the final path segment (`onboarding`). Falls back to the tenant id
 /// when the id has no path segment.
+// Retained: slug helper for the in-flight trigger-aware compile path above.
+#[allow(dead_code)]
 fn topology_slug_for(workflow_id: &str, tenant_id: &str) -> String {
     let after_scheme = workflow_id.split(':').next_back().unwrap_or(workflow_id);
     let last = after_scheme.rsplit('/').next().unwrap_or(after_scheme);

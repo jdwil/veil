@@ -38,6 +38,8 @@ pub enum FeedbackEvent {
         trigger_id: Option<String>,
     },
     /// A progress/step note from the host (or, later, the artifact).
+    // Retained: in-flight feedback-stream variant (triggers Phase 3 seam).
+    #[allow(dead_code)]
     Step {
         tenant_id: String,
         artifact_id: String,
@@ -105,11 +107,15 @@ impl TriggerResolver {
     }
 
     /// Subscribe to the feedback event stream (Phase 3 seam).
+    // Retained: in-flight feedback-stream API (triggers subsystem).
+    #[allow(dead_code)]
     pub fn subscribe(&self) -> broadcast::Receiver<FeedbackEvent> {
         self.feedback.subscribe()
     }
 
     /// Access the underlying trigger store (for the host's CRUD handlers).
+    // Retained: in-flight trigger CRUD accessor (triggers subsystem).
+    #[allow(dead_code)]
     pub fn store(&self) -> &Arc<TriggerStore> {
         &self.store
     }

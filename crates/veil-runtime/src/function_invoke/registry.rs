@@ -51,6 +51,9 @@ impl FunctionRegistry {
     /// No Lambda client is attached; resolving a `invoke_kind = lambda`
     /// function returns [`ResolveError::Internal`]. Use [`Self::with_lambda`]
     /// or [`Self::from_env`] for the production path.
+    // Retained: no-Lambda constructor for the function-invoke subsystem
+    // (production paths use with_lambda/from_env).
+    #[allow(dead_code)]
     pub fn new(artifact_store: Arc<ArtifactRegistryStore>) -> Self {
         Self {
             functions: Arc::new(RwLock::new(HashMap::new())),
@@ -92,6 +95,8 @@ impl FunctionRegistry {
     ///
     /// The function_id should match the id used in the artifact registry
     /// (e.g. `"pkg:orders/process_order"`).
+    // Retained: in-flight in-process function registration (function-invoke).
+    #[allow(dead_code)]
     pub async fn register<F>(&self, function_id: impl Into<String>, f: F)
     where
         F: Fn(Value) -> Result<Value, Box<dyn std::error::Error + Send + Sync>>
@@ -104,6 +109,8 @@ impl FunctionRegistry {
     }
 
     /// Unregister a function (e.g. on hot-reload).
+    // Retained: in-flight hot-reload deregistration (function-invoke).
+    #[allow(dead_code)]
     pub async fn unregister(&self, function_id: &str) {
         let mut fns = self.functions.write().await;
         fns.remove(function_id);
@@ -351,12 +358,16 @@ impl FunctionRegistry {
     }
 
     /// Invalidate all cache entries for a tenant (e.g. tenant version pin changed).
+    // Retained: in-flight resolve-cache invalidation (function-invoke).
+    #[allow(dead_code)]
     pub async fn invalidate_tenant(&self, tenant_id: &str) {
         let mut cache = self.cache.write().await;
         cache.retain(|k, _| k.tenant_id != tenant_id);
     }
 
     /// Clear the entire cache.
+    // Retained: in-flight resolve-cache invalidation (function-invoke).
+    #[allow(dead_code)]
     pub async fn invalidate_all(&self) {
         let mut cache = self.cache.write().await;
         cache.clear();

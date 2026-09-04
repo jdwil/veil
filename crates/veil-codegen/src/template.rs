@@ -1596,16 +1596,6 @@ fn extract_quoted_value(s: &str, prefix: &str) -> Option<String> {
     None
 }
 
-fn target_extension(target: &str) -> &str {
-    match target {
-        "rust" => "rs",
-        "typescript" => "ts",
-        "swift" => "swift",
-        "kotlin" => "kt",
-        _ => "txt",
-    }
-}
-
 /// Default state initializer from a VEIL type.
 /// Map VEIL types to TypeScript-ish names for reactive state declarations.
 fn ts_type_display(ty: &veil_ir::TypeExpr) -> String {

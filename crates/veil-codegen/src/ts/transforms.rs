@@ -381,7 +381,7 @@ fn has_await(expr: &TsExpr) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use super::super::expr::{TsBinOp, TsType};
+    use super::super::expr::TsType;
 
     // ─── track_imports tests ─────────────────────────────────────────────
 

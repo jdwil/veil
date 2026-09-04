@@ -23,9 +23,9 @@ pub mod toml_parse;
 #[cfg(test)]
 mod tests;
 
-pub use resolver::{FireOutcome, TriggerFire, TriggerResolver};
+pub use resolver::TriggerResolver;
 pub use store::TriggerStore;
-pub use toml_parse::{parse_triggers, parse_triggers_from_file};
+pub use toml_parse::parse_triggers_from_file;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -119,6 +119,8 @@ impl TriggerRecord {
     /// Whether an incoming event payload satisfies this trigger's `filter`.
     /// A `None` filter matches everything; a filter object requires shallow
     /// key/value equality for each listed key.
+    // Retained: in-flight trigger-fire filtering (triggers subsystem).
+    #[allow(dead_code)]
     pub fn matches_filter(&self, event: &serde_json::Value) -> bool {
         match &self.filter {
             None => true,
@@ -199,5 +201,7 @@ pub enum TriggerError {
     #[error("trigger invoke failed: {0}")]
     Invoke(String),
     #[error("invalid trigger: {0}")]
+    // Retained: in-flight trigger-validation error (triggers subsystem).
+    #[allow(dead_code)]
     Invalid(String),
 }

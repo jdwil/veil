@@ -31,6 +31,8 @@ use super::{TriggerDeclaration, TriggerKind};
 /// veil.toml is loaded elsewhere as `toml` → this accepts the already-parsed
 /// value so it composes with existing `[deploy]` parsing (which also takes a
 /// `serde_json::Value`).
+// Retained: in-flight [[triggers]] declaration parser (triggers subsystem).
+#[allow(dead_code)]
 pub fn parse_triggers(veil_toml: &serde_json::Value) -> Vec<TriggerDeclaration> {
     let arr = match veil_toml.get("triggers").and_then(|v| v.as_array()) {
         Some(a) => a,
@@ -39,6 +41,8 @@ pub fn parse_triggers(veil_toml: &serde_json::Value) -> Vec<TriggerDeclaration> 
     arr.iter().filter_map(parse_one).collect()
 }
 
+// Retained: in-flight per-trigger parser (triggers subsystem).
+#[allow(dead_code)]
 fn parse_one(v: &serde_json::Value) -> Option<TriggerDeclaration> {
     let kind = match v.get("kind").and_then(|k| k.as_str()) {
         Some("on_demand") | Some("ondemand") => TriggerKind::OnDemand,
@@ -70,6 +74,8 @@ fn parse_one(v: &serde_json::Value) -> Option<TriggerDeclaration> {
 /// Load + parse triggers directly from a `veil.toml` file on disk. Returns an
 /// empty vec if the file is missing or has no `[[triggers]]`. A malformed TOML
 /// file is an error the caller should surface.
+// Retained: in-flight file-based trigger parser (triggers subsystem).
+#[allow(dead_code)]
 pub fn parse_triggers_from_file(
     path: &std::path::Path,
 ) -> Result<Vec<TriggerDeclaration>, String> {

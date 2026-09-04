@@ -937,7 +937,7 @@ fn interpolate_construct_template(template: &str, c: &Construct, registry: &Laye
 /// Scan a .svelte file for PascalCase component tags (e.g. `<Header ...>`) and inject
 /// import statements into the `<script>` block. Skips standard HTML elements and
 /// Svelte built-ins ({#if}, {#each}, {@render}, etc.).
-fn inject_svelte_component_imports(content: &str, file_path: &str) -> String {
+fn inject_svelte_component_imports(content: &str, _file_path: &str) -> String {
     use std::collections::BTreeSet;
 
     // Find all PascalCase tags: <ComponentName or <ComponentName>

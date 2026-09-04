@@ -430,6 +430,9 @@ fn bitbucket_authed(
 
 /// Bitbucket Cloud repo.
 struct BitbucketRepo {
+    // Retained: parsed Bitbucket API metadata (only `empty` is consumed today;
+    // full_name kept for parity with the other provider repo structs).
+    #[allow(dead_code)]
     full_name: String,
     empty: bool,
 }

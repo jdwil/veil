@@ -28,7 +28,7 @@ use std::path::Path;
 use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 
 use super::config;
 use super::types::InfraConfig;

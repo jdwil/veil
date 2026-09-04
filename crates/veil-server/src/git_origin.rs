@@ -194,6 +194,8 @@ impl RemoteConfig {
     }
 
     /// The `org` / workspace segment of `org/name`.
+    // Retained: repo-identity accessor for provider API routing (not yet wired).
+    #[allow(dead_code)]
     fn org(&self) -> &str {
         self.repo
             .trim()

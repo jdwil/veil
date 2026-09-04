@@ -40,6 +40,8 @@ pub enum AuthProvider {
 pub struct CognitoConfig {
     pub region: String,
     pub user_pool_id: String,
+    // Retained: audience check for the in-flight token-validation path.
+    #[allow(dead_code)]
     pub client_id: String,
 }
 
@@ -85,6 +87,9 @@ impl AuthConfig {
     }
 
     /// Whether auth is actually active (enabled AND has a valid provider).
+    // Retained: only reached via the in-flight AuthState::new token-validation
+    // path (the active path is new_for_claims).
+    #[allow(dead_code)]
     pub fn is_active(&self) -> bool {
         self.enabled && !matches!(self.provider, AuthProvider::None)
     }
@@ -119,6 +124,8 @@ impl AuthConfig {
     }
 
     /// Human-readable provider name for logging.
+    // Retained: logging helper for the in-flight token-validation path.
+    #[allow(dead_code)]
     pub fn provider_name(&self) -> &str {
         match &self.provider {
             AuthProvider::None => "none",
@@ -205,6 +212,9 @@ impl JwksKeySet {
 // ─── Claims ─────────────────────────────────────────────────────────────────
 
 /// Standard claims from a Cognito ID token.
+// Retained: scaffolding for the in-flight auth subsystem (JWT claim
+// extraction). Not yet constructed while token validation is being wired.
+#[allow(dead_code)]
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CognitoClaims {
     pub sub: String,
@@ -232,6 +242,9 @@ pub struct AuthState {
 
 impl AuthState {
     /// Create a new AuthState. If auth is active, fetches JWKS eagerly.
+    // Retained: in-flight coarse-gate token-validation entry point (active
+    // code uses new_for_claims for claim-based filtering).
+    #[allow(dead_code)]
     pub async fn new(config: AuthConfig) -> Self {
         let jwks = if config.is_active() {
             Self::fetch_jwks(&config.provider).await
@@ -278,6 +291,8 @@ impl AuthState {
     }
 
     /// Validate a bearer token. Returns claims on success.
+    // Retained: in-flight JWT validation for the coarse /api/* auth gate.
+    #[allow(dead_code)]
     pub fn validate_token(&self, token: &str) -> Result<CognitoClaims, AuthError> {
         let jwks = self.jwks.as_ref().ok_or(AuthError::NotConfigured)?;
 

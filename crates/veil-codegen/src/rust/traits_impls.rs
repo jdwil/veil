@@ -414,7 +414,7 @@ pub fn gen_impls(
     solution: &Solution,
     registry: &LayerRegistry,
 ) -> GeneratedFile {
-    use crate::expr::{build_ctx_from_solution, expr_to_rust, GenCtx};
+    use crate::expr::{build_ctx_from_solution, expr_to_rust};
 
     let err_type = registry.error_model.as_ref().map(|em| em.type_name.as_str()).unwrap_or("__VEIL_NO_ERROR_MODEL__");
     let err_external_path = registry.error_model.as_ref()

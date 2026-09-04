@@ -656,17 +656,6 @@ pub fn build_deploy_dag(deploy: &DeployToml) -> Result<Vec<DeployNode>, DeployDa
 fn topological_sort(
     nodes: &BTreeMap<String, DeployNode>,
 ) -> Result<Vec<DeployNode>, DeployDagError> {
-    let mut in_degree: BTreeMap<String, usize> = BTreeMap::new();
-    for alias in nodes.keys() {
-        in_degree.entry(alias.clone()).or_insert(0);
-    }
-    for node in nodes.values() {
-        for dep in &node.depends_on {
-            *in_degree.entry(dep.clone()).or_insert(0); // ensure dep is in map
-            // dep → node means node has an incoming edge from dep
-        }
-    }
-    // Actually compute in-degrees properly.
     let mut in_deg: BTreeMap<String, usize> = nodes.keys().map(|k| (k.clone(), 0)).collect();
     for node in nodes.values() {
         for dep in &node.depends_on {

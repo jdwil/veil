@@ -3976,7 +3976,6 @@ impl<'a> Parser<'a> {
             && !self.at(&TokenKind::Eof)
             && !self.at(&TokenKind::Newline)
         {
-            let before_pos = self.pos;
             // Object spread: `{ ...base, field: v }`. Stored as a synthetic field
             // with the reserved key "..." and an Expr::Spread value; codegen
             // lowers this to a JS object-spread element (`...base`).
@@ -5026,7 +5025,6 @@ fn convert_single_quotes_in_expr(expr: &str) -> String {
     while i < chars.len() {
         if chars[i] == '\'' {
             // Find matching closing single quote
-            let start = i;
             i += 1;
             let mut content = String::new();
             while i < chars.len() && chars[i] != '\'' {
@@ -5573,10 +5571,14 @@ impl<'a> Parser<'a> {
                 self.advance(); // consume "result"
                 if self.at(&TokenKind::Dot) {
                     // Check if it's the simple case: result.ident ==
-                    let dot_pos = self.pos;
+                    // TODO(assert-complex-paths): _dot_pos/_field_pos captured to
+                    // support rewinding into full expression parsing for complex
+                    // cases (result.foo.bar, result.len()); that path is not yet
+                    // implemented. Wire backtracking or remove when added.
+                    let _dot_pos = self.pos;
                     self.advance(); // consume "."
                     if self.at(&TokenKind::Ident) {
-                        let field_pos = self.pos;
+                        let _field_pos = self.pos;
                         let field_name = self.advance().text; // consume ident
                         if field_name == "is_err" || field_name == "is_error" {
                             if self.at(&TokenKind::LParen) {
